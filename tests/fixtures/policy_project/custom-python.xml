@@ -1,0 +1,8 @@
+<ruleset name="custom Python">
+  <rule ref="python" />
+  <rule ref="LongVariable">
+    <properties>
+      <property name="maximum" value="10" />
+    </properties>
+  </rule>
+</ruleset>
