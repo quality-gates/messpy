@@ -411,6 +411,182 @@ class CommandAcceptanceTests(unittest.TestCase):
                 self.assertEqual("", stdout.getvalue())
                 self.assertIn(diagnostic, stderr.getvalue())
 
+    def test_custom_ruleset_composes_references_and_later_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "short.py"
+            ruleset = temporary / "policy.xml"
+            source.write_text(_function_with_passes("short", 3), encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="team policy">
+    <rule ref="rulesets/CoDeSiZe.xml"><exclude name="ExcessiveMethodLength" /></rule>
+    <rule ref="excessivemethodlength">
+        <priority>2</priority>
+        <properties><property name="minimum" value="3" /></properties>
+    </rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", f"CoDeSiZe,{ruleset}"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual(
+            f"{source.resolve().as_posix()}:1: ExcessiveMethodLength "
+            "[priority 2] The method short has 4 lines of code. "
+            "The configured limit is 3.\n",
+            stdout.getvalue(),
+        )
+        self.assertEqual("", stderr.getvalue())
+
+    def test_nested_ruleset_and_filters_select_only_loaded_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "short.py"
+            nested_ruleset = temporary / "base.xml"
+            ruleset = temporary / "policy.xml"
+            source.write_text(_function_with_passes("short", 3), encoding="utf-8")
+            nested_ruleset.write_text(
+                """<ruleset name="base">
+    <rule ref="codesize">
+        <properties><property name="minimum" value="3" /></properties>
+    </rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="team policy">
+    <rule ref="base.xml" />
+    <rule ref="ExcessiveMethodLength"><priority>2</priority></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            enabled_stdout = StringIO()
+            enabled_stderr = StringIO()
+            enabled_status = run(
+                [
+                    str(source),
+                    "text",
+                    str(ruleset),
+                    "--enable",
+                    "EXCESSIVEMETHODLENGTH",
+                    "--verbose",
+                ],
+                enabled_stdout,
+                enabled_stderr,
+            )
+            disabled_stdout = StringIO()
+            disabled_stderr = StringIO()
+            disabled_status = run(
+                [str(source), "text", str(ruleset), "--disable", "excessivemethodlength"],
+                disabled_stdout,
+                disabled_stderr,
+            )
+            priority_stdout = StringIO()
+            priority_stderr = StringIO()
+            priority_status = run(
+                [
+                    str(source),
+                    "text",
+                    str(ruleset),
+                    "--only",
+                    "ExcessiveMethodLength",
+                    "--minimumpriority",
+                    "3",
+                ],
+                priority_stdout,
+                priority_stderr,
+            )
+
+        self.assertEqual(2, enabled_status)
+        self.assertIn("ExcessiveMethodLength [priority 2]", enabled_stdout.getvalue())
+        self.assertEqual("Loaded rules: ExcessiveMethodLength\n", enabled_stderr.getvalue())
+        self.assertEqual(0, disabled_status)
+        self.assertEqual("", disabled_stdout.getvalue())
+        self.assertEqual("", disabled_stderr.getvalue())
+        self.assertEqual(0, priority_status)
+        self.assertEqual("", priority_stdout.getvalue())
+        self.assertEqual("", priority_stderr.getvalue())
+
+    def test_ruleset_loading_rejects_unknown_filter_and_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "source.py"
+            ruleset = temporary / "invalid.xml"
+            unknown_rule_exclusion = temporary / "unknown-rule-exclusion.xml"
+            unknown_ruleset_exclusion = temporary / "unknown-ruleset-exclusion.xml"
+            source.write_text(_function_with_passes("source", 3), encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="invalid">
+    <rule ref="not-a-ruleset" />
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            unknown_rule_exclusion.write_text(
+                """<ruleset name="invalid">
+    <rule ref="codesize"><exclude name="ExcessiveMethodLenght" /></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            unknown_ruleset_exclusion.write_text(
+                """<ruleset name="invalid">
+    <rule ref="codesize" />
+    <exclude name="ExcessiveMethodLenght" />
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            unknown_filter_stdout = StringIO()
+            unknown_filter_stderr = StringIO()
+            unknown_filter_status = run(
+                [str(source), "text", "codesize", "--only", "not-a-rule"],
+                unknown_filter_stdout,
+                unknown_filter_stderr,
+            )
+            unknown_reference_stdout = StringIO()
+            unknown_reference_stderr = StringIO()
+            unknown_reference_status = run(
+                [str(source), "text", str(ruleset), "--verbose"],
+                unknown_reference_stdout,
+                unknown_reference_stderr,
+            )
+            unknown_rule_exclusion_stdout = StringIO()
+            unknown_rule_exclusion_stderr = StringIO()
+            unknown_rule_exclusion_status = run(
+                [str(source), "text", str(unknown_rule_exclusion)],
+                unknown_rule_exclusion_stdout,
+                unknown_rule_exclusion_stderr,
+            )
+            unknown_ruleset_exclusion_stdout = StringIO()
+            unknown_ruleset_exclusion_stderr = StringIO()
+            unknown_ruleset_exclusion_status = run(
+                [str(source), "text", str(unknown_ruleset_exclusion)],
+                unknown_ruleset_exclusion_stdout,
+                unknown_ruleset_exclusion_stderr,
+            )
+
+        self.assertEqual(1, unknown_filter_status)
+        self.assertEqual("", unknown_filter_stdout.getvalue())
+        self.assertEqual("Error: Unknown loaded rule 'not-a-rule'.\n", unknown_filter_stderr.getvalue())
+        self.assertEqual(1, unknown_reference_status)
+        self.assertEqual("", unknown_reference_stdout.getvalue())
+        self.assertIn("Unknown ruleset reference 'not-a-ruleset'.", unknown_reference_stderr.getvalue())
+        self.assertEqual(1, unknown_rule_exclusion_status)
+        self.assertEqual("", unknown_rule_exclusion_stdout.getvalue())
+        self.assertIn("Unknown rule exclusion 'ExcessiveMethodLenght'.", unknown_rule_exclusion_stderr.getvalue())
+        self.assertEqual(1, unknown_ruleset_exclusion_status)
+        self.assertEqual("", unknown_ruleset_exclusion_stdout.getvalue())
+        self.assertIn("Unknown rule exclusion 'ExcessiveMethodLenght'.", unknown_ruleset_exclusion_stderr.getvalue())
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
@@ -433,6 +609,10 @@ class CommandAcceptanceTests(unittest.TestCase):
 
 def _long_function(name: str) -> str:
     return f"def {name}():\n" + "    pass\n" * 100
+
+
+def _function_with_passes(name: str, count: int) -> str:
+    return f"def {name}():\n" + "    pass\n" * count
 
 
 def _finding_for(path: Path, name: str) -> str:

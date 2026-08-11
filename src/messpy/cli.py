@@ -8,10 +8,10 @@ import sys
 from tempfile import NamedTemporaryFile
 from typing import Sequence, TextIO
 
+from .rulesets import LoadedRule, RulesetError, filter_rules, load_rulesets
+
 
 RULE_NAME = "ExcessiveMethodLength"
-RULE_PRIORITY = 3
-METHOD_LENGTH_LIMIT = 100
 DEFAULT_IGNORED_DIRECTORY_NAMES = frozenset(
     {
         ".cache",
@@ -46,7 +46,12 @@ VALUE_OPTIONS = frozenset(
     {
         "--exclude",
         "--maximum-priority",
+        "--maximumpriority",
         "--minimum-priority",
+        "--minimumpriority",
+        "--only",
+        "--enable",
+        "--disable",
         "--report-file",
         "--reportfile",
         "--suffixes",
@@ -57,6 +62,7 @@ BOOLEAN_OPTIONS = frozenset(
         "--ignore-errors-on-exit",
         "--ignore-tests",
         "--ignore-violations-on-exit",
+        "--verbose",
     }
 )
 
@@ -65,13 +71,19 @@ BOOLEAN_OPTIONS = frozenset(
 class ParsedArguments:
     paths: list[str]
     report_format: str
-    ruleset: str
+    rulesets: list[str]
     suffixes: set[str]
     exclusions: list[str]
     ignore_tests: bool
     ignore_errors_on_exit: bool
     ignore_violations_on_exit: bool
     report_file: Path | None
+    only: list[str]
+    enable: list[str]
+    disable: list[str]
+    minimum_priority: int
+    maximum_priority: int
+    verbose: bool
     show_help: bool
     show_version: bool
 
@@ -94,8 +106,16 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
             return 0
         if parsed_arguments.report_format.lower() != "text":
             raise CliError(f"Unknown format: {parsed_arguments.report_format}")
-        if parsed_arguments.ruleset.lower() != "codesize":
-            raise CliError(f"Unknown ruleset '{parsed_arguments.ruleset}'.")
+        rules = filter_rules(
+            load_rulesets(parsed_arguments.rulesets),
+            parsed_arguments.only,
+            parsed_arguments.enable,
+            parsed_arguments.disable,
+            parsed_arguments.minimum_priority,
+            parsed_arguments.maximum_priority,
+        )
+        if parsed_arguments.verbose:
+            stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
 
         input_paths = [Path(value).resolve() for value in parsed_arguments.paths]
         source_files = _source_files(
@@ -104,7 +124,7 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
             parsed_arguments.exclusions,
             parsed_arguments.ignore_tests,
         )
-        findings, processing_errors = _analyze(source_files)
+        findings, processing_errors = _analyze(source_files, rules)
         report = _text_report(findings, processing_errors)
         if parsed_arguments.report_file is None:
             stdout.write(report)
@@ -116,9 +136,11 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
             parsed_arguments.ignore_errors_on_exit,
             parsed_arguments.ignore_violations_on_exit,
         )
-    except CliError as error:
+    except (CliError, RulesetError) as error:
         stderr.write(f"Error: {error}\n")
-        if (parsed_arguments and parsed_arguments.ignore_errors_on_exit) or error.ignore_errors_on_exit:
+        if (parsed_arguments and parsed_arguments.ignore_errors_on_exit) or getattr(
+            error, "ignore_errors_on_exit", False
+        ):
             return 0
         return 1
     except OSError as error:
@@ -138,6 +160,12 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
     ignore_tests = False
     ignore_errors_on_exit = False
     ignore_violations_on_exit = False
+    verbose = False
+    only: list[str] = []
+    enable: list[str] = []
+    disable: list[str] = []
+    minimum_priority = 1
+    maximum_priority = 5
     show_help = False
     show_version = False
     suffixes_provided = False
@@ -173,8 +201,18 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
                 suffixes_provided = True
             elif option_name == "--exclude":
                 exclusions.extend(_split_nonempty(option_value))
+            elif option_name in {"--only", "--enable", "--disable"}:
+                values = _split_nonempty(option_value)
+                if option_name == "--only":
+                    only.extend(values)
+                elif option_name == "--enable":
+                    enable.extend(values)
+                else:
+                    disable.extend(values)
+            elif option_name in {"--minimum-priority", "--minimumpriority"}:
+                minimum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
             else:
-                _parse_priority(option_name, option_value, ignore_errors_on_exit)
+                maximum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
             index += 1
             continue
         if option_name in BOOLEAN_OPTIONS:
@@ -184,6 +222,8 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
                 ignore_tests = True
             elif option_name == "--ignore-errors-on-exit":
                 ignore_errors_on_exit = True
+            elif option_name == "--verbose":
+                verbose = True
             else:
                 ignore_violations_on_exit = True
             index += 1
@@ -196,13 +236,19 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
         return ParsedArguments(
             paths=[],
             report_format="",
-            ruleset="",
+            rulesets=[],
             suffixes=suffixes,
             exclusions=exclusions,
             ignore_tests=ignore_tests,
             ignore_errors_on_exit=ignore_errors_on_exit,
             ignore_violations_on_exit=ignore_violations_on_exit,
             report_file=report_file,
+            only=only,
+            enable=enable,
+            disable=disable,
+            minimum_priority=minimum_priority,
+            maximum_priority=maximum_priority,
+            verbose=verbose,
             show_help=show_help,
             show_version=show_version,
         )
@@ -214,18 +260,27 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
     paths = _split_nonempty(positionals[0])
     if not paths:
         raise CliError("At least one input path is required", ignore_errors_on_exit)
-    if not _split_nonempty(positionals[2]):
+    rulesets = _split_nonempty(positionals[2])
+    if not rulesets:
         raise CliError("At least one ruleset is required", ignore_errors_on_exit)
+    if minimum_priority > maximum_priority:
+        raise CliError("Minimum priority must not exceed maximum priority.", ignore_errors_on_exit)
     return ParsedArguments(
         paths=paths,
         report_format=positionals[1],
-        ruleset=positionals[2],
+        rulesets=rulesets,
         suffixes=suffixes,
         exclusions=exclusions,
         ignore_tests=ignore_tests,
         ignore_errors_on_exit=ignore_errors_on_exit,
         ignore_violations_on_exit=ignore_violations_on_exit,
         report_file=report_file,
+        only=only,
+        enable=enable,
+        disable=disable,
+        minimum_priority=minimum_priority,
+        maximum_priority=maximum_priority,
+        verbose=verbose,
         show_help=False,
         show_version=False,
     )
@@ -252,7 +307,7 @@ def _parse_priority(option_name: str, value: str, ignore_errors_on_exit: bool) -
     return priority
 
 
-def _analyze(source_files: Sequence[Path]) -> tuple[list[str], list[str]]:
+def _analyze(source_files: Sequence[Path], rules: Sequence[LoadedRule]) -> tuple[list[str], list[str]]:
     findings: list[str] = []
     processing_errors: list[str] = []
     for source_file in source_files:
@@ -270,7 +325,7 @@ def _analyze(source_files: Sequence[Path]) -> tuple[list[str], list[str]]:
                 f"{source_file.as_posix()}:1: ProcessingError Could not process {source_file}: {error}"
             )
             continue
-        findings.extend(_excessive_method_length_findings(source_file, tree))
+        findings.extend(_excessive_method_length_findings(source_file, tree, rules))
     return findings, processing_errors
 
 
@@ -311,22 +366,31 @@ def _exit_status(
     return 0
 
 
-def _excessive_method_length_findings(path: Path, tree: ast.Module) -> list[str]:
+def _excessive_method_length_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[str]:
+    rule = next((candidate for candidate in rules if candidate.name == RULE_NAME), None)
+    if rule is None:
+        return []
+    try:
+        method_length_limit = int(rule.properties["minimum"])
+    except (KeyError, ValueError) as error:
+        raise RulesetError("ExcessiveMethodLength property 'minimum' must be an integer.") from error
     findings: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         line_count = node.end_lineno - node.lineno + 1
-        if line_count <= METHOD_LENGTH_LIMIT:
+        if line_count <= method_length_limit:
             continue
         display_path = path.as_posix()
         message = (
             f"The method {node.name} has {line_count} lines of code. "
-            f"The configured limit is {METHOD_LENGTH_LIMIT}."
+            f"The configured limit is {method_length_limit}."
         )
         findings.append(
             f"{display_path}:{node.lineno}: {RULE_NAME} "
-            f"[priority {RULE_PRIORITY}] {message}"
+            f"[priority {rule.priority}] {message}"
         )
     return findings
 
@@ -402,6 +466,10 @@ def _help_text() -> str:
         "\n"
         "Reporting:\n"
         "  --reportfile <path>               Write the complete report to a file\n"
+        "  --only, --enable, --disable <list> Filter loaded rules\n"
+        "  --minimumpriority <1-5>           Include priorities at or above the lower bound\n"
+        "  --maximumpriority <1-5>           Include priorities at or below the upper bound\n"
+        "  --verbose                         Show deterministic ruleset diagnostics\n"
         "  --ignore-errors-on-exit           Return success despite processing errors\n"
         "  --ignore-violations-on-exit       Return success despite findings\n"
         "\n"
