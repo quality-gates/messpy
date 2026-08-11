@@ -1,0 +1,41 @@
+{
+  "version": "2.15.0",
+  "php_fixture": "phpmd_2_15_0_callable_metrics.php",
+  "python_fixture": "phpmd_2_15_0_callable_metrics.py",
+  "phpmd_command": "vendor/bin/phpmd tests/fixtures/phpmd_2_15_0_callable_metrics.php text codesize",
+  "phpmd_text_output": [
+    "CyclomaticComplexity    The function decisionFlow() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.",
+    "NPathComplexity         The function decisionFlow() has an NPath complexity of 512. The configured NPath complexity threshold is 200.",
+    "ExcessiveParameterList  The function decisionFlow has 10 parameters. Consider reducing the number of parameters to less than 10."
+  ],
+  "rules": [
+    {
+      "name": "CyclomaticComplexity",
+      "priority": 3,
+      "property": "reportLevel",
+      "default": 10,
+      "message": "The {0} {1}() has a Cyclomatic Complexity of {2}. The configured cyclomatic complexity threshold is {3}."
+    },
+    {
+      "name": "NPathComplexity",
+      "priority": 3,
+      "property": "minimum",
+      "default": 200,
+      "message": "The {0} {1}() has an NPath complexity of {2}. The configured NPath complexity threshold is {3}."
+    },
+    {
+      "name": "ExcessiveMethodLength",
+      "priority": 3,
+      "property": "minimum",
+      "default": 100,
+      "message": "The {0} {1}() has {2} lines of code. Current threshold is set to {3}. Avoid really long methods."
+    },
+    {
+      "name": "ExcessiveParameterList",
+      "priority": 3,
+      "property": "minimum",
+      "default": 10,
+      "message": "The {0} {1} has {2} parameters. Consider reducing the number of parameters to less than {3}."
+    }
+  ]
+}

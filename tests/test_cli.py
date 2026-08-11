@@ -250,8 +250,8 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual(
             "tests/fixtures/long_function.py:1: ExcessiveMethodLength "
-            "[priority 3] The method too_long has 101 lines of code. "
-            "The configured limit is 100.\n",
+            "[priority 3] The function too_long() has 101 lines of code. "
+            "Current threshold is set to 100. Avoid really long methods.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())
@@ -275,7 +275,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                         "column": 1,
                         "ruleName": "ExcessiveMethodLength",
                         "priority": 3,
-                        "message": "The method too_long has 101 lines of code. The configured limit is 100.",
+                        "message": "The function too_long() has 101 lines of code. Current threshold is set to 100. Avoid really long methods.",
                         "context": "too_long",
                         "suppressed": False,
                     }
@@ -341,7 +341,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             (
                 f"{finding_source.resolve().as_posix()}:1:1:ExcessiveMethodLength:"
-                "The method too_long has 101 lines of code. The configured limit is 100."
+                "The function too_long() has 101 lines of code. Current threshold is set to 100. Avoid really long methods."
             ).encode("utf-8").hex(),
             gitlab[0]["fingerprint"],
         )
@@ -525,9 +525,12 @@ class CommandAcceptanceTests(unittest.TestCase):
             "malformed_region",
             "malformed_next_line",
         ]:
-            self.assertIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+            self.assertIn(
+                f"The function {name}() has 4 lines of code. Current threshold is set to 3. Avoid really long methods.",
+                stdout.getvalue(),
+            )
         for name in ["outer", "nested", "outer_still_active", "partially_enabled"]:
-            self.assertNotIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+            self.assertNotIn(f"The function {name}() has 4 lines of code.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
     def test_malformed_source_reports_an_error_without_hiding_findings(self) -> None:
@@ -712,8 +715,8 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual(
             f"{source.resolve().as_posix()}:1: ExcessiveMethodLength "
-            "[priority 2] The method short has 4 lines of code. "
-            "The configured limit is 3.\n",
+            "[priority 2] The function short() has 4 lines of code. "
+            "Current threshold is set to 3. Avoid really long methods.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())
@@ -863,6 +866,265 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", unknown_ruleset_exclusion_stdout.getvalue())
         self.assertIn("Unknown rule exclusion 'ExcessiveMethodLenght'.", unknown_ruleset_exclusion_stderr.getvalue())
 
+    def test_callable_metrics_cover_python_callables_and_exact_configured_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "callables.py"
+            ruleset = temporary / "callable-metrics.xml"
+            parameter_ruleset = temporary / "parameter-forms.xml"
+            lambda_ruleset = temporary / "lambda-metrics.xml"
+            source.write_text(
+                "def decision_flow(value: int | None) -> int:\n"
+                "    if value and value > 0:\n        pass\n"
+                "    for item in [value]:\n        pass\n"
+                "    while value:\n        break\n"
+                "    try:\n        raise RuntimeError\n"
+                "    except RuntimeError:\n        pass\n"
+                "    branch = max(1 if value else 0, 0)\n"
+                "    values = [1 if item else 0 for item in range(2) if item]\n"
+                "    match value:\n"
+                "        case 1:\n            pass\n"
+                "        case _:\n            pass\n"
+                "    return branch\n\n"
+                "def exact_length():\n    pass\n    pass\n\n"
+                "def function(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n    pass\n\n"
+                "async def async_function(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n    pass\n\n"
+                "class Service:\n"
+                "    def __init__(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    async def async_method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    @classmethod\n"
+                "    def class_method(cls, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def receiver_only(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n        pass\n\n"
+                "    @staticmethod\n"
+                "    def static_method(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def parameter_forms(self, first, /, second, *rest, named, **extra):\n        pass\n\n"
+                "lambda_value = lambda first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth: first\n"
+                "lambda_decision = lambda value: 1 if value else 0\n\n"
+                "def annotated(value: dict[str, list[int | None]]) -> tuple[int | None, ...]:\n    return (value,)[0]\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="callable metrics">
+    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="12" /></properties></rule>
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="1152" /></properties></rule>
+    <rule ref="ExcessiveMethodLength"><properties><property name="minimum" value="3" /></properties></rule>
+    <rule ref="ExcessiveParameterList"><properties><property name="minimum" value="10" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            parameter_ruleset.write_text(
+                """<ruleset name="parameter forms">
+    <rule ref="ExcessiveParameterList"><properties><property name="minimum" value="5" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            lambda_ruleset.write_text(
+                """<ruleset name="lambda metrics">
+    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="2" /></properties></rule>
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+            parameter_stdout = StringIO()
+            parameter_stderr = StringIO()
+            parameter_status = run(
+                [str(source), "text", str(parameter_ruleset)],
+                parameter_stdout,
+                parameter_stderr,
+            )
+            lambda_stdout = StringIO()
+            lambda_stderr = StringIO()
+            lambda_status = run(
+                [str(source), "text", str(lambda_ruleset)],
+                lambda_stdout,
+                lambda_stderr,
+            )
+            parameter_report = parameter_stdout.getvalue()
+            lambda_report = lambda_stdout.getvalue()
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn(
+            "CyclomaticComplexity [priority 3] The function decision_flow() has a Cyclomatic Complexity of 12. "
+            "The configured cyclomatic complexity threshold is 12.",
+            report,
+        )
+        self.assertIn(
+            "NPathComplexity [priority 3] The function decision_flow() has an NPath complexity of 1152. "
+            "The configured NPath complexity threshold is 1152.",
+            report,
+        )
+        self.assertIn(
+            "The function exact_length() has 3 lines of code. Current threshold is set to 3. Avoid really long methods.",
+            report,
+        )
+        for kind, name, parameter_count in [
+            ("function", "function", 10),
+            ("function", "async_function", 10),
+            ("method", "__init__", 11),
+            ("method", "method", 11),
+            ("method", "async_method", 11),
+            ("method", "class_method", 11),
+            ("method", "static_method", 10),
+            ("lambda", "<lambda>", 10),
+        ]:
+            self.assertIn(
+                f"ExcessiveParameterList [priority 3] The {kind} {name} has {parameter_count} parameters. "
+                "Consider reducing the number of parameters to less than 10.",
+                report,
+            )
+        self.assertIn(
+            "The method receiver_only has 10 parameters. Consider reducing the number of parameters to less than 10.",
+            report,
+        )
+        self.assertNotIn("annotated has", report)
+        self.assertEqual(2, parameter_status)
+        self.assertEqual("", parameter_stderr.getvalue())
+        self.assertIn(
+            "The method parameter_forms has 6 parameters. Consider reducing the number of parameters to less than 5.",
+            parameter_report,
+        )
+        self.assertEqual(2, lambda_status)
+        self.assertEqual("", lambda_stderr.getvalue())
+        self.assertIn("The lambda <lambda>() has a Cyclomatic Complexity of 2.", lambda_report)
+        self.assertIn("The lambda <lambda>() has an NPath complexity of 3.", lambda_report)
+
+    def test_phpmd_2_15_0_codesize_reference_keeps_callable_messages_and_priorities_stable(self) -> None:
+        reference = json.loads((FIXTURES / "phpmd_2_15_0_codesize.json").read_text(encoding="utf-8"))
+        self.assertEqual("2.15.0", reference["version"])
+        self.assertTrue((FIXTURES / reference["php_fixture"]).is_file())
+        python_fixture = FIXTURES / reference["python_fixture"]
+        self.assertTrue(python_fixture.is_file())
+        self.assertEqual(
+            "vendor/bin/phpmd tests/fixtures/phpmd_2_15_0_callable_metrics.php text codesize",
+            reference["phpmd_command"],
+        )
+        self.assertEqual(
+            [
+                "CyclomaticComplexity    The function decisionFlow() has a Cyclomatic Complexity of 10. "
+                "The configured cyclomatic complexity threshold is 10.",
+                "NPathComplexity         The function decisionFlow() has an NPath complexity of 512. "
+                "The configured NPath complexity threshold is 200.",
+                "ExcessiveParameterList  The function decisionFlow has 10 parameters. "
+                "Consider reducing the number of parameters to less than 10.",
+            ],
+            reference["phpmd_text_output"],
+        )
+
+        reports: dict[str, str] = {}
+        for rule_name, source in [
+            ("CyclomaticComplexity", python_fixture),
+            ("NPathComplexity", python_fixture),
+            ("ExcessiveParameterList", python_fixture),
+            ("ExcessiveMethodLength", FIXTURES / "long_function.py"),
+        ]:
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", rule_name], stdout, stderr)
+            self.assertEqual(2, status, rule_name)
+            self.assertEqual("", stderr.getvalue(), rule_name)
+            reports[rule_name] = stdout.getvalue()
+
+        expected_messages = {
+            "CyclomaticComplexity": "The function decision_flow() has a Cyclomatic Complexity of 10. "
+            "The configured cyclomatic complexity threshold is 10.",
+            "NPathComplexity": "The function decision_flow() has an NPath complexity of 512. "
+            "The configured NPath complexity threshold is 200.",
+            "ExcessiveParameterList": "The function decision_flow has 10 parameters. "
+            "Consider reducing the number of parameters to less than 10.",
+            "ExcessiveMethodLength": "The function too_long() has 101 lines of code. "
+            "Current threshold is set to 100. Avoid really long methods.",
+        }
+        for rule in reference["rules"]:
+            self.assertIn(f"{rule['name']} [priority {rule['priority']}]", reports[rule["name"]])
+            self.assertIn(expected_messages[rule["name"]], reports[rule["name"]])
+            self.assertEqual(1, reports[rule["name"]].count(f"{rule['name']} [priority"))
+            for other_rule in reference["rules"]:
+                if other_rule["name"] != rule["name"]:
+                    self.assertNotIn(other_rule["name"], reports[rule["name"]])
+
+    def test_callable_metrics_below_each_default_threshold_are_clean(self) -> None:
+        sources = {
+            "CyclomaticComplexity": "def choose(value):\n" + "    if value:\n        return value\n" * 8,
+            "NPathComplexity": "def choose(value):\n" + "    if value:\n        value += 1\n" * 7,
+            "ExcessiveMethodLength": _function_with_passes("choose", 98),
+            "ExcessiveParameterList": "def choose(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n    pass\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            for rule_name, source_text in sources.items():
+                source = temporary / f"{rule_name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run([str(source), "text", rule_name], stdout, stderr)
+
+                self.assertEqual(0, status, rule_name)
+                self.assertEqual("", stdout.getvalue(), rule_name)
+                self.assertEqual("", stderr.getvalue(), rule_name)
+
+    def test_callable_metrics_leave_idiomatic_python_quiet(self) -> None:
+        source_text = (
+            "def normalized_labels(raw_labels: list[str]) -> list[str]:\n"
+            "    labels = [label.strip().lower() for label in raw_labels if label.strip()]\n"
+            "    return sorted(set(labels))\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "labels.py"
+            source.write_text(source_text, encoding="utf-8")
+            for rule_name in [
+                "CyclomaticComplexity",
+                "NPathComplexity",
+                "ExcessiveMethodLength",
+                "ExcessiveParameterList",
+            ]:
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run([str(source), "text", rule_name], stdout, stderr)
+
+                self.assertEqual(0, status, rule_name)
+                self.assertEqual("", stdout.getvalue(), rule_name)
+                self.assertEqual("", stderr.getvalue(), rule_name)
+
+    def test_npath_counts_conditional_expression_in_comprehension_element(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "comprehension.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def choose(values):\n    return [1 if value else 0 for value in values]\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function choose() has an NPath complexity of 3. The configured NPath complexity threshold is 3.",
+            stdout.getvalue(),
+        )
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
@@ -898,5 +1160,5 @@ def _finding_for(path: Path, name: str, line: int = 1) -> str:
     return (
         f"{path.resolve().as_posix()}:{line}: ExcessiveMethodLength "
         "[priority 3] "
-        f"The method {name} has 101 lines of code. The configured limit is 100."
+        f"The function {name}() has 101 lines of code. Current threshold is set to 100. Avoid really long methods."
     )

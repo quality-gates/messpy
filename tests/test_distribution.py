@@ -19,11 +19,25 @@ class DistributionAcceptanceTests(unittest.TestCase):
             environment = temporary / "environment"
             project = temporary / "project"
             application = project / "application.py"
+            metrics = project / "metrics.py"
             test_module = project / "tests" / "test_application.py"
             ruleset = project / "team-policy.xml"
             test_module.parent.mkdir(parents=True)
             source = (FIXTURES / "long_function.py").read_text(encoding="utf-8")
             application.write_text(source, encoding="utf-8")
+            metrics.write_text(
+                "def branching(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n"
+                "    if first:\n        pass\n"
+                "    if second:\n        pass\n"
+                "    if third:\n        pass\n"
+                "    if fourth:\n        pass\n"
+                "    if fifth:\n        pass\n"
+                "    if sixth:\n        pass\n"
+                "    if seventh:\n        pass\n"
+                "    if eighth:\n        pass\n"
+                "    if ninth:\n        pass\n",
+                encoding="utf-8",
+            )
             test_module.write_text(source, encoding="utf-8")
             ruleset.write_text(
                 """<ruleset name="team policy">
@@ -83,6 +97,12 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            metrics_result = subprocess.run(
+                [executable, str(metrics), "text", "codesize"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             ignore_tests_result = subprocess.run(
                 [executable, str(project), "text", "codesize", "--ignore-tests"],
                 capture_output=True,
@@ -137,12 +157,16 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertEqual("", clean_result.stdout)
         self.assertEqual(2, finding_result.returncode)
         self.assertIn("ExcessiveMethodLength", finding_result.stdout)
+        self.assertEqual(2, metrics_result.returncode)
+        self.assertIn("CyclomaticComplexity", metrics_result.stdout)
+        self.assertIn("NPathComplexity", metrics_result.stdout)
+        self.assertIn("ExcessiveParameterList", metrics_result.stdout)
         self.assertEqual(2, ignore_tests_result.returncode)
         self.assertIn(application.as_posix(), ignore_tests_result.stdout)
         self.assertNotIn(test_module.as_posix(), ignore_tests_result.stdout)
         self.assertEqual(2, custom_ruleset_result.returncode)
         self.assertIn("ExcessiveMethodLength [priority 2]", custom_ruleset_result.stdout)
-        self.assertIn("The configured limit is 3.", custom_ruleset_result.stdout)
+        self.assertIn("Current threshold is set to 3. Avoid really long methods.", custom_ruleset_result.stdout)
         for report_format, result in public_report_results.items():
             with self.subTest(report_format=report_format):
                 self.assertEqual(1, result.returncode)
