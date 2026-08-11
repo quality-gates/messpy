@@ -835,7 +835,7 @@ def _short_class_name_findings(path: Path, targets: Sequence[NamingTarget], rule
             f"Avoid using short class names like {target.name}. Configured minimum length is {minimum}.",
         )
         for target in targets
-        if target.role == "class" and not _is_exempt_name(target.name) and len(target.name) < minimum
+        if target.role == "class" and not _is_exempt_target(target) and len(target.name) < minimum
     ]
 
 
@@ -852,7 +852,7 @@ def _long_class_name_findings(path: Path, targets: Sequence[NamingTarget], rules
             f"Avoid excessively long class names like {target.name}. Configured maximum length is {maximum}.",
         )
         for target in targets
-        if target.role == "class" and not _is_exempt_name(target.name) and len(target.name) > maximum
+        if target.role == "class" and not _is_exempt_target(target) and len(target.name) > maximum
     ]
 
 
@@ -885,7 +885,7 @@ def _variable_length_findings(
         _naming_finding(path, target, rule, message(target))
         for target in targets
         if target.role in {"parameter", "property", "variable"}
-        and not _is_exempt_name(target.name)
+        and not _is_exempt_target(target)
         and (len(target.name) > limit if too_long else len(target.name) < limit)
     ]
 
@@ -903,7 +903,7 @@ def _short_method_name_findings(path: Path, targets: Sequence[NamingTarget], rul
             f"Avoid using short method names like {target.name}(). Configured minimum length is {minimum}.",
         )
         for target in targets
-        if target.role in {"function", "method"} and not _is_exempt_name(target.name) and len(target.name) < minimum
+        if target.role in {"function", "method"} and not _is_exempt_target(target) and len(target.name) < minimum
     ]
 
 
@@ -920,7 +920,7 @@ def _constant_naming_findings(path: Path, targets: Sequence[NamingTarget], rules
         )
         for target in targets
         if target.role == "constant"
-        and not _is_exempt_name(target.name)
+        and not _is_exempt_target(target)
         and re.fullmatch(r"[A-Z][A-Z0-9_]*", target.name) is None
     ]
 
@@ -951,8 +951,26 @@ def _naming_finding(path: Path, target: NamingTarget, rule: LoadedRule, message:
     return Finding(path, target.line, rule.name, rule.priority, message, context=target.name)
 
 
-def _is_exempt_name(name: str) -> bool:
-    return name.startswith("_") or name in {"self", "cls", "e", "err", "exc", "ex", "i", "j", "k", "n", "x", "y", "z"}
+def _is_exempt_target(target: NamingTarget) -> bool:
+    if target.name.startswith("_"):
+        return True
+    if target.role == "property" and target.name in {"i", "j", "k", "n", "x", "y", "z"}:
+        return True
+    return target.role in {"parameter", "variable"} and target.name in {
+        "self",
+        "cls",
+        "e",
+        "err",
+        "exc",
+        "ex",
+        "i",
+        "j",
+        "k",
+        "n",
+        "x",
+        "y",
+        "z",
+    }
 
 
 def _is_getter_name(name: str) -> bool:
@@ -960,32 +978,36 @@ def _is_getter_name(name: str) -> bool:
 
 
 def _has_boolean_result(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    if _is_boolean_annotation(node.returns):
-        return True
-    returns = _return_values(node.body)
-    return bool(returns) and all(_is_boolean_expression(value) for value in returns)
+    return _is_boolean_annotation(node.returns) or _all_paths_return_boolean(node.body)
 
 
 def _is_boolean_annotation(node: ast.expr | None) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "bool"
-    if isinstance(node, ast.Attribute):
-        return node.attr == "bool"
-    return isinstance(node, ast.Constant) and node.value == "bool"
+    return (isinstance(node, ast.Name) and node.id == "bool") or (
+        isinstance(node, ast.Constant) and node.value == "bool"
+    )
 
 
-def _return_values(statements: Sequence[ast.stmt]) -> list[ast.expr]:
-    values: list[ast.expr] = []
-    for statement in statements:
-        if isinstance(statement, ast.Return) and statement.value is not None:
-            values.append(statement.value)
-            continue
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-            continue
-        for child in ast.iter_child_nodes(statement):
-            if isinstance(child, ast.stmt):
-                values.extend(_return_values([child]))
-    return values
+def _all_paths_return_boolean(statements: Sequence[ast.stmt]) -> bool:
+    if not statements:
+        return False
+    statement, *remaining = statements
+    if isinstance(statement, ast.Return):
+        return statement.value is not None and _is_boolean_expression(statement.value)
+    if isinstance(statement, ast.If):
+        return _all_paths_return_boolean([*statement.body, *remaining]) and _all_paths_return_boolean(
+            [*statement.orelse, *remaining]
+        )
+    if _contains_return(statement):
+        return False
+    return _all_paths_return_boolean(remaining)
+
+
+def _contains_return(node: ast.AST) -> bool:
+    if isinstance(node, ast.Return):
+        return True
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return False
+    return any(_contains_return(child) for child in ast.iter_child_nodes(node))
 
 
 def _is_boolean_expression(node: ast.expr) -> bool:
@@ -993,7 +1015,9 @@ def _is_boolean_expression(node: ast.expr) -> bool:
         isinstance(node, ast.Compare)
         or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
         or isinstance(node, ast.Constant) and isinstance(node.value, bool)
-        or isinstance(node, ast.Call) and _called_name(node.func) in {"bool", "isinstance", "issubclass"}
+        or isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"bool", "isinstance", "issubclass"}
     )
 
 
@@ -1359,7 +1383,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
 
     def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         direct_class_member = bool(self.contexts and self.contexts[-1] == "class")
-        role = "property" if direct_class_member and _has_decorator(node, "property") else (
+        role = "property" if direct_class_member and _has_property_decorator(node) else (
             "method" if direct_class_member else "function"
         )
         self._add_target(node.name, node.lineno, role)
@@ -1689,6 +1713,13 @@ def _is_protocol(node: ast.ClassDef) -> bool:
 
 def _is_contract_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return _has_decorator(method, "overload") or _is_stub_body(method.body)
+
+
+def _has_property_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return _has_decorator(method, "property") or any(
+        isinstance(decorator, ast.Attribute) and decorator.attr in {"getter", "setter", "deleter"}
+        for decorator in method.decorator_list
+    )
 
 
 def _has_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:

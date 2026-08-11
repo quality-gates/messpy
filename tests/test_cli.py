@@ -1437,6 +1437,56 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn(rule_name, report)
         self.assertNotIn("ConstructorWithNameAsEnclosingClass", report)
 
+    def test_naming_rules_scope_exemptions_and_boolean_proof_to_python_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "role_scoped_names.py"
+            source.write_text(
+                "class e:\n"
+                "    pass\n"
+                "\n"
+                "class Holder:\n"
+                "    ab = 1\n"
+                "    x = 1\n"
+                "    y = 2\n"
+                "\n"
+                "    def i(self):\n"
+                "        return None\n"
+                "\n"
+                "    def get_remote(self):\n"
+                "        return service.bool()\n"
+                "\n"
+                "    def get_annotated(self) -> service.bool:\n"
+                "        return object()\n"
+                "\n"
+                "    def get_partial(self):\n"
+                "        if condition:\n"
+                "            return True\n"
+                "\n"
+                "    @property\n"
+                "    def p(self):\n"
+                "        return 1\n"
+                "\n"
+                "    @p.setter\n"
+                "    def p(self, value):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "naming"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("ShortClassName [priority 3] Avoid using short class names like e.", report)
+        self.assertIn("ShortVariable [priority 3] Avoid variables with short names like ab.", report)
+        self.assertNotIn("ShortVariable [priority 3] Avoid variables with short names like x.", report)
+        self.assertNotIn("ShortVariable [priority 3] Avoid variables with short names like y.", report)
+        self.assertIn("ShortMethodName [priority 3] Avoid using short method names like i().", report)
+        self.assertNotIn("ShortMethodName [priority 3] Avoid using short method names like p().", report)
+        self.assertNotIn("BooleanGetMethodName", report)
+
     def test_naming_rules_honor_configured_lengths_at_the_cli_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
