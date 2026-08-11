@@ -1125,6 +1125,267 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_class_metrics_scan_real_python_classes_with_configured_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "service.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "class Service:\n"
+                "    public_field: int = 1\n"
+                "    another_field = 2\n"
+                "    _private_field = 3\n"
+                "\n"
+                "    def get_value(self):\n"
+                "        return self.public_field\n"
+                "\n"
+                "    def work_one(self, value):\n"
+                "        if value:\n"
+                "            return value\n"
+                "        return 0\n"
+                "\n"
+                "    async def work_two(self, value):\n"
+                "        if value:\n"
+                "            return value\n"
+                "        return 0\n"
+                "\n"
+                "    class Nested:\n"
+                "        nested_field = 1\n"
+                "        def nested_work(self):\n"
+                "            return self.nested_field\n"
+                "\n"
+                "class ServiceProtocol(Protocol):\n"
+                "    protocol_field: int\n"
+                "    def contract(self) -> int: ...\n"
+                "\n"
+                "class AbstractService(ABC):\n"
+                "    @abstractmethod\n"
+                "    def contract(self) -> int:\n"
+                "        raise NotImplementedError\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="ExcessiveClassLength"><properties><property name="minimum" value="22" /></properties></rule>
+    <rule ref="ExcessivePublicCount"><properties><property name="minimum" value="5" /></properties></rule>
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="2" /></properties></rule>
+    <rule ref="TooManyMethods"><properties><property name="maxmethods" value="1" /></properties></rule>
+    <rule ref="TooManyPublicMethods"><properties><property name="maxmethods" value="1" /></properties></rule>
+    <rule ref="ExcessiveClassComplexity"><properties><property name="maximum" value="5" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn(
+            "ExcessiveClassLength [priority 3] The class Service has 22 lines of code. "
+            "Current threshold is set to 22. Avoid really long classes.",
+            report,
+        )
+        self.assertIn(
+            "ExcessivePublicCount [priority 3] The class Service has 5 public methods and attributes. "
+            "Consider reducing the number of public items to less than 5.",
+            report,
+        )
+        self.assertIn(
+            "TooManyFields [priority 3] The class Service has 3 fields. "
+            "Consider redesigning Service to keep the number of fields under 2.",
+            report,
+        )
+        self.assertIn(
+            "TooManyMethods [priority 3] The class Service has 2 non-getter- and setter-methods. "
+            "Consider refactoring Service to keep number of methods under 1.",
+            report,
+        )
+        self.assertIn(
+            "TooManyPublicMethods [priority 3] The class Service has 2 public methods. "
+            "Consider refactoring Service to keep number of public methods under 1.",
+            report,
+        )
+        self.assertIn(
+            "ExcessiveClassComplexity [priority 3] The class Service has an overall complexity of 5 "
+            "which is very high. The configured complexity threshold is 5.",
+            report,
+        )
+        self.assertNotIn("Nested has", report)
+        self.assertNotIn("ServiceProtocol has", report)
+        self.assertNotIn("AbstractService has an overall complexity", report)
+
+    def test_codesize_includes_all_ten_callable_and_class_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "clean.py"
+            source.write_text("class Service:\n    pass\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "codesize", "--verbose"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(
+            "Loaded rules: CyclomaticComplexity, NPathComplexity, ExcessiveMethodLength, "
+            "ExcessiveClassLength, ExcessiveParameterList, ExcessivePublicCount, TooManyFields, "
+            "TooManyMethods, TooManyPublicMethods, ExcessiveClassComplexity\n",
+            stderr.getvalue(),
+        )
+
+    def test_field_metrics_include_conventional_instance_attributes_without_static_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "model.py"
+            ruleset = temporary / "fields.xml"
+            source.write_text(
+                "class Model:\n"
+                "    declared: str\n"
+                "\n"
+                "    def __init__(self):\n"
+                "        self.active = True\n"
+                "        self._cache = {}\n"
+                "\n"
+                "    @staticmethod\n"
+                "    def configure(value):\n"
+                "        value.not_a_model_field = True\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="fields">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="2" /></properties></rule>
+    <rule ref="ExcessivePublicCount"><properties><property name="minimum" value="2" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("The class Model has 3 fields.", stdout.getvalue())
+        self.assertIn("The class Model has 3 public methods and attributes.", stdout.getvalue())
+
+    def test_codesize_reports_every_callable_and_class_rule_in_one_real_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "all_codesize_rules.py"
+            fields = "".join(f"    field_{index} = {index}\n" for index in range(45))
+            complex_methods = "".join(
+                f"    def work_{index}(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n"
+                + "".join(f"        if value_{branch}:\n            pass\n" for branch in range(9))
+                + ("        pass\n" * 90 if index == 0 else "")
+                for index in range(11)
+            )
+            private_methods = "".join(
+                f"    def _work_{index}(self):\n        return None\n" for index in range(15)
+            )
+            source.write_text(
+                "class Everything:\n"
+                + fields
+                + complex_methods
+                + private_methods
+                + "".join(f"    _filler_{index} = None\n" for index in range(650)),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        for rule_name in [
+            "CyclomaticComplexity",
+            "NPathComplexity",
+            "ExcessiveMethodLength",
+            "ExcessiveParameterList",
+            "ExcessiveClassLength",
+            "ExcessivePublicCount",
+            "TooManyFields",
+            "TooManyMethods",
+            "TooManyPublicMethods",
+            "ExcessiveClassComplexity",
+        ]:
+            self.assertIn(rule_name, stdout.getvalue())
+
+    def test_class_rule_default_boundaries_and_conventional_interfaces_are_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "boundary.py"
+            fields = "".join(f"    field_{index} = {index}\n" for index in range(15))
+            methods = "".join(
+                f"    def work_{index}(self):\n        return {index}\n" for index in range(10)
+            ) + "".join(f"    def _work_{index}(self):\n        return {index}\n" for index in range(15))
+            source.write_text(
+                "class Boundary:\n"
+                + fields
+                + methods
+                + "\nclass Interface(Protocol):\n"
+                + "    value: int\n"
+                + "    @overload\n"
+                + "    def parse(self, value: int) -> int: ...\n"
+                + "\nclass AbstractInterface(ABC):\n"
+                + "    @abstractmethod\n"
+                + "    def parse(self, value: int) -> int:\n"
+                + "        raise NotImplementedError\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_dataclass_fields_are_real_without_inventing_generated_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "generated.py"
+            ruleset = temporary / "generated.xml"
+            source.write_text(
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass\n"
+                "class Generated:\n"
+                "    first: int\n"
+                "    second: int\n"
+                "    third: int\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="generated">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="2" /></properties></rule>
+    <rule ref="TooManyMethods"><properties><property name="maxmethods" value="0" /></properties></rule>
+    <rule ref="TooManyPublicMethods"><properties><property name="maxmethods" value="0" /></properties></rule>
+    <rule ref="ExcessivePublicCount"><properties><property name="minimum" value="4" /></properties></rule>
+    <rule ref="ExcessiveClassComplexity"><properties><property name="maximum" value="1" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("TooManyFields [priority 3] The class Generated has 3 fields.", stdout.getvalue())
+        for rule_name in [
+            "TooManyMethods",
+            "TooManyPublicMethods",
+            "ExcessivePublicCount",
+            "ExcessiveClassComplexity",
+        ]:
+            self.assertNotIn(rule_name, stdout.getvalue())
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()

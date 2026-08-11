@@ -37,14 +37,50 @@ _CATALOG = {
         name="ExcessiveMethodLength",
         priority=3,
         properties={"minimum": "100"},
-    )
+    ),
+    "excessiveclasslength": LoadedRule(
+        name="ExcessiveClassLength",
+        priority=3,
+        properties={"minimum": "1000", "ignore-whitespace": "false"},
+    ),
+    "excessivepubliccount": LoadedRule(
+        name="ExcessivePublicCount",
+        priority=3,
+        properties={"minimum": "45"},
+    ),
+    "toomanyfields": LoadedRule(
+        name="TooManyFields",
+        priority=3,
+        properties={"maxfields": "15"},
+    ),
+    "toomanymethods": LoadedRule(
+        name="TooManyMethods",
+        priority=3,
+        properties={"maxmethods": "25", "ignorepattern": "(^(set|get|is|has|with))i"},
+    ),
+    "toomanypublicmethods": LoadedRule(
+        name="TooManyPublicMethods",
+        priority=3,
+        properties={"maxmethods": "10", "ignorepattern": "(^(set|get|is|has|with))i"},
+    ),
+    "excessiveclasscomplexity": LoadedRule(
+        name="ExcessiveClassComplexity",
+        priority=3,
+        properties={"maximum": "50"},
+    ),
 }
 _BUILT_IN_RULESETS = {
     "codesize": (
         "CyclomaticComplexity",
         "NPathComplexity",
         "ExcessiveMethodLength",
+        "ExcessiveClassLength",
         "ExcessiveParameterList",
+        "ExcessivePublicCount",
+        "TooManyFields",
+        "TooManyMethods",
+        "TooManyPublicMethods",
+        "ExcessiveClassComplexity",
     )
 }
 
