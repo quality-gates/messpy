@@ -128,6 +128,15 @@ _CATALOG = {
         priority=3,
         properties={},
     ),
+    "booleanargumentflag": LoadedRule(
+        name="BooleanArgumentFlag", priority=1, properties={"exceptions": "", "ignorepattern": ""}
+    ),
+    "elseexpression": LoadedRule(name="ElseExpression", priority=1, properties={}),
+    "staticaccess": LoadedRule(
+        name="StaticAccess", priority=1, properties={"exceptions": "", "ignorepattern": ""}
+    ),
+    "ifstatementassignment": LoadedRule(name="IfStatementAssignment", priority=1, properties={}),
+    "duplicatedarraykey": LoadedRule(name="DuplicatedArrayKey", priority=2, properties={}),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -145,6 +154,24 @@ _BUILT_IN_RULESETS = {
         "UnusedLocalVariable",
         "UnusedPrivateMethod",
         "UnusedFormalParameter",
+    ),
+    "cleancode": (
+        "BooleanArgumentFlag",
+        "ElseExpression",
+        "StaticAccess",
+        "IfStatementAssignment",
+        "DuplicatedArrayKey",
+    ),
+    "python": (
+        "IfStatementAssignment",
+        "DuplicatedArrayKey",
+    ),
+    "opinionated": (
+        "BooleanArgumentFlag",
+        "ElseExpression",
+        "StaticAccess",
+        "IfStatementAssignment",
+        "DuplicatedArrayKey",
     ),
     "codesize": (
         "CyclomaticComplexity",
