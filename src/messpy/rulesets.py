@@ -137,6 +137,15 @@ _CATALOG = {
     ),
     "ifstatementassignment": LoadedRule(name="IfStatementAssignment", priority=1, properties={}),
     "duplicatedarraykey": LoadedRule(name="DuplicatedArrayKey", priority=2, properties={}),
+    "exitexpression": LoadedRule(name="ExitExpression", priority=1, properties={}),
+    "gotostatement": LoadedRule(name="GotoStatement", priority=1, properties={}),
+    "countinloopexpression": LoadedRule(name="CountInLoopExpression", priority=2, properties={}),
+    "developmentcodefragment": LoadedRule(
+        name="DevelopmentCodeFragment",
+        priority=2,
+        properties={"unwanted-functions": "", "markers": "TODO,FIXME,HACK"},
+    ),
+    "emptycatchblock": LoadedRule(name="EmptyCatchBlock", priority=2, properties={}),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -162,9 +171,18 @@ _BUILT_IN_RULESETS = {
         "IfStatementAssignment",
         "DuplicatedArrayKey",
     ),
+    "design": (
+        "ExitExpression",
+        "GotoStatement",
+        "CountInLoopExpression",
+        "DevelopmentCodeFragment",
+        "EmptyCatchBlock",
+    ),
     "python": (
         "IfStatementAssignment",
         "DuplicatedArrayKey",
+        "DevelopmentCodeFragment",
+        "EmptyCatchBlock",
     ),
     "opinionated": (
         "BooleanArgumentFlag",
@@ -172,6 +190,8 @@ _BUILT_IN_RULESETS = {
         "StaticAccess",
         "IfStatementAssignment",
         "DuplicatedArrayKey",
+        "ExitExpression",
+        "CountInLoopExpression",
     ),
     "codesize": (
         "CyclomaticComplexity",

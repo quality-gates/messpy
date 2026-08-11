@@ -45,6 +45,10 @@ ELSE_EXPRESSION_RULE_NAME = "ElseExpression"
 STATIC_ACCESS_RULE_NAME = "StaticAccess"
 IF_STATEMENT_ASSIGNMENT_RULE_NAME = "IfStatementAssignment"
 DUPLICATED_ARRAY_KEY_RULE_NAME = "DuplicatedArrayKey"
+EXIT_EXPRESSION_RULE_NAME = "ExitExpression"
+COUNT_IN_LOOP_EXPRESSION_RULE_NAME = "CountInLoopExpression"
+DEVELOPMENT_CODE_FRAGMENT_RULE_NAME = "DevelopmentCodeFragment"
+EMPTY_CATCH_BLOCK_RULE_NAME = "EmptyCatchBlock"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -840,7 +844,346 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_unused_private_field_findings(path, tree, rules),
         *_unused_private_method_findings(path, tree, rules),
         *_clean_code_findings(path, source, tree, rules),
+        *_design_findings(path, source, tree, rules),
     ]
+
+
+def _design_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    parents = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    contexts = {
+        id(callable_info.node): _clean_code_context(callable_info)
+        for callable_info in _clean_code_callables(tree)
+    }
+    bindings = _scope_bindings(tree)
+    return [
+        *_exit_expression_findings(path, tree, rules, parents, contexts, bindings),
+        *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
+        *_development_fragment_findings(path, source, tree, rules, parents, contexts, bindings),
+        *_empty_catch_findings(path, tree, rules, parents, contexts),
+    ]
+
+
+def _exit_expression_findings(
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+    bindings: dict[int, set[str]],
+) -> list[Finding]:
+    rule = _rule(rules, EXIT_EXPRESSION_RULE_NAME)
+    if rule is None:
+        return []
+    aliases = _imported_call_aliases(tree)
+    reported_scopes: set[int] = set()
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        original_name = _dotted_name(node.func)
+        name = aliases.get(original_name, original_name)
+        if name not in {"sys.exit", "os._exit", "builtins.exit", "builtins.quit", "exit", "quit"}:
+            continue
+        root_name = original_name.split(".", 1)[0]
+        if original_name != name and _is_function_shadowed(root_name, node, parents, bindings):
+            continue
+        if "." in original_name and (
+            _is_function_shadowed(root_name, node, parents, bindings)
+            or (root_name not in aliases and _is_shadowed(root_name, node, tree, parents, bindings))
+        ):
+            continue
+        if name in {"exit", "quit"} and _is_shadowed(name, node, tree, parents, bindings):
+            continue
+        scope, context = _design_scope(node, parents, contexts)
+        if id(scope) in reported_scopes:
+            continue
+        reported_scopes.add(id(scope))
+        findings.append(
+            Finding(
+                path,
+                node.lineno,
+                rule.name,
+                rule.priority,
+                f"The {context} contains an exit expression.",
+                context=context,
+            )
+        )
+    return findings
+
+
+def _count_in_loop_findings(
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+    bindings: dict[int, set[str]],
+) -> list[Finding]:
+    rule = _rule(rules, COUNT_IN_LOOP_EXPRESSION_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    for loop in ast.walk(tree):
+        if not isinstance(loop, ast.While):
+            continue
+        calls = _expression_calls(loop.test)
+        length_call = next(
+            (call for call in calls if isinstance(call.func, ast.Name) and call.func.id == "len"),
+            None,
+        )
+        if length_call is None or _is_shadowed("len", length_call, tree, parents, bindings):
+            continue
+        _, context = _design_scope(loop, parents, contexts)
+        findings.append(
+            Finding(
+                path,
+                length_call.lineno,
+                rule.name,
+                rule.priority,
+                "Avoid using len() in while loops.",
+                context=context,
+            )
+        )
+    return findings
+
+
+def _development_fragment_findings(
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+    bindings: dict[int, set[str]],
+) -> list[Finding]:
+    rule = _rule(rules, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME)
+    if rule is None:
+        return []
+    unwanted = {"breakpoint", "pdb.set_trace"} | {
+        name.strip()
+        for name in rule.properties.get("unwanted-functions", "").split(",")
+        if name.strip()
+    }
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _dotted_name(node.func)
+        if name not in unwanted or (
+            name == "breakpoint" and _is_shadowed(name, node, tree, parents, bindings)
+        ):
+            continue
+        _, context = _design_scope(node, parents, contexts)
+        subject = "The module" if context == "module" else f"The {context}"
+        findings.append(
+            Finding(
+                path,
+                node.lineno,
+                rule.name,
+                rule.priority,
+                f"{subject} calls the typical debug function {name}() which is mostly only used during development.",
+                context=context,
+            )
+        )
+    markers = [
+        marker.strip().casefold()
+        for marker in rule.properties.get("markers", "TODO,FIXME,HACK").split(",")
+        if marker.strip()
+    ]
+    if markers:
+        for item in tokenize.generate_tokens(StringIO(source).readline):
+            if item.type == token.COMMENT and any(marker in item.string.casefold() for marker in markers):
+                findings.append(
+                    Finding(
+                        path,
+                        item.start[0],
+                        rule.name,
+                        rule.priority,
+                        "Development-only marker found in production source.",
+                        context="module",
+                    )
+                )
+    return findings
+
+
+def _empty_catch_findings(
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+) -> list[Finding]:
+    rule = _rule(rules, EMPTY_CATCH_BLOCK_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    for handler in ast.walk(tree):
+        if not isinstance(handler, ast.ExceptHandler) or not _is_empty_handler(handler):
+            continue
+        _, context = _design_scope(handler, parents, contexts)
+        findings.append(
+            Finding(
+                path,
+                handler.lineno,
+                rule.name,
+                rule.priority,
+                f"Avoid using empty exception handlers in {context}.",
+                context=context,
+            )
+        )
+    return findings
+
+
+def _is_empty_handler(handler: ast.ExceptHandler) -> bool:
+    if len(handler.body) != 1:
+        return False
+    statement = handler.body[0]
+    return isinstance(statement, ast.Pass) or (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is Ellipsis
+    )
+
+
+def _design_scope(
+    node: ast.AST, parents: dict[int, ast.AST], contexts: dict[int, str]
+) -> tuple[ast.AST, str]:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return current, contexts.get(id(current), "<lambda>")
+    return current, "module"
+
+
+def _expression_calls(node: ast.expr) -> list[ast.Call]:
+    collector = _ExpressionCallCollector()
+    collector.visit(node)
+    return collector.calls
+
+
+class _ExpressionCallCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.calls: list[ast.Call] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        self.calls.append(node)
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _dotted_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _dotted_name(node.value)
+        return f"{parent}.{node.attr}" if parent else ""
+    return ""
+
+
+def _imported_call_aliases(tree: ast.Module) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            for imported in statement.names:
+                if imported.name in {"sys", "os", "builtins"}:
+                    aliases[imported.asname or imported.name] = imported.name
+        elif isinstance(statement, ast.ImportFrom) and statement.module in {"sys", "os", "builtins"}:
+            for imported in statement.names:
+                aliases[imported.asname or imported.name] = f"{statement.module}.{imported.name}"
+    expanded = dict(aliases)
+    for alias, target in aliases.items():
+        for method in {"exit", "quit", "_exit"}:
+            expanded[f"{alias}.{method}"] = f"{target}.{method}"
+    return expanded
+
+
+def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
+    scopes: list[ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda] = [tree]
+    scopes.extend(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+    )
+    return {id(scope): _direct_bindings(scope) for scope in scopes}
+
+
+def _direct_bindings(
+    scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> set[str]:
+    collector = _ScopeBindingCollector()
+    if not isinstance(scope, ast.Module):
+        collector.names.update(argument.arg for argument in _arguments(scope.args))
+    statements = scope.body if not isinstance(scope, ast.Lambda) else [scope.body]
+    for statement in statements:
+        collector.visit(statement)
+    return collector.names
+
+
+class _ScopeBindingCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(imported.asname or imported.name.split(".", 1)[0] for imported in node.names)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.names.update(imported.asname or imported.name for imported in node.names)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+
+def _is_function_shadowed(
+    name: str,
+    node: ast.AST,
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> bool:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if name in bindings[id(current)]:
+                return True
+    return False
+
+
+def _is_shadowed(
+    name: str,
+    node: ast.AST,
+    tree: ast.Module,
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> bool:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if name in bindings[id(current)]:
+                return True
+    return name in bindings[id(tree)]
 
 
 def _clean_code_findings(

@@ -2253,6 +2253,154 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertEqual("", errors)
             self.assertIn(rule_name, report)
 
+    def test_design_finds_direct_python_hazards_and_keeps_idioms_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "design_hazards.py"
+            source.write_text(
+                "import contextlib\n"
+                "import sys\n"
+                "\n"
+                "# TODO: remove diagnostic path\n"
+                "def stop(values):\n"
+                "    while len(values):\n"
+                "        breakpoint()\n"
+                "        sys.exit(1)\n"
+                "\n"
+                "def placeholders():\n"
+                "    try:\n"
+                "        work()\n"
+                "    except LookupError:\n"
+                "        pass\n"
+                "    try:\n"
+                "        work()\n"
+                "    except RuntimeError:\n"
+                "        ...\n"
+                "    try:\n"
+                "        work()\n"
+                "    except OSError:\n"
+                "        logger.warning(\"ignored\")\n"
+                "    with contextlib.suppress(FileNotFoundError):\n"
+                "        work()\n"
+                "\n"
+                "import sys as platform\n"
+                "from sys import exit as stop_alias\n"
+                "\n"
+                "def rebound_alias(platform):\n"
+                "    platform.exit()\n"
+                "\n"
+                "def rebound_function_alias(stop_alias):\n"
+                "    stop_alias()\n"
+                "\n"
+                "def shadowed(exit, breakpoint, len, values):\n"
+                "    exit()\n"
+                "    breakpoint()\n"
+                "    while len(values):\n"
+                "        break\n"
+                "\n"
+                "def idioms(values):\n"
+                "    size = len(values)\n"
+                "    while size:\n"
+                "        size -= 1\n"
+                "    for index in range(len(values)):\n"
+                "        print(index)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "design"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertEqual(1, report.count("ExitExpression"))
+        self.assertEqual(1, report.count("CountInLoopExpression"))
+        self.assertEqual(2, report.count("DevelopmentCodeFragment"))
+        self.assertEqual(2, report.count("EmptyCatchBlock"))
+        self.assertNotIn("GotoStatement", report)
+        self.assertNotIn("logger.warning", report)
+
+    def test_design_honors_custom_markers_calls_and_priorities_without_importing_target_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "configured_design.py"
+            ruleset = directory / "configured-design.xml"
+            source.write_text(
+                "# REVIEW before release\n"
+                "def inspect(items):\n"
+                "    acme.trace(items)\n"
+                "    ACME.TRACE(items)\n"
+                "    while len(items):\n"
+                "        sys.exit()\n"
+                "    try:\n"
+                "        consume(items)\n"
+                "    except Exception:\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset><rule ref=\"design\"><priority>4</priority><properties>"
+                "<property name=\"unwanted-functions\" value=\"acme.trace\"/>"
+                "<property name=\"markers\" value=\"REVIEW\"/>"
+                "</properties></rule></ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        for rule_name in [
+            "ExitExpression",
+            "CountInLoopExpression",
+            "DevelopmentCodeFragment",
+            "EmptyCatchBlock",
+        ]:
+            self.assertIn(f"{rule_name} [priority 4]", report)
+        self.assertEqual(2, report.count("DevelopmentCodeFragment"))
+        self.assertNotIn("TODO", report)
+
+    def test_design_policies_keep_goto_loadable_and_strict_rules_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "policy_design.py"
+            goto_ruleset = directory / "goto.xml"
+            source.write_text(
+                "def stop(items):\n"
+                "    while len(items):\n"
+                "        sys.exit()\n",
+                encoding="utf-8",
+            )
+            goto_ruleset.write_text(
+                "<ruleset><rule ref=\"GotoStatement\"/></ruleset>", encoding="utf-8"
+            )
+            python_stdout = StringIO()
+            python_stderr = StringIO()
+            python_status = run([str(source), "text", "python"], python_stdout, python_stderr)
+            selected = []
+            for rule_name in ["ExitExpression", "CountInLoopExpression"]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(source), "text", "opinionated", "--only", rule_name], stdout, stderr
+                )
+                selected.append((rule_name, status, stdout.getvalue(), stderr.getvalue()))
+            goto_stdout = StringIO()
+            goto_stderr = StringIO()
+            goto_status = run(
+                [str(source), "text", str(goto_ruleset)], goto_stdout, goto_stderr
+            )
+
+        self.assertEqual((0, "", ""), (python_status, python_stdout.getvalue(), python_stderr.getvalue()))
+        for rule_name, status, report, errors in selected:
+            self.assertEqual(2, status)
+            self.assertEqual("", errors)
+            self.assertIn(rule_name, report)
+        self.assertEqual((0, "", ""), (goto_status, goto_stdout.getvalue(), goto_stderr.getvalue()))
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
