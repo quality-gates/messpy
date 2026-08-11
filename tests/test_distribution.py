@@ -166,7 +166,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertNotIn(test_module.as_posix(), ignore_tests_result.stdout)
         self.assertEqual(2, custom_ruleset_result.returncode)
         self.assertIn("ExcessiveMethodLength [priority 2]", custom_ruleset_result.stdout)
-        self.assertIn("The configured limit is 3.", custom_ruleset_result.stdout)
+        self.assertIn("Current threshold is set to 3. Avoid really long methods.", custom_ruleset_result.stdout)
         for report_format, result in public_report_results.items():
             with self.subTest(report_format=report_format):
                 self.assertEqual(1, result.returncode)

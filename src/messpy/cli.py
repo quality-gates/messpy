@@ -947,7 +947,10 @@ def _npath_expression(node: ast.AST) -> int:
         return _npath_comprehension(node.generators)
     if isinstance(node, ast.Lambda):
         return 1
-    return 1
+    complexity = 1
+    for child in ast.iter_child_nodes(node):
+        complexity *= _npath_expression(child)
+    return complexity
 
 
 def _npath_comprehension(generators: Sequence[ast.comprehension]) -> int:
@@ -1017,10 +1020,7 @@ class _CallableCollector:
             return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             kind = "method" if in_class_body else "function"
-            receiver_count = int(kind == "method" and not _is_static_method(node) and _has_parameter(node.args))
-            self.callables.append(
-                CallableInfo(node, node.name, kind, _parameter_count(node.args) - receiver_count)
-            )
+            self.callables.append(CallableInfo(node, node.name, kind, _parameter_count(node.args)))
             for statement in node.body:
                 self.visit_statement(statement, in_class_body=False)
             return
@@ -1034,14 +1034,6 @@ class _CallableCollector:
             for node in ast.walk(tree)
             if isinstance(node, ast.Lambda)
         )
-
-
-def _is_static_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(isinstance(decorator, ast.Name) and decorator.id == "staticmethod" for decorator in node.decorator_list)
-
-
-def _has_parameter(arguments: ast.arguments) -> bool:
-    return bool(arguments.posonlyargs or arguments.args)
 
 
 def _excessive_method_length_findings(
@@ -1061,8 +1053,8 @@ def _excessive_method_length_findings(
         if line_count < method_length_limit:
             continue
         message = (
-            f"The method {callable_info.name} has {line_count} lines of code. "
-            f"The configured limit is {method_length_limit}."
+            f"The {callable_info.kind} {callable_info.name}() has {line_count} lines of code. "
+            f"Current threshold is set to {method_length_limit}. Avoid really long methods."
         )
         findings.append(
             Finding(

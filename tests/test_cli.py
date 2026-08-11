@@ -250,8 +250,8 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual(
             "tests/fixtures/long_function.py:1: ExcessiveMethodLength "
-            "[priority 3] The method too_long has 101 lines of code. "
-            "The configured limit is 100.\n",
+            "[priority 3] The function too_long() has 101 lines of code. "
+            "Current threshold is set to 100. Avoid really long methods.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())
@@ -275,7 +275,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                         "column": 1,
                         "ruleName": "ExcessiveMethodLength",
                         "priority": 3,
-                        "message": "The method too_long has 101 lines of code. The configured limit is 100.",
+                        "message": "The function too_long() has 101 lines of code. Current threshold is set to 100. Avoid really long methods.",
                         "context": "too_long",
                         "suppressed": False,
                     }
@@ -341,7 +341,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             (
                 f"{finding_source.resolve().as_posix()}:1:1:ExcessiveMethodLength:"
-                "The method too_long has 101 lines of code. The configured limit is 100."
+                "The function too_long() has 101 lines of code. Current threshold is set to 100. Avoid really long methods."
             ).encode("utf-8").hex(),
             gitlab[0]["fingerprint"],
         )
@@ -525,9 +525,12 @@ class CommandAcceptanceTests(unittest.TestCase):
             "malformed_region",
             "malformed_next_line",
         ]:
-            self.assertIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+            self.assertIn(
+                f"The function {name}() has 4 lines of code. Current threshold is set to 3. Avoid really long methods.",
+                stdout.getvalue(),
+            )
         for name in ["outer", "nested", "outer_still_active", "partially_enabled"]:
-            self.assertNotIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+            self.assertNotIn(f"The function {name}() has 4 lines of code.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
     def test_malformed_source_reports_an_error_without_hiding_findings(self) -> None:
@@ -712,8 +715,8 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual(
             f"{source.resolve().as_posix()}:1: ExcessiveMethodLength "
-            "[priority 2] The method short has 4 lines of code. "
-            "The configured limit is 3.\n",
+            "[priority 2] The function short() has 4 lines of code. "
+            "Current threshold is set to 3. Avoid really long methods.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())
@@ -890,6 +893,8 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "    def __init__(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
                 "    def method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
                 "    async def async_method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    @classmethod\n"
+                "    def class_method(cls, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
                 "    def receiver_only(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n        pass\n\n"
                 "    @staticmethod\n"
                 "    def static_method(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
@@ -958,22 +963,75 @@ class CommandAcceptanceTests(unittest.TestCase):
             "The configured NPath complexity threshold is 1728.",
             report,
         )
-        self.assertIn("The method exact_length has 3 lines of code. The configured limit is 3.", report)
-        for name in ["function", "async_function", "__init__", "method", "async_method", "static_method", "<lambda>"]:
-            self.assertIn(f"ExcessiveParameterList [priority 3] The", report)
-            self.assertIn(name, report)
-        self.assertNotIn("receiver_only has", report)
+        self.assertIn(
+            "The function exact_length() has 3 lines of code. Current threshold is set to 3. Avoid really long methods.",
+            report,
+        )
+        for kind, name, parameter_count in [
+            ("function", "function", 10),
+            ("function", "async_function", 10),
+            ("method", "__init__", 11),
+            ("method", "method", 11),
+            ("method", "async_method", 11),
+            ("method", "class_method", 11),
+            ("method", "static_method", 10),
+            ("lambda", "<lambda>", 10),
+        ]:
+            self.assertIn(
+                f"ExcessiveParameterList [priority 3] The {kind} {name} has {parameter_count} parameters. "
+                "Consider reducing the number of parameters to less than 10.",
+                report,
+            )
+        self.assertIn(
+            "The method receiver_only has 10 parameters. Consider reducing the number of parameters to less than 10.",
+            report,
+        )
         self.assertNotIn("annotated has", report)
         self.assertEqual(2, parameter_status)
         self.assertEqual("", parameter_stderr.getvalue())
         self.assertIn(
-            "The method parameter_forms has 5 parameters. Consider reducing the number of parameters to less than 5.",
+            "The method parameter_forms has 6 parameters. Consider reducing the number of parameters to less than 5.",
             parameter_report,
         )
         self.assertEqual(2, lambda_status)
         self.assertEqual("", lambda_stderr.getvalue())
         self.assertIn("The lambda <lambda>() has a Cyclomatic Complexity of 2.", lambda_report)
         self.assertIn("The lambda <lambda>() has an NPath complexity of 3.", lambda_report)
+
+    def test_phpmd_2_15_0_codesize_reference_keeps_callable_messages_and_priorities_stable(self) -> None:
+        reference = json.loads((FIXTURES / "phpmd_2_15_0_codesize.json").read_text(encoding="utf-8"))
+        self.assertEqual("2.15.0", reference["version"])
+        self.assertTrue((FIXTURES / reference["php_fixture"]).is_file())
+        python_fixture = FIXTURES / reference["python_fixture"]
+        self.assertTrue(python_fixture.is_file())
+
+        reports: dict[str, str] = {}
+        for rule_name, source in [
+            ("CyclomaticComplexity", python_fixture),
+            ("NPathComplexity", python_fixture),
+            ("ExcessiveParameterList", python_fixture),
+            ("ExcessiveMethodLength", FIXTURES / "long_function.py"),
+        ]:
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", rule_name], stdout, stderr)
+            self.assertEqual(2, status, rule_name)
+            self.assertEqual("", stderr.getvalue(), rule_name)
+            reports[rule_name] = stdout.getvalue()
+
+        expected_messages = {
+            "CyclomaticComplexity": "The function decision_flow() has a Cyclomatic Complexity of 10. "
+            "The configured cyclomatic complexity threshold is 10.",
+            "NPathComplexity": "The function decision_flow() has an NPath complexity of 19683. "
+            "The configured NPath complexity threshold is 200.",
+            "ExcessiveParameterList": "The function decision_flow has 10 parameters. "
+            "Consider reducing the number of parameters to less than 10.",
+            "ExcessiveMethodLength": "The function too_long() has 101 lines of code. "
+            "Current threshold is set to 100. Avoid really long methods.",
+        }
+        for rule in reference["rules"]:
+            self.assertIn(f"{rule['name']} [priority {rule['priority']}]", reports[rule["name"]])
+            self.assertIn(expected_messages[rule["name"]], reports[rule["name"]])
 
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
@@ -1010,5 +1068,5 @@ def _finding_for(path: Path, name: str, line: int = 1) -> str:
     return (
         f"{path.resolve().as_posix()}:{line}: ExcessiveMethodLength "
         "[priority 3] "
-        f"The method {name} has 101 lines of code. The configured limit is 100."
+        f"The function {name}() has 101 lines of code. Current threshold is set to 100. Avoid really long methods."
     )

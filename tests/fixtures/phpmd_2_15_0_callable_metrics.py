@@ -1,0 +1,20 @@
+def decision_flow(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):
+    if first:
+        return 1
+    if second:
+        return 2
+    if third:
+        return 3
+    if fourth:
+        return 4
+    if fifth:
+        return 5
+    if sixth:
+        return 6
+    if seventh:
+        return 7
+    if eighth:
+        return 8
+    if ninth:
+        return 9
+    return 0
