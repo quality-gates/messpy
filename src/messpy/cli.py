@@ -22,6 +22,12 @@ METHOD_LENGTH_RULE_NAME = "ExcessiveMethodLength"
 CYCLOMATIC_COMPLEXITY_RULE_NAME = "CyclomaticComplexity"
 NPATH_COMPLEXITY_RULE_NAME = "NPathComplexity"
 EXCESSIVE_PARAMETER_LIST_RULE_NAME = "ExcessiveParameterList"
+EXCESSIVE_CLASS_LENGTH_RULE_NAME = "ExcessiveClassLength"
+EXCESSIVE_PUBLIC_COUNT_RULE_NAME = "ExcessivePublicCount"
+TOO_MANY_FIELDS_RULE_NAME = "TooManyFields"
+TOO_MANY_METHODS_RULE_NAME = "TooManyMethods"
+TOO_MANY_PUBLIC_METHODS_RULE_NAME = "TooManyPublicMethods"
+EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME = "ExcessiveClassComplexity"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -139,6 +145,14 @@ class CallableInfo:
     name: str
     kind: str
     parameter_count: int
+
+
+@dataclass(frozen=True)
+class ClassInfo:
+    node: ast.ClassDef
+    name: str
+    fields: tuple[str, ...]
+    methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -404,9 +418,7 @@ def _analyze(
         except (OSError, UnicodeError) as error:
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
-        findings.extend(
-            _apply_suppressions(source, _callable_findings(source_file, tree, rules))
-        )
+        findings.extend(_apply_suppressions(source, _findings(source_file, source, tree, rules)))
     return findings, processing_errors
 
 
@@ -766,12 +778,13 @@ def _exit_status(
     return 0
 
 
-def _callable_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     return [
         *_cyclomatic_complexity_findings(path, tree, rules),
         *_npath_complexity_findings(path, tree, rules),
         *_excessive_method_length_findings(path, tree, rules),
         *_excessive_parameter_list_findings(path, tree, rules),
+        *_class_findings(path, source, tree, rules),
     ]
 
 
@@ -1070,6 +1083,316 @@ def _excessive_method_length_findings(
             )
         )
     return findings
+
+
+def _class_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    findings: list[Finding] = []
+    for class_info in _classes(tree):
+        findings.extend(_excessive_class_length_findings(path, source, class_info, rules))
+        findings.extend(_excessive_public_count_findings(path, class_info, rules))
+        findings.extend(_too_many_fields_findings(path, class_info, rules))
+        findings.extend(_too_many_methods_findings(path, class_info, rules, public_only=False))
+        findings.extend(_too_many_methods_findings(path, class_info, rules, public_only=True))
+        findings.extend(_excessive_class_complexity_findings(path, class_info, rules))
+    return findings
+
+
+def _excessive_class_length_findings(
+    path: Path, source: str, class_info: ClassInfo, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, EXCESSIVE_CLASS_LENGTH_RULE_NAME)
+    if rule is None:
+        return []
+    threshold = _integer_property(rule, "minimum")
+    ignore_whitespace = _boolean_property(rule, "ignore-whitespace")
+    start = class_info.node.lineno
+    end = class_info.node.end_lineno or start
+    lines = source.splitlines()[start - 1 : end]
+    line_count = sum(bool(line.strip()) for line in lines) if ignore_whitespace else len(lines)
+    if line_count < threshold:
+        return []
+    return [
+        _class_finding(
+            path,
+            class_info,
+            rule,
+            f"The class {class_info.name} has {line_count} lines of code. "
+            f"Current threshold is set to {threshold}. Avoid really long classes.",
+        )
+    ]
+
+
+def _excessive_public_count_findings(
+    path: Path, class_info: ClassInfo, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, EXCESSIVE_PUBLIC_COUNT_RULE_NAME)
+    if rule is None:
+        return []
+    threshold = _integer_property(rule, "minimum")
+    count = sum(_is_public(name) for name in class_info.fields) + sum(
+        _is_public(method.name) for method in class_info.methods if not _is_contract_method(method)
+    )
+    if count < threshold:
+        return []
+    return [
+        _class_finding(
+            path,
+            class_info,
+            rule,
+            f"The class {class_info.name} has {count} public methods and attributes. "
+            f"Consider reducing the number of public items to less than {threshold}.",
+        )
+    ]
+
+
+def _too_many_fields_findings(
+    path: Path, class_info: ClassInfo, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, TOO_MANY_FIELDS_RULE_NAME)
+    if rule is None:
+        return []
+    threshold = _integer_property(rule, "maxfields")
+    count = len(class_info.fields)
+    if count <= threshold:
+        return []
+    return [
+        _class_finding(
+            path,
+            class_info,
+            rule,
+            f"The class {class_info.name} has {count} fields. Consider redesigning {class_info.name} "
+            f"to keep the number of fields under {threshold}.",
+        )
+    ]
+
+
+def _too_many_methods_findings(
+    path: Path, class_info: ClassInfo, rules: Sequence[LoadedRule], public_only: bool
+) -> list[Finding]:
+    name = TOO_MANY_PUBLIC_METHODS_RULE_NAME if public_only else TOO_MANY_METHODS_RULE_NAME
+    rule = _rule(rules, name)
+    if rule is None:
+        return []
+    threshold = _integer_property(rule, "maxmethods")
+    ignore = _ignore_pattern(rule)
+    methods = [
+        method
+        for method in class_info.methods
+        if not _is_contract_method(method)
+        and not ignore.match(method.name)
+        and (not public_only or _is_public(method.name))
+    ]
+    count = len(methods)
+    if count <= threshold:
+        return []
+    if public_only:
+        message = (
+            f"The class {class_info.name} has {count} public methods. Consider refactoring {class_info.name} "
+            f"to keep number of public methods under {threshold}."
+        )
+    else:
+        message = (
+            f"The class {class_info.name} has {count} non-getter- and setter-methods. "
+            f"Consider refactoring {class_info.name} to keep number of methods under {threshold}."
+        )
+    return [_class_finding(path, class_info, rule, message)]
+
+
+def _excessive_class_complexity_findings(
+    path: Path, class_info: ClassInfo, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME)
+    if rule is None:
+        return []
+    threshold = _integer_property(rule, "maximum")
+    complexity = sum(_cyclomatic_complexity(method) for method in class_info.methods if not _is_contract_method(method))
+    if complexity < threshold:
+        return []
+    return [
+        _class_finding(
+            path,
+            class_info,
+            rule,
+            f"The class {class_info.name} has an overall complexity of {complexity} which is very high. "
+            f"The configured complexity threshold is {threshold}.",
+        )
+    ]
+
+
+def _classes(tree: ast.Module) -> list[ClassInfo]:
+    classes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or _is_protocol(node):
+            continue
+        methods = tuple(
+            statement
+            for statement in node.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+        fields = tuple(
+            dict.fromkeys(
+                [
+                    *(name for statement in node.body for name in _field_names(statement)),
+                    *(name for method in methods for name in _instance_field_names(method)),
+                ]
+            )
+        )
+        classes.append(ClassInfo(node, node.name, fields, methods))
+    return sorted(classes, key=lambda class_info: class_info.node.lineno)
+
+
+def _field_names(statement: ast.stmt) -> list[str]:
+    if isinstance(statement, ast.AnnAssign):
+        return _assigned_names(statement.target)
+    if isinstance(statement, ast.Assign):
+        return [name for target in statement.targets for name in _assigned_names(target)]
+    return []
+
+
+def _assigned_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [name for element in target.elts for name in _assigned_names(element)]
+    return []
+
+
+def _instance_field_names(method: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    receiver = _instance_receiver(method)
+    if receiver is None:
+        return []
+    collector = _InstanceFieldCollector(receiver)
+    for statement in method.body:
+        collector.visit(statement)
+    return collector.names
+
+
+def _instance_receiver(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    if _has_decorator(method, "staticmethod"):
+        return None
+    arguments = [*method.args.posonlyargs, *method.args.args]
+    if not arguments:
+        return None
+    receiver = arguments[0].arg
+    if receiver == "self" or (_has_decorator(method, "classmethod") and receiver == "cls"):
+        return receiver
+    return None
+
+
+class _InstanceFieldCollector(ast.NodeVisitor):
+    def __init__(self, receiver: str) -> None:
+        self.receiver = receiver
+        self.names: list[str] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            self._add_target(target)
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._add_target(node.target)
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._add_target(node.target)
+        self.generic_visit(node)
+
+    def _add_target(self, target: ast.AST) -> None:
+        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == self.receiver:
+            self.names.append(target.attr)
+
+
+def _is_protocol(node: ast.ClassDef) -> bool:
+    return any(
+        (isinstance(base, ast.Name) and base.id == "Protocol")
+        or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
+        for base in node.bases
+    )
+
+
+def _is_contract_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return _has_decorator(method, "overload") or _is_stub_body(method.body)
+
+
+def _has_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    return any(
+        (isinstance(decorator, ast.Name) and decorator.id == name)
+        or (isinstance(decorator, ast.Attribute) and decorator.attr == name)
+        for decorator in method.decorator_list
+    )
+
+
+def _is_stub_body(statements: Sequence[ast.stmt]) -> bool:
+    body = list(statements)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body.pop(0)
+    if not body:
+        return True
+    if all(isinstance(statement, ast.Pass) for statement in body):
+        return True
+    if len(body) == 1 and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        return body[0].value.value is Ellipsis
+    return len(body) == 1 and isinstance(body[0], ast.Raise) and _raises_not_implemented(body[0])
+
+
+def _raises_not_implemented(statement: ast.Raise) -> bool:
+    exception = statement.exc
+    if isinstance(exception, ast.Name):
+        return exception.id == "NotImplementedError"
+    return isinstance(exception, ast.Call) and isinstance(exception.func, ast.Name) and exception.func.id == "NotImplementedError"
+
+
+def _is_public(name: str) -> bool:
+    return not name.startswith("_")
+
+
+def _rule(rules: Sequence[LoadedRule], name: str) -> LoadedRule | None:
+    return next((candidate for candidate in rules if candidate.name == name), None)
+
+
+def _integer_property(rule: LoadedRule, property_name: str) -> int:
+    try:
+        return int(rule.properties[property_name])
+    except (KeyError, ValueError) as error:
+        raise RulesetError(f"{rule.name} property '{property_name}' must be an integer.") from error
+
+
+def _boolean_property(rule: LoadedRule, property_name: str) -> bool:
+    value = rule.properties.get(property_name, "false").casefold()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise RulesetError(f"{rule.name} property '{property_name}' must be true or false.")
+
+
+def _ignore_pattern(rule: LoadedRule) -> re.Pattern[str]:
+    pattern = rule.properties.get("ignorepattern", "")
+    flags = re.IGNORECASE if pattern.endswith(")i") else 0
+    if flags:
+        pattern = pattern[:-1]
+    try:
+        return re.compile(pattern, flags)
+    except re.error as error:
+        raise RulesetError(f"{rule.name} property 'ignorepattern' must be a valid regular expression.") from error
+
+
+def _class_finding(path: Path, class_info: ClassInfo, rule: LoadedRule, message: str) -> Finding:
+    return Finding(path, class_info.node.lineno, rule.name, rule.priority, message, context=class_info.name)
 
 
 def _unsuppressed(findings: Sequence[Finding]) -> list[Finding]:
