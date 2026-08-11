@@ -20,6 +20,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
             project = temporary / "project"
             application = project / "application.py"
             metrics = project / "metrics.py"
+            unused_module = project / "unused.py"
             test_module = project / "tests" / "test_application.py"
             ruleset = project / "team-policy.xml"
             test_module.parent.mkdir(parents=True)
@@ -39,6 +40,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             test_module.write_text(source, encoding="utf-8")
+            unused_module.write_text("def build():\n    discarded = 1\n", encoding="utf-8")
             ruleset.write_text(
                 """<ruleset name="team policy">
     <rule ref="rulesets/codesize.xml">
@@ -103,6 +105,12 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            unused_result = subprocess.run(
+                [executable, str(unused_module), "text", "unusedcode"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             ignore_tests_result = subprocess.run(
                 [executable, str(project), "text", "codesize", "--ignore-tests"],
                 capture_output=True,
@@ -159,6 +167,8 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertIn("ExcessiveMethodLength", finding_result.stdout)
         self.assertEqual(2, metrics_result.returncode)
         self.assertIn("CyclomaticComplexity", metrics_result.stdout)
+        self.assertEqual(2, unused_result.returncode)
+        self.assertIn("UnusedLocalVariable", unused_result.stdout)
         self.assertIn("NPathComplexity", metrics_result.stdout)
         self.assertIn("ExcessiveParameterList", metrics_result.stdout)
         self.assertEqual(2, ignore_tests_result.returncode)

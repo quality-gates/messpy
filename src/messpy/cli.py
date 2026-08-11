@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from html import escape as html_escape
 import json
 import re
+import symtable
 import sys
 import token
 import tokenize
@@ -35,6 +36,10 @@ LONG_VARIABLE_RULE_NAME = "LongVariable"
 SHORT_METHOD_NAME_RULE_NAME = "ShortMethodName"
 CONSTANT_NAMING_CONVENTIONS_RULE_NAME = "ConstantNamingConventions"
 BOOLEAN_GET_METHOD_NAME_RULE_NAME = "BooleanGetMethodName"
+UNUSED_LOCAL_VARIABLE_RULE_NAME = "UnusedLocalVariable"
+UNUSED_FORMAL_PARAMETER_RULE_NAME = "UnusedFormalParameter"
+UNUSED_PRIVATE_FIELD_RULE_NAME = "UnusedPrivateField"
+UNUSED_PRIVATE_METHOD_RULE_NAME = "UnusedPrivateMethod"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -173,6 +178,19 @@ class NamingTarget:
 class NamingCallable:
     node: ast.FunctionDef | ast.AsyncFunctionDef
     role: str
+
+
+@dataclass(frozen=True)
+class ScopeUsage:
+    used_names: frozenset[str]
+    free_names: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PrivateMemberUsage:
+    accessed_names: frozenset[str]
+    exported_names: frozenset[str]
+    requires_conservative_handling: bool
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -806,7 +824,471 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_excessive_parameter_list_findings(path, tree, rules),
         *_class_findings(path, source, tree, rules),
         *_naming_findings(path, tree, rules),
+        *_unused_local_variable_findings(path, source, tree, rules),
+        *_unused_formal_parameter_findings(path, source, tree, rules),
+        *_unused_private_field_findings(path, tree, rules),
+        *_unused_private_method_findings(path, tree, rules),
     ]
+
+
+def _unused_local_variable_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, UNUSED_LOCAL_VARIABLE_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    protocol_method_ids = _protocol_method_ids(tree)
+    for node, table, used_names in _function_scopes(source, tree):
+        if _is_conservative_callable(node, id(node) in protocol_method_ids):
+            continue
+        bindings = _FunctionLocalBindings()
+        if isinstance(node, ast.Lambda):
+            bindings.visit(node.body)
+        else:
+            for statement in node.body:
+                bindings.visit(statement)
+        reported: set[str] = set()
+        for target in bindings.targets:
+            symbol = table.lookup(target.id)
+            if (
+                target.id.startswith("_")
+                or target.id in used_names
+                or not symbol.is_local()
+                or symbol.is_parameter()
+                or target.id in reported
+            ):
+                continue
+            reported.add(target.id)
+            findings.append(
+                Finding(
+                    path,
+                    target.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid unused local variables such as '{target.id}'.",
+                    context=target.id,
+                )
+            )
+    for node, table in _comprehension_scopes(source, tree):
+        reported: set[str] = set()
+        for generator in node.generators:
+            for target in _target_names(generator.target):
+                symbol = table.lookup(target.id)
+                if (
+                    target.id.startswith("_")
+                    or symbol.is_referenced()
+                    or not symbol.is_local()
+                    or target.id in reported
+                ):
+                    continue
+                reported.add(target.id)
+                findings.append(
+                    Finding(
+                        path,
+                        target.lineno,
+                        rule.name,
+                        rule.priority,
+                        f"Avoid unused local variables such as '{target.id}'.",
+                        context=target.id,
+                    )
+                )
+    return findings
+
+
+def _unused_formal_parameter_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, UNUSED_FORMAL_PARAMETER_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    protocol_method_ids = _protocol_method_ids(tree)
+    for node, table, used_names in _function_scopes(source, tree):
+        if _is_conservative_callable(node, id(node) in protocol_method_ids):
+            continue
+        for parameter in _arguments(node.args):
+            symbol = table.lookup(parameter.arg)
+            if (
+                parameter.arg in {"self", "cls"}
+                or parameter.arg.startswith("_")
+                or parameter.arg in used_names
+                or not symbol.is_parameter()
+            ):
+                continue
+            findings.append(
+                Finding(
+                    path,
+                    parameter.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid unused parameters such as '{parameter.arg}'.",
+                    context=parameter.arg,
+                )
+            )
+    return findings
+
+
+def _is_conservative_callable(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, is_protocol_method: bool
+) -> bool:
+    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+        is_protocol_method or bool(node.decorator_list) or _is_contract_method(node)
+    )
+
+
+def _protocol_method_ids(tree: ast.Module) -> set[int]:
+    protocol_names = _protocol_base_names(tree)
+    return {
+        id(method)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and _is_protocol(node, protocol_names)
+        for method in node.body
+        if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _function_scopes(
+    source: str, tree: ast.Module
+) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]]:
+    tables: dict[tuple[str, int], symtable.SymbolTable] = {}
+    _collect_function_tables(symtable.symtable(source, "<source>", "exec"), tables)
+    scopes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
+        table = tables.get((name, node.lineno))
+        if table is not None:
+            scopes.append((node, table, _scope_usage(table).used_names))
+    return scopes
+
+
+def _comprehension_scopes(
+    source: str, tree: ast.Module
+) -> list[tuple[ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp, symtable.SymbolTable]]:
+    tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]] = defaultdict(list)
+    _collect_comprehension_tables(symtable.symtable(source, "<source>", "exec"), tables)
+    names = {
+        ast.ListComp: "listcomp",
+        ast.SetComp: "setcomp",
+        ast.DictComp: "dictcomp",
+        ast.GeneratorExp: "genexpr",
+    }
+    scopes = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            continue
+        candidates = tables[(names[type(node)], node.lineno)]
+        if candidates:
+            scopes.append((node, candidates.pop(0)))
+    return scopes
+
+
+def _collect_comprehension_tables(
+    table: symtable.SymbolTable, tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]]
+) -> None:
+    if table.get_type() == "function" and table.get_name() in {"listcomp", "setcomp", "dictcomp", "genexpr"}:
+        tables[(table.get_name(), table.get_lineno())].append(table)
+    for child in table.get_children():
+        _collect_comprehension_tables(child, tables)
+
+
+def _collect_function_tables(
+    table: symtable.SymbolTable, tables: dict[tuple[str, int], symtable.SymbolTable]
+) -> None:
+    if table.get_type() == "function":
+        tables[(table.get_name(), table.get_lineno())] = table
+    for child in table.get_children():
+        _collect_function_tables(child, tables)
+
+
+def _scope_usage(table: symtable.SymbolTable) -> ScopeUsage:
+    local_names = {name for name in table.get_identifiers() if table.lookup(name).is_local()}
+    used_names = {name for name in table.get_identifiers() if table.lookup(name).is_referenced()}
+    free_names = {name for name in table.get_identifiers() if table.lookup(name).is_free()}
+    for child in table.get_children():
+        child_usage = _scope_usage(child)
+        captured = child_usage.free_names & local_names
+        used_names.update(captured)
+        free_names.update(child_usage.free_names - captured)
+    return ScopeUsage(frozenset(used_names), frozenset(free_names))
+
+
+def _unused_private_field_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, UNUSED_PRIVATE_FIELD_RULE_NAME)
+    if rule is None:
+        return []
+    usage = _private_member_usage(tree)
+    if usage.requires_conservative_handling:
+        return []
+    findings: list[Finding] = []
+    dataclass_names = _dataclass_decorator_names(tree)
+    for class_info in _classes(tree):
+        if _is_dataclass(class_info.node, dataclass_names):
+            continue
+        fields = _PrivateFieldCollector(class_info.node).collect()
+        for name, line in fields.items():
+            if name in usage.accessed_names or name in usage.exported_names:
+                continue
+            findings.append(
+                Finding(
+                    path,
+                    line,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid unused private fields such as '{name}'.",
+                    context=name,
+                )
+            )
+    return findings
+
+
+def _unused_private_method_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, UNUSED_PRIVATE_METHOD_RULE_NAME)
+    if rule is None:
+        return []
+    usage = _private_member_usage(tree)
+    if usage.requires_conservative_handling:
+        return []
+    findings: list[Finding] = []
+    for class_info in _classes(tree):
+        for method in class_info.methods:
+            if (
+                not _is_private_name(method.name)
+                or method.name in usage.accessed_names
+                or method.name in usage.exported_names
+                or method.decorator_list
+                or _is_contract_method(method)
+            ):
+                continue
+            findings.append(
+                Finding(
+                    path,
+                    method.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid unused private methods such as '{method.name}'.",
+                    context=method.name,
+                )
+            )
+    return findings
+
+
+class _PrivateFieldCollector(ast.NodeVisitor):
+    def __init__(self, node: ast.ClassDef) -> None:
+        self.node = node
+        self.fields: dict[str, int] = {}
+        self.loads: set[str] = set()
+        self.has_unknown_dynamic_access = False
+        self.receiver: str | None = None
+
+    def collect(self) -> dict[str, int]:
+        for statement in self.node.body:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                for target in targets:
+                    for name in _assigned_names(target):
+                        self._add_field(name, statement.lineno)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.receiver = _instance_receiver(statement)
+                for item in statement.body:
+                    self.visit(item)
+        if self.has_unknown_dynamic_access:
+            return {}
+        return {name: line for name, line in self.fields.items() if name not in self.loads}
+
+    def visit_Call(self, node: ast.Call) -> None:
+        names, has_unknown_access = _dynamic_attribute_accesses(node)
+        self.loads.update(names)
+        self.has_unknown_dynamic_access = self.has_unknown_dynamic_access or has_unknown_access
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self.loads.add(node.attr)
+        elif (
+            isinstance(node.ctx, ast.Store)
+            and self.receiver is not None
+            and isinstance(node.value, ast.Name)
+            and node.value.id == self.receiver
+        ):
+            self._add_field(node.attr, node.lineno)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def _add_field(self, name: str, line: int) -> None:
+        if _is_private_name(name):
+            self.fields.setdefault(name, line)
+
+
+def _is_private_name(name: str) -> bool:
+    return name.startswith("_") and not (name.startswith("__") and name.endswith("__"))
+
+
+def _dataclass_decorator_names(tree: ast.Module) -> set[str]:
+    return {
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom) and statement.module == "dataclasses"
+        for alias in statement.names
+        if alias.name == "dataclass"
+    } | {"dataclass"}
+
+
+def _is_dataclass(node: ast.ClassDef, decorator_names: set[str]) -> bool:
+    return any(
+        _called_name(decorator.func if isinstance(decorator, ast.Call) else decorator) in decorator_names | {"dataclass"}
+        for decorator in node.decorator_list
+    )
+
+
+def _private_member_usage(tree: ast.Module) -> PrivateMemberUsage:
+    dynamic_names, has_unknown_dynamic_access = _dynamic_attribute_accesses(tree, _dynamic_access_aliases(tree))
+    exported_names, has_unknown_exports = _exported_names(tree)
+    loads = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+    } | dynamic_names
+    return PrivateMemberUsage(
+        frozenset(loads),
+        frozenset(exported_names),
+        has_unknown_dynamic_access or has_unknown_exports,
+    )
+
+
+def _dynamic_access_aliases(tree: ast.Module) -> set[str]:
+    return {
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom) and statement.module == "builtins"
+        for alias in statement.names
+        if alias.name in {"getattr", "hasattr", "setattr", "delattr"}
+    }
+
+
+def _exported_names(tree: ast.Module) -> tuple[set[str], bool]:
+    names: set[str] = set()
+    has_unknown_exports = False
+    for statement in ast.walk(tree):
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        elif (
+            isinstance(statement, ast.AugAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == "__all__"
+        ):
+            has_unknown_exports = True
+            continue
+        else:
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
+            continue
+        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)) or not all(
+            isinstance(element, ast.Constant) and isinstance(element.value, str) for element in value.elts
+        ):
+            has_unknown_exports = True
+            continue
+        names.update(element.value for element in value.elts if isinstance(element, ast.Constant))
+    return names, has_unknown_exports
+
+
+def _dynamic_attribute_accesses(node: ast.AST, aliases: set[str] | None = None) -> tuple[set[str], bool]:
+    names: set[str] = set()
+    has_unknown_access = False
+    calls = [node] if isinstance(node, ast.Call) else ast.walk(node)
+    for candidate in calls:
+        if not isinstance(candidate, ast.Call):
+            continue
+        function_name = _called_name(candidate.func)
+        if function_name in {"getattr", "hasattr", "setattr", "delattr"} | (aliases or set()):
+            attribute_index = 1
+        elif function_name in {"__getattribute__", "__setattr__", "__delattr__"}:
+            attribute_index = 0
+        else:
+            continue
+        if len(candidate.args) <= attribute_index:
+            continue
+        attribute = candidate.args[attribute_index]
+        if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
+            names.add(attribute.value)
+        else:
+            has_unknown_access = True
+    return names, has_unknown_access
+
+
+class _FunctionLocalBindings(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.targets: list[ast.Name] = []
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Store):
+            self.targets.append(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, node.col_offset)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, node.col_offset)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, node.col_offset)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._add_named_expression_targets(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._add_named_expression_targets(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._add_named_expression_targets(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._add_named_expression_targets(node)
+
+    def _add_named_expression_targets(self, node: ast.AST) -> None:
+        for child in ast.walk(node):
+            if isinstance(child, ast.NamedExpr):
+                self.targets.extend(_target_names(child.target))
+
+    def _add_target(self, name: str, line: int, column: int) -> None:
+        self.targets.append(ast.Name(id=name, ctx=ast.Store(), lineno=line, col_offset=column))
 
 
 def _naming_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
@@ -1703,9 +2185,19 @@ class _InstanceFieldCollector(ast.NodeVisitor):
             self.names.append(target.attr)
 
 
-def _is_protocol(node: ast.ClassDef) -> bool:
+def _protocol_base_names(tree: ast.Module) -> set[str]:
+    return {
+        alias.asname or alias.name
+        for statement in tree.body
+        if isinstance(statement, ast.ImportFrom) and statement.module == "typing"
+        for alias in statement.names
+        if alias.name == "Protocol"
+    } | {"Protocol"}
+
+
+def _is_protocol(node: ast.ClassDef, protocol_names: set[str] | None = None) -> bool:
     return any(
-        (isinstance(base, ast.Name) and base.id == "Protocol")
+        (isinstance(base, ast.Name) and base.id in (protocol_names or {"Protocol"}))
         or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
         for base in node.bases
     )

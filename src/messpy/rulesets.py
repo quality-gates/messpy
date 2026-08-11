@@ -108,6 +108,26 @@ _CATALOG = {
         priority=3,
         properties={"maximum": "50"},
     ),
+    "unusedlocalvariable": LoadedRule(
+        name="UnusedLocalVariable",
+        priority=3,
+        properties={},
+    ),
+    "unusedformalparameter": LoadedRule(
+        name="UnusedFormalParameter",
+        priority=3,
+        properties={},
+    ),
+    "unusedprivatefield": LoadedRule(
+        name="UnusedPrivateField",
+        priority=3,
+        properties={},
+    ),
+    "unusedprivatemethod": LoadedRule(
+        name="UnusedPrivateMethod",
+        priority=3,
+        properties={},
+    ),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -119,6 +139,12 @@ _BUILT_IN_RULESETS = {
         "ConstantNamingConventions",
         "BooleanGetMethodName",
         "ConstructorWithNameAsEnclosingClass",
+    ),
+    "unusedcode": (
+        "UnusedPrivateField",
+        "UnusedLocalVariable",
+        "UnusedPrivateMethod",
+        "UnusedFormalParameter",
     ),
     "codesize": (
         "CyclomaticComplexity",

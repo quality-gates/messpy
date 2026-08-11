@@ -1578,6 +1578,433 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_unusedcode_reports_an_unused_function_local_through_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_local.py"
+            source.write_text(
+                "def build():\n"
+                "    discarded = 1\n"
+                "    return 0\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedLocalVariable [priority 3] Avoid unused local variables such as 'discarded'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_reports_an_unused_parameter_through_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_parameter.py"
+            source.write_text(
+                "def transform(value, unused):\n"
+                "    return value\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedFormalParameter [priority 3] Avoid unused parameters such as 'unused'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_reports_an_unused_private_field_through_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_field.py"
+            source.write_text(
+                "class Cache:\n"
+                "    def __init__(self):\n"
+                "        self._stale = 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_stale'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_reports_an_unused_private_method_through_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_method.py"
+            source.write_text(
+                "class Service:\n"
+                "    def _discarded(self):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_discarded'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_keeps_closure_and_comprehension_bindings_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "scopes.py"
+            source.write_text(
+                "def transform(values):\n"
+                "    captured = 1\n"
+                "    def read_capture():\n"
+                "        return captured\n"
+                "    return [item + read_capture() for item in values]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_reports_unused_exception_and_pattern_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "bindings.py"
+            source.write_text(
+                "def parse(value):\n"
+                "    try:\n"
+                "        raise ValueError\n"
+                "    except ValueError as error:\n"
+                "        match value:\n"
+                "            case {\"id\": item}:\n"
+                "                return value\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'error'.", report)
+        self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'item'.", report)
+
+    def test_unusedcode_honors_a_configured_rule_priority_at_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "configured_unused.py"
+            ruleset = temporary / "unused.xml"
+            source.write_text("def build():\n    discarded = 1\n", encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="unused">
+    <rule ref="UnusedLocalVariable"><priority>2</priority></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("UnusedLocalVariable [priority 2]", stdout.getvalue())
+
+    def test_unusedcode_keeps_generated_and_dynamic_private_members_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "conservative_members.py"
+            source.write_text(
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass\n"
+                "class Record:\n"
+                "    _stored: int\n"
+                "\n"
+                "class Dynamic:\n"
+                "    def __init__(self):\n"
+                "        self._cached = 1\n"
+                "\n"
+                "    def read(self, name):\n"
+                "        return getattr(self, name)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_keeps_global_and_nonlocal_bindings_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "global_nonlocal.py"
+            source.write_text(
+                "shared = 0\n"
+                "\n"
+                "def write_global():\n"
+                "    global shared\n"
+                "    shared = 1\n"
+                "\n"
+                "def outer():\n"
+                "    captured = 0\n"
+                "    def write_capture():\n"
+                "        nonlocal captured\n"
+                "        captured = 1\n"
+                "    return write_capture\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_keeps_contracts_and_decorated_members_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "contracts.py"
+            source.write_text(
+                "from abc import ABC, abstractmethod\n"
+                "from typing import Protocol, overload\n"
+                "\n"
+                "def decorator(function):\n"
+                "    return function\n"
+                "\n"
+                "class Contract(Protocol):\n"
+                "    @overload\n"
+                "    def _convert(self, value): ...\n"
+                "\n"
+                "class Abstract(ABC):\n"
+                "    @abstractmethod\n"
+                "    def _hook(self, value):\n"
+                "        raise NotImplementedError\n"
+                "\n"
+                "class Model:\n"
+                "    @property\n"
+                "    def _value(self):\n"
+                "        return 1\n"
+                "\n"
+                "    @decorator\n"
+                "    def _decorated(self, value):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_keeps_used_private_members_and_underscore_parameters_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "used_members.py"
+            source.write_text(
+                "class Cache:\n"
+                "    def __init__(self):\n"
+                "        self._value = 1\n"
+                "\n"
+                "    def read(self, _context):\n"
+                "        return self._read_value()\n"
+                "\n"
+                "    def _read_value(self):\n"
+                "        return self._value\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_keeps_externally_and_qualified_dynamically_used_members_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "external_members.py"
+            source.write_text(
+                "import builtins\n"
+                "from dataclasses import dataclass\n"
+                "\n"
+                "@dataclass(frozen=True)\n"
+                "class Record:\n"
+                "    _stored: int\n"
+                "\n"
+                "class Cache:\n"
+                "    def __init__(self):\n"
+                "        self._value = 1\n"
+                "\n"
+                "    def _refresh(self):\n"
+                "        return self._value\n"
+                "\n"
+                "cache = Cache()\n"
+                "cache._value\n"
+                "cache._refresh()\n"
+                "builtins.getattr(cache, name)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_honors_configured_priorities_for_every_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "configured_all_unused.py"
+            ruleset = temporary / "unused.xml"
+            source.write_text(
+                "def build(unused):\n"
+                "    discarded = 1\n"
+                "\n"
+                "class Cache:\n"
+                "    _stale = 1\n"
+                "\n"
+                "    def _discarded(self):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="unused">
+    <rule ref="UnusedLocalVariable"><priority>1</priority></rule>
+    <rule ref="UnusedFormalParameter"><priority>2</priority></rule>
+    <rule ref="UnusedPrivateField"><priority>4</priority></rule>
+    <rule ref="UnusedPrivateMethod"><priority>5</priority></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("UnusedLocalVariable [priority 1]", report)
+        self.assertIn("UnusedFormalParameter [priority 2]", report)
+        self.assertIn("UnusedPrivateField [priority 4]", report)
+        self.assertIn("UnusedPrivateMethod [priority 5]", report)
+
+    def test_unusedcode_reports_an_unused_comprehension_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_comprehension.py"
+            source.write_text(
+                "def build(values):\n"
+                "    return [0 for item in values]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedLocalVariable [priority 3] Avoid unused local variables such as 'item'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_keeps_exported_private_members_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "exported_member.py"
+            source.write_text(
+                "__all__ = (\"_helper\",)\n"
+                "\n"
+                "class Service:\n"
+                "    def _helper(self):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_handles_aliased_dataclasses_and_protocol_default_methods_conservatively(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "generated_contracts.py"
+            source.write_text(
+                "from dataclasses import dataclass, dataclass as dc\n"
+                "from typing import Protocol\n"
+                "\n"
+                "@dc\n"
+                "class Record:\n"
+                "    _stored: int\n"
+                "\n"
+                "@dataclass\n"
+                "class Service:\n"
+                "    def _dead(self):\n"
+                "        return None\n"
+                "\n"
+                "class Contract(Protocol):\n"
+                "    def transform(self, value):\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_dead'.", report)
+        self.assertNotIn("_stored", report)
+        self.assertNotIn("UnusedFormalParameter", report)
+
+    def test_unusedcode_reports_an_unused_lambda_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "expression_scopes.py"
+            source.write_text(
+                "transform = lambda unused: 0\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("UnusedFormalParameter [priority 3] Avoid unused parameters such as 'unused'.", report)
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
