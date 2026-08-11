@@ -1,152 +1,152 @@
 src/messpy/cli.py:127: TooManyFields [priority 3] The class ParsedArguments has 19 fields. Consider redesigning ParsedArguments to keep the number of fields under 15.
 src/messpy/cli.py:221: CyclomaticComplexity [priority 3] The function run() has a Cyclomatic Complexity of 16. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:292: CyclomaticComplexity [priority 3] The function _parse_arguments() has a Cyclomatic Complexity of 32. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:292: ExcessiveMethodLength [priority 3] The function _parse_arguments() has 142 lines of code. Current threshold is set to 100. Avoid really long methods.
-src/messpy/cli.py:292: NPathComplexity [priority 3] The function _parse_arguments() has an NPath complexity of 946368. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:885: CyclomaticComplexity [priority 3] The function _exit_expression_findings() has a Cyclomatic Complexity of 14. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:885: NPathComplexity [priority 3] The function _exit_expression_findings() has an NPath complexity of 2050. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:969: CyclomaticComplexity [priority 3] The function _development_fragment_findings() has a Cyclomatic Complexity of 17. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:969: NPathComplexity [priority 3] The function _development_fragment_findings() has an NPath complexity of 1776. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:1067: CyclomaticComplexity [priority 3] The function _coupling_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1131: CouplingBetweenObjects [priority 2] The class _DependencyCollector has a coupling between objects value of 15. Consider to reduce the number of dependencies under 13.
-src/messpy/cli.py:1137: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
-src/messpy/cli.py:1141: CamelCaseMethodName [priority 1] The method visit_Import is not named in snake_case.
-src/messpy/cli.py:1148: CamelCaseMethodName [priority 1] The method visit_ImportFrom is not named in snake_case.
-src/messpy/cli.py:1159: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
-src/messpy/cli.py:1164: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1167: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1170: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
-src/messpy/cli.py:1177: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:1235: CyclomaticComplexity [priority 3] The function _global_variable_findings() has a Cyclomatic Complexity of 24. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1235: NPathComplexity [priority 3] The function _global_variable_findings() has an NPath complexity of 5340. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:1294: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
-src/messpy/cli.py:1298: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
-src/messpy/cli.py:1303: CamelCaseMethodName [priority 1] The method visit_NamedExpr is not named in snake_case.
-src/messpy/cli.py:1307: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1310: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1313: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:1316: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1361: CyclomaticComplexity [priority 3] The function _lcom4() has a Cyclomatic Complexity of 25. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1361: NPathComplexity [priority 3] The function _lcom4() has an NPath complexity of 8208. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:1430: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
-src/messpy/cli.py:1445: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
-src/messpy/cli.py:1451: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1454: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1457: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1465: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'field'.
-src/messpy/cli.py:1469: CyclomaticComplexity [priority 3] The function _trivial_accessor_field() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1526: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
-src/messpy/cli.py:1530: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1543: CyclomaticComplexity [priority 3] The function _imported_call_aliases() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1586: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
-src/messpy/cli.py:1590: CamelCaseMethodName [priority 1] The method visit_Import is not named in snake_case.
-src/messpy/cli.py:1593: CamelCaseMethodName [priority 1] The method visit_ImportFrom is not named in snake_case.
-src/messpy/cli.py:1596: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1599: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1602: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1605: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:1652: CyclomaticComplexity [priority 3] The function _boolean_argument_flag_findings() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1761: CyclomaticComplexity [priority 3] The function _static_access_findings() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1761: NPathComplexity [priority 3] The function _static_access_findings() has an NPath complexity of 522. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:1830: CamelCaseMethodName [priority 1] The method visit_NamedExpr is not named in snake_case.
-src/messpy/cli.py:1834: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1870: CyclomaticComplexity [priority 3] The function _static_dictionary_key() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1870: NPathComplexity [priority 3] The function _static_dictionary_key() has an NPath complexity of 216. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:1896: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'owners'.
-src/messpy/cli.py:1912: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:1919: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1922: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1962: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:1965: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:1968: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:1971: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:1979: CyclomaticComplexity [priority 3] The function _unused_local_variable_findings() has a Cyclomatic Complexity of 23. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:1979: NPathComplexity [priority 3] The function _unused_local_variable_findings() has an NPath complexity of 17822. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:2087: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'protocol_names'.
-src/messpy/cli.py:2138: CyclomaticComplexity [priority 3] The function _comprehension_used_names() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2171: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
-src/messpy/cli.py:2175: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:2182: CamelCaseMethodName [priority 1] The method visit_ListComp is not named in snake_case.
-src/messpy/cli.py:2185: CamelCaseMethodName [priority 1] The method visit_SetComp is not named in snake_case.
-src/messpy/cli.py:2188: CamelCaseMethodName [priority 1] The method visit_DictComp is not named in snake_case.
-src/messpy/cli.py:2191: CamelCaseMethodName [priority 1] The method visit_GeneratorExp is not named in snake_case.
-src/messpy/cli.py:2273: CyclomaticComplexity [priority 3] The function _unused_private_method_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2314: CyclomaticComplexity [priority 3] The method collect() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2329: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
-src/messpy/cli.py:2335: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
-src/messpy/cli.py:2347: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:2350: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:2353: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:2356: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:2408: CyclomaticComplexity [priority 3] The function _exported_names() has a Cyclomatic Complexity of 16. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2408: NPathComplexity [priority 3] The function _exported_names() has an NPath complexity of 385. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:2438: CyclomaticComplexity [priority 3] The function _dynamic_attribute_accesses() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2438: NPathComplexity [priority 3] The function _dynamic_attribute_accesses() has an NPath complexity of 291. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:2462: CouplingBetweenObjects [priority 2] The class _FunctionLocalBindings has a coupling between objects value of 17. Consider to reduce the number of dependencies under 13.
-src/messpy/cli.py:2462: TooManyPublicMethods [priority 3] The class _FunctionLocalBindings has 12 public methods. Consider refactoring _FunctionLocalBindings to keep number of public methods under 10.
-src/messpy/cli.py:2466: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
-src/messpy/cli.py:2470: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
-src/messpy/cli.py:2475: CamelCaseMethodName [priority 1] The method visit_MatchAs is not named in snake_case.
-src/messpy/cli.py:2480: CamelCaseMethodName [priority 1] The method visit_MatchStar is not named in snake_case.
-src/messpy/cli.py:2485: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:2488: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:2491: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:2494: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:2497: CamelCaseMethodName [priority 1] The method visit_ListComp is not named in snake_case.
-src/messpy/cli.py:2500: CamelCaseMethodName [priority 1] The method visit_SetComp is not named in snake_case.
-src/messpy/cli.py:2503: CamelCaseMethodName [priority 1] The method visit_DictComp is not named in snake_case.
-src/messpy/cli.py:2506: CamelCaseMethodName [priority 1] The method visit_GeneratorExp is not named in snake_case.
-src/messpy/cli.py:2536: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'minimum'.
-src/messpy/cli.py:2553: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'maximum'.
-src/messpy/cli.py:2586: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'message'.
-src/messpy/cli.py:2604: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'minimum'.
-src/messpy/cli.py:2829: CouplingBetweenObjects [priority 2] The class _CyclomaticComplexityVisitor has a coupling between objects value of 14. Consider to reduce the number of dependencies under 13.
-src/messpy/cli.py:2829: TooManyPublicMethods [priority 3] The class _CyclomaticComplexityVisitor has 13 public methods. Consider refactoring _CyclomaticComplexityVisitor to keep number of public methods under 10.
-src/messpy/cli.py:2833: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:2836: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:2839: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:2842: CamelCaseMethodName [priority 1] The method visit_If is not named in snake_case.
-src/messpy/cli.py:2846: CamelCaseMethodName [priority 1] The method visit_IfExp is not named in snake_case.
-src/messpy/cli.py:2850: CamelCaseMethodName [priority 1] The method visit_For is not named in snake_case.
-src/messpy/cli.py:2854: CamelCaseMethodName [priority 1] The method visit_AsyncFor is not named in snake_case.
-src/messpy/cli.py:2858: CamelCaseMethodName [priority 1] The method visit_While is not named in snake_case.
-src/messpy/cli.py:2862: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
-src/messpy/cli.py:2866: CamelCaseMethodName [priority 1] The method visit_BoolOp is not named in snake_case.
-src/messpy/cli.py:2870: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
-src/messpy/cli.py:2878: CamelCaseMethodName [priority 1] The method visit_Match is not named in snake_case.
-src/messpy/cli.py:2924: CyclomaticComplexity [priority 3] The function _npath_statement() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:2924: NPathComplexity [priority 3] The function _npath_statement() has an NPath complexity of 512. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:3059: CouplingBetweenObjects [priority 2] The class _NamingRoleCollector has a coupling between objects value of 14. Consider to reduce the number of dependencies under 13.
-src/messpy/cli.py:3059: ExcessiveClassComplexity [priority 3] The class _NamingRoleCollector has an overall complexity of 58 which is very high. The configured complexity threshold is 50.
-src/messpy/cli.py:3059: TooManyPublicMethods [priority 3] The class _NamingRoleCollector has 11 public methods. Consider refactoring _NamingRoleCollector to keep number of public methods under 10.
-src/messpy/cli.py:3069: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:3078: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:3081: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:3084: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:3096: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
-src/messpy/cli.py:3108: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
-src/messpy/cli.py:3116: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
-src/messpy/cli.py:3121: CamelCaseMethodName [priority 1] The method visit_MatchAs is not named in snake_case.
-src/messpy/cli.py:3126: CamelCaseMethodName [priority 1] The method visit_MatchStar is not named in snake_case.
-src/messpy/cli.py:3131: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
-src/messpy/cli.py:3139: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
-src/messpy/cli.py:3151: CyclomaticComplexity [priority 3] The method _visit_callable() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3151: NPathComplexity [priority 3] The method _visit_callable() has an NPath complexity of 864. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:3330: CyclomaticComplexity [priority 3] The function _too_many_methods_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3338: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'ignore'.
-src/messpy/cli.py:3383: CyclomaticComplexity [priority 3] The function _classes() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3449: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
-src/messpy/cli.py:3452: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
-src/messpy/cli.py:3455: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
-src/messpy/cli.py:3458: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
-src/messpy/cli.py:3461: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
-src/messpy/cli.py:3466: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
-src/messpy/cli.py:3470: CamelCaseMethodName [priority 1] The method visit_AugAssign is not named in snake_case.
-src/messpy/cli.py:3516: CyclomaticComplexity [priority 3] The function _is_stub_body() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3516: NPathComplexity [priority 3] The function _is_stub_body() has an NPath complexity of 576. The configured NPath complexity threshold is 200.
-src/messpy/cli.py:3579: CyclomaticComplexity [priority 3] The function _apply_suppressions() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3655: CyclomaticComplexity [priority 3] The function _source_files_under() has a Cyclomatic Complexity of 16. The configured cyclomatic complexity threshold is 10.
-src/messpy/cli.py:3655: NPathComplexity [priority 3] The function _source_files_under() has an NPath complexity of 720. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:289: CyclomaticComplexity [priority 3] The function _parse_arguments() has a Cyclomatic Complexity of 32. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:289: ExcessiveMethodLength [priority 3] The function _parse_arguments() has 142 lines of code. Current threshold is set to 100. Avoid really long methods.
+src/messpy/cli.py:289: NPathComplexity [priority 3] The function _parse_arguments() has an NPath complexity of 946368. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:882: CyclomaticComplexity [priority 3] The function _exit_expression_findings() has a Cyclomatic Complexity of 14. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:882: NPathComplexity [priority 3] The function _exit_expression_findings() has an NPath complexity of 2050. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:966: CyclomaticComplexity [priority 3] The function _development_fragment_findings() has a Cyclomatic Complexity of 17. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:966: NPathComplexity [priority 3] The function _development_fragment_findings() has an NPath complexity of 1776. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:1064: CyclomaticComplexity [priority 3] The function _coupling_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1128: CouplingBetweenObjects [priority 2] The class _DependencyCollector has a coupling between objects value of 15. Consider to reduce the number of dependencies under 13.
+src/messpy/cli.py:1134: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
+src/messpy/cli.py:1138: CamelCaseMethodName [priority 1] The method visit_Import is not named in snake_case.
+src/messpy/cli.py:1145: CamelCaseMethodName [priority 1] The method visit_ImportFrom is not named in snake_case.
+src/messpy/cli.py:1156: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
+src/messpy/cli.py:1161: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1164: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1167: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
+src/messpy/cli.py:1174: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:1232: CyclomaticComplexity [priority 3] The function _global_variable_findings() has a Cyclomatic Complexity of 24. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1232: NPathComplexity [priority 3] The function _global_variable_findings() has an NPath complexity of 5340. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:1291: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
+src/messpy/cli.py:1295: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
+src/messpy/cli.py:1300: CamelCaseMethodName [priority 1] The method visit_NamedExpr is not named in snake_case.
+src/messpy/cli.py:1304: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1307: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1310: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:1313: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1358: CyclomaticComplexity [priority 3] The function _lcom4() has a Cyclomatic Complexity of 25. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1358: NPathComplexity [priority 3] The function _lcom4() has an NPath complexity of 8208. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:1427: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
+src/messpy/cli.py:1442: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
+src/messpy/cli.py:1448: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1451: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1454: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1462: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'field'.
+src/messpy/cli.py:1466: CyclomaticComplexity [priority 3] The function _trivial_accessor_field() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1523: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
+src/messpy/cli.py:1527: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1540: CyclomaticComplexity [priority 3] The function _imported_call_aliases() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1583: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
+src/messpy/cli.py:1587: CamelCaseMethodName [priority 1] The method visit_Import is not named in snake_case.
+src/messpy/cli.py:1590: CamelCaseMethodName [priority 1] The method visit_ImportFrom is not named in snake_case.
+src/messpy/cli.py:1593: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1596: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1599: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1602: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:1649: CyclomaticComplexity [priority 3] The function _boolean_argument_flag_findings() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1758: CyclomaticComplexity [priority 3] The function _static_access_findings() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1758: NPathComplexity [priority 3] The function _static_access_findings() has an NPath complexity of 522. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:1827: CamelCaseMethodName [priority 1] The method visit_NamedExpr is not named in snake_case.
+src/messpy/cli.py:1831: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1867: CyclomaticComplexity [priority 3] The function _static_dictionary_key() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1867: NPathComplexity [priority 3] The function _static_dictionary_key() has an NPath complexity of 216. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:1893: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'owners'.
+src/messpy/cli.py:1909: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:1916: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1919: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1959: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:1962: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:1965: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:1968: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:1976: CyclomaticComplexity [priority 3] The function _unused_local_variable_findings() has a Cyclomatic Complexity of 23. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:1976: NPathComplexity [priority 3] The function _unused_local_variable_findings() has an NPath complexity of 17822. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:2084: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'protocol_names'.
+src/messpy/cli.py:2135: CyclomaticComplexity [priority 3] The function _comprehension_used_names() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2168: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
+src/messpy/cli.py:2172: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:2179: CamelCaseMethodName [priority 1] The method visit_ListComp is not named in snake_case.
+src/messpy/cli.py:2182: CamelCaseMethodName [priority 1] The method visit_SetComp is not named in snake_case.
+src/messpy/cli.py:2185: CamelCaseMethodName [priority 1] The method visit_DictComp is not named in snake_case.
+src/messpy/cli.py:2188: CamelCaseMethodName [priority 1] The method visit_GeneratorExp is not named in snake_case.
+src/messpy/cli.py:2270: CyclomaticComplexity [priority 3] The function _unused_private_method_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2311: CyclomaticComplexity [priority 3] The method collect() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2326: CamelCaseMethodName [priority 1] The method visit_Call is not named in snake_case.
+src/messpy/cli.py:2332: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
+src/messpy/cli.py:2344: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:2347: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:2350: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:2353: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:2405: CyclomaticComplexity [priority 3] The function _exported_names() has a Cyclomatic Complexity of 16. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2405: NPathComplexity [priority 3] The function _exported_names() has an NPath complexity of 385. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:2435: CyclomaticComplexity [priority 3] The function _dynamic_attribute_accesses() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2435: NPathComplexity [priority 3] The function _dynamic_attribute_accesses() has an NPath complexity of 291. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:2459: CouplingBetweenObjects [priority 2] The class _FunctionLocalBindings has a coupling between objects value of 17. Consider to reduce the number of dependencies under 13.
+src/messpy/cli.py:2459: TooManyPublicMethods [priority 3] The class _FunctionLocalBindings has 12 public methods. Consider refactoring _FunctionLocalBindings to keep number of public methods under 10.
+src/messpy/cli.py:2463: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
+src/messpy/cli.py:2467: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
+src/messpy/cli.py:2472: CamelCaseMethodName [priority 1] The method visit_MatchAs is not named in snake_case.
+src/messpy/cli.py:2477: CamelCaseMethodName [priority 1] The method visit_MatchStar is not named in snake_case.
+src/messpy/cli.py:2482: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:2485: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:2488: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:2491: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:2494: CamelCaseMethodName [priority 1] The method visit_ListComp is not named in snake_case.
+src/messpy/cli.py:2497: CamelCaseMethodName [priority 1] The method visit_SetComp is not named in snake_case.
+src/messpy/cli.py:2500: CamelCaseMethodName [priority 1] The method visit_DictComp is not named in snake_case.
+src/messpy/cli.py:2503: CamelCaseMethodName [priority 1] The method visit_GeneratorExp is not named in snake_case.
+src/messpy/cli.py:2533: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'minimum'.
+src/messpy/cli.py:2550: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'maximum'.
+src/messpy/cli.py:2583: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'message'.
+src/messpy/cli.py:2601: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'minimum'.
+src/messpy/cli.py:2826: CouplingBetweenObjects [priority 2] The class _CyclomaticComplexityVisitor has a coupling between objects value of 14. Consider to reduce the number of dependencies under 13.
+src/messpy/cli.py:2826: TooManyPublicMethods [priority 3] The class _CyclomaticComplexityVisitor has 13 public methods. Consider refactoring _CyclomaticComplexityVisitor to keep number of public methods under 10.
+src/messpy/cli.py:2830: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:2833: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:2836: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:2839: CamelCaseMethodName [priority 1] The method visit_If is not named in snake_case.
+src/messpy/cli.py:2843: CamelCaseMethodName [priority 1] The method visit_IfExp is not named in snake_case.
+src/messpy/cli.py:2847: CamelCaseMethodName [priority 1] The method visit_For is not named in snake_case.
+src/messpy/cli.py:2851: CamelCaseMethodName [priority 1] The method visit_AsyncFor is not named in snake_case.
+src/messpy/cli.py:2855: CamelCaseMethodName [priority 1] The method visit_While is not named in snake_case.
+src/messpy/cli.py:2859: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
+src/messpy/cli.py:2863: CamelCaseMethodName [priority 1] The method visit_BoolOp is not named in snake_case.
+src/messpy/cli.py:2867: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
+src/messpy/cli.py:2875: CamelCaseMethodName [priority 1] The method visit_Match is not named in snake_case.
+src/messpy/cli.py:2921: CyclomaticComplexity [priority 3] The function _npath_statement() has a Cyclomatic Complexity of 12. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:2921: NPathComplexity [priority 3] The function _npath_statement() has an NPath complexity of 512. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:3056: CouplingBetweenObjects [priority 2] The class _NamingRoleCollector has a coupling between objects value of 14. Consider to reduce the number of dependencies under 13.
+src/messpy/cli.py:3056: ExcessiveClassComplexity [priority 3] The class _NamingRoleCollector has an overall complexity of 58 which is very high. The configured complexity threshold is 50.
+src/messpy/cli.py:3056: TooManyPublicMethods [priority 3] The class _NamingRoleCollector has 11 public methods. Consider refactoring _NamingRoleCollector to keep number of public methods under 10.
+src/messpy/cli.py:3066: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:3075: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:3078: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:3081: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:3093: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
+src/messpy/cli.py:3105: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
+src/messpy/cli.py:3113: CamelCaseMethodName [priority 1] The method visit_ExceptHandler is not named in snake_case.
+src/messpy/cli.py:3118: CamelCaseMethodName [priority 1] The method visit_MatchAs is not named in snake_case.
+src/messpy/cli.py:3123: CamelCaseMethodName [priority 1] The method visit_MatchStar is not named in snake_case.
+src/messpy/cli.py:3128: CamelCaseMethodName [priority 1] The method visit_Name is not named in snake_case.
+src/messpy/cli.py:3136: CamelCaseMethodName [priority 1] The method visit_Attribute is not named in snake_case.
+src/messpy/cli.py:3148: CyclomaticComplexity [priority 3] The method _visit_callable() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3148: NPathComplexity [priority 3] The method _visit_callable() has an NPath complexity of 864. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:3327: CyclomaticComplexity [priority 3] The function _too_many_methods_findings() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3335: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'ignore'.
+src/messpy/cli.py:3380: CyclomaticComplexity [priority 3] The function _classes() has a Cyclomatic Complexity of 10. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3446: CamelCaseMethodName [priority 1] The method visit_FunctionDef is not named in snake_case.
+src/messpy/cli.py:3449: CamelCaseMethodName [priority 1] The method visit_AsyncFunctionDef is not named in snake_case.
+src/messpy/cli.py:3452: CamelCaseMethodName [priority 1] The method visit_Lambda is not named in snake_case.
+src/messpy/cli.py:3455: CamelCaseMethodName [priority 1] The method visit_ClassDef is not named in snake_case.
+src/messpy/cli.py:3458: CamelCaseMethodName [priority 1] The method visit_Assign is not named in snake_case.
+src/messpy/cli.py:3463: CamelCaseMethodName [priority 1] The method visit_AnnAssign is not named in snake_case.
+src/messpy/cli.py:3467: CamelCaseMethodName [priority 1] The method visit_AugAssign is not named in snake_case.
+src/messpy/cli.py:3513: CyclomaticComplexity [priority 3] The function _is_stub_body() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3513: NPathComplexity [priority 3] The function _is_stub_body() has an NPath complexity of 576. The configured NPath complexity threshold is 200.
+src/messpy/cli.py:3576: CyclomaticComplexity [priority 3] The function _apply_suppressions() has a Cyclomatic Complexity of 13. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3652: CyclomaticComplexity [priority 3] The function _source_files_under() has a Cyclomatic Complexity of 16. The configured cyclomatic complexity threshold is 10.
+src/messpy/cli.py:3652: NPathComplexity [priority 3] The function _source_files_under() has an NPath complexity of 720. The configured NPath complexity threshold is 200.
 src/messpy/rulesets.py:292: CyclomaticComplexity [priority 3] The function filter_rules() has a Cyclomatic Complexity of 11. The configured cyclomatic complexity threshold is 10.
 src/messpy/rulesets.py:307: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'selected'.
 src/messpy/rulesets.py:308: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'disabled'.

@@ -6,6 +6,8 @@ import sys
 import tempfile
 import unittest
 
+from messpy import __version__
+
 
 ROOT = Path(__file__).parent.parent
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -183,7 +185,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertEqual(0, help_result.returncode)
         self.assertIn("messpy <paths> <format> <ruleset[,ruleset...]> [options]", help_result.stdout)
         self.assertEqual(0, version_result.returncode)
-        self.assertEqual("0.1.0\n", version_result.stdout)
+        self.assertEqual(f"{__version__}\n", version_result.stdout)
         self.assertEqual(0, clean_result.returncode)
         self.assertEqual("", clean_result.stdout)
         self.assertEqual(2, finding_result.returncode)

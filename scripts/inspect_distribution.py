@@ -3,6 +3,7 @@ from __future__ import annotations
 from configparser import ConfigParser
 from email.parser import Parser
 from pathlib import Path
+import re
 import sys
 import tarfile
 import tomllib
@@ -18,7 +19,17 @@ PACKAGE_FILES = {
 
 
 def inspect(directory: Path) -> None:
-    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+    configuration = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    project = configuration["project"]
+    version_path = Path(configuration["tool"]["hatch"]["version"]["path"])
+    version_match = re.search(
+        r'^__version__\s*=\s*["\u0027]([^"\u0027]+)["\u0027]',
+        version_path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if version_match is None:
+        raise AssertionError("version source does not define __version__")
+    expected_version = version_match.group(1)
     wheels = sorted(directory.glob("messpy-*.whl"))
     source_distributions = sorted(directory.glob("messpy-*.tar.gz"))
     if len(wheels) != 1 or len(source_distributions) != 1:
@@ -32,7 +43,7 @@ def inspect(directory: Path) -> None:
         metadata_name = _single_name(names, ".dist-info/METADATA")
         entry_points_name = _single_name(names, ".dist-info/entry_points.txt")
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
-        if metadata["Name"] != project["name"] or metadata["Version"] != project["version"]:
+        if metadata["Name"] != project["name"] or metadata["Version"] != expected_version:
             raise AssertionError("wheel metadata has the wrong project identity")
         if metadata["Requires-Python"] != project["requires-python"]:
             raise AssertionError("wheel metadata has the wrong Python requirement")
@@ -42,11 +53,19 @@ def inspect(directory: Path) -> None:
             raise AssertionError("wheel does not expose the messpy command")
 
     with tarfile.open(source_distributions[0], "r:gz") as archive:
-        names = {name.split("/", 1)[1] for name in archive.getnames() if "/" in name}
+        archive_names = set(archive.getnames())
+        names = {name.split("/", 1)[1] for name in archive_names if "/" in name}
         expected = {"pyproject.toml", *(f"src/{name}" for name in PACKAGE_FILES)}
         missing = expected - names
         if missing:
             raise AssertionError(f"source distribution is missing files: {sorted(missing)}")
+        package_info_name = _single_name(archive_names, "/PKG-INFO")
+        package_info_file = archive.extractfile(package_info_name)
+        if package_info_file is None:
+            raise AssertionError("source distribution PKG-INFO cannot be read")
+        package_info = Parser().parsestr(package_info_file.read().decode("utf-8"))
+        if package_info["Name"] != project["name"] or package_info["Version"] != expected_version:
+            raise AssertionError("source distribution metadata has the wrong project identity")
 
 
 def _single_name(names: set[str], suffix: str) -> str:

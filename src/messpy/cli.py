@@ -13,7 +13,7 @@ import symtable
 import sys
 import token
 import tokenize
-from importlib.metadata import PackageNotFoundError, version
+from . import __version__
 from io import StringIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -283,10 +283,7 @@ def main() -> None:
 
 
 def _messpy_version() -> str:
-    try:
-        return version("messpy")
-    except PackageNotFoundError:
-        return "0.1.0"
+    return __version__
 
 
 def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
