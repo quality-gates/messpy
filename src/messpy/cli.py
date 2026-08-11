@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
-from importlib.metadata import version
-from pathlib import Path
+import re
 import sys
+import token
+import tokenize
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from importlib.metadata import version
+from io import StringIO
+from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Sequence, TextIO
+from typing import TextIO
 
 from .rulesets import LoadedRule, RulesetError, filter_rules, load_rulesets
-
 
 RULE_NAME = "ExcessiveMethodLength"
 DEFAULT_IGNORED_DIRECTORY_NAMES = frozenset(
@@ -62,9 +66,14 @@ BOOLEAN_OPTIONS = frozenset(
         "--ignore-errors-on-exit",
         "--ignore-tests",
         "--ignore-violations-on-exit",
+        "--strict",
         "--verbose",
     }
 )
+DIRECTIVE_PATTERN = re.compile(
+    r"^messpy-(disable-next-line|disable|enable)(?:\s+(.+?))?$", re.IGNORECASE
+)
+RULE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -83,6 +92,7 @@ class ParsedArguments:
     disable: list[str]
     minimum_priority: int
     maximum_priority: int
+    strict: bool
     verbose: bool
     show_help: bool
     show_version: bool
@@ -92,6 +102,16 @@ class CliError(Exception):
     def __init__(self, message: str, ignore_errors_on_exit: bool = False) -> None:
         super().__init__(message)
         self.ignore_errors_on_exit = ignore_errors_on_exit
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: Path
+    line: int
+    rule_name: str
+    priority: int
+    message: str
+    suppressed: bool = False
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -125,13 +145,14 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
             parsed_arguments.ignore_tests,
         )
         findings, processing_errors = _analyze(source_files, rules)
-        report = _text_report(findings, processing_errors)
+        reported_findings = findings if parsed_arguments.strict else _unsuppressed(findings)
+        report = _text_report(reported_findings, processing_errors)
         if parsed_arguments.report_file is None:
             stdout.write(report)
         else:
             _write_report(parsed_arguments.report_file, report)
         return _exit_status(
-            findings,
+            reported_findings,
             processing_errors,
             parsed_arguments.ignore_errors_on_exit,
             parsed_arguments.ignore_violations_on_exit,
@@ -160,6 +181,7 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
     ignore_tests = False
     ignore_errors_on_exit = False
     ignore_violations_on_exit = False
+    strict = False
     verbose = False
     only: list[str] = []
     enable: list[str] = []
@@ -224,6 +246,8 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
                 ignore_errors_on_exit = True
             elif option_name == "--verbose":
                 verbose = True
+            elif option_name == "--strict":
+                strict = True
             else:
                 ignore_violations_on_exit = True
             index += 1
@@ -248,6 +272,7 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
             disable=disable,
             minimum_priority=minimum_priority,
             maximum_priority=maximum_priority,
+            strict=strict,
             verbose=verbose,
             show_help=show_help,
             show_version=show_version,
@@ -280,6 +305,7 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
         disable=disable,
         minimum_priority=minimum_priority,
         maximum_priority=maximum_priority,
+        strict=strict,
         verbose=verbose,
         show_help=False,
         show_version=False,
@@ -307,8 +333,8 @@ def _parse_priority(option_name: str, value: str, ignore_errors_on_exit: bool) -
     return priority
 
 
-def _analyze(source_files: Sequence[Path], rules: Sequence[LoadedRule]) -> tuple[list[str], list[str]]:
-    findings: list[str] = []
+def _analyze(source_files: Sequence[Path], rules: Sequence[LoadedRule]) -> tuple[list[Finding], list[str]]:
+    findings: list[Finding] = []
     processing_errors: list[str] = []
     for source_file in source_files:
         try:
@@ -325,12 +351,14 @@ def _analyze(source_files: Sequence[Path], rules: Sequence[LoadedRule]) -> tuple
                 f"{source_file.as_posix()}:1: ProcessingError Could not process {source_file}: {error}"
             )
             continue
-        findings.extend(_excessive_method_length_findings(source_file, tree, rules))
+        findings.extend(
+            _apply_suppressions(source, _excessive_method_length_findings(source_file, tree, rules))
+        )
     return findings, processing_errors
 
 
-def _text_report(findings: Sequence[str], processing_errors: Sequence[str]) -> str:
-    entries = sorted([*findings, *processing_errors])
+def _text_report(findings: Sequence[Finding], processing_errors: Sequence[str]) -> str:
+    entries = sorted([*(_text_finding(finding) for finding in findings), *processing_errors])
     return "" if not entries else "\n".join(entries) + "\n"
 
 
@@ -354,7 +382,7 @@ def _write_report(report_file: Path, report: str) -> None:
 
 
 def _exit_status(
-    findings: Sequence[str],
+    findings: Sequence[Finding],
     processing_errors: Sequence[str],
     ignore_errors_on_exit: bool,
     ignore_violations_on_exit: bool,
@@ -368,7 +396,7 @@ def _exit_status(
 
 def _excessive_method_length_findings(
     path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
-) -> list[str]:
+) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == RULE_NAME), None)
     if rule is None:
         return []
@@ -376,23 +404,98 @@ def _excessive_method_length_findings(
         method_length_limit = int(rule.properties["minimum"])
     except (KeyError, ValueError) as error:
         raise RulesetError("ExcessiveMethodLength property 'minimum' must be an integer.") from error
-    findings: list[str] = []
+    findings: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        line_count = node.end_lineno - node.lineno + 1
+        line_count = (node.end_lineno or node.lineno) - node.lineno + 1
         if line_count <= method_length_limit:
             continue
-        display_path = path.as_posix()
         message = (
             f"The method {node.name} has {line_count} lines of code. "
             f"The configured limit is {method_length_limit}."
         )
-        findings.append(
-            f"{display_path}:{node.lineno}: {RULE_NAME} "
-            f"[priority {rule.priority}] {message}"
-        )
+        findings.append(Finding(path, node.lineno, RULE_NAME, rule.priority, message))
     return findings
+
+
+def _unsuppressed(findings: Sequence[Finding]) -> list[Finding]:
+    return [finding for finding in findings if not finding.suppressed]
+
+
+def _text_finding(finding: Finding) -> str:
+    suppression = " [suppressed]" if finding.suppressed else ""
+    return (
+        f"{finding.path.as_posix()}:{finding.line}: {finding.rule_name} "
+        f"[priority {finding.priority}]{suppression} {finding.message}"
+    )
+
+
+def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Finding]:
+    directives, source_lines = _suppression_directives(source)
+    active_counts: dict[str, int] = {}
+    next_line_rules: dict[int, set[str]] = {}
+    directive_index = 0
+    suppressed: list[Finding] = []
+    for finding in sorted(findings, key=lambda candidate: candidate.line):
+        while directive_index < len(directives) and directives[directive_index][0] < finding.line:
+            line, action, rule_names = directives[directive_index]
+            if action == "disable-next-line":
+                next_line = next((candidate for candidate in source_lines if candidate > line), None)
+                if next_line is not None:
+                    next_line_rules.setdefault(next_line, set()).update(rule_names)
+            elif action == "disable":
+                for rule_name in rule_names:
+                    active_counts[rule_name] = active_counts.get(rule_name, 0) + 1
+            else:
+                for rule_name in rule_names:
+                    if active_counts.get(rule_name, 0) > 0:
+                        active_counts[rule_name] -= 1
+            directive_index += 1
+        identity = _rule_identity(finding.rule_name)
+        is_suppressed = active_counts.get(identity, 0) > 0 or identity in next_line_rules.get(
+            finding.line, set()
+        )
+        suppressed.append(replace(finding, suppressed=is_suppressed))
+    return suppressed
+
+
+def _suppression_directives(source: str) -> tuple[list[tuple[int, str, set[str]]], list[int]]:
+    directives: list[tuple[int, str, set[str]]] = []
+    source_lines: set[int] = set()
+    ignored_tokens = {
+        token.COMMENT,
+        token.DEDENT,
+        token.ENDMARKER,
+        token.INDENT,
+        token.NEWLINE,
+        token.NL,
+    }
+    for item in tokenize.generate_tokens(StringIO(source).readline):
+        if item.type == token.COMMENT:
+            directive = _suppression_directive(item.string, item.start[0])
+            if directive is not None:
+                directives.append(directive)
+        elif item.type not in ignored_tokens:
+            source_lines.add(item.start[0])
+    return directives, sorted(source_lines)
+
+
+def _suppression_directive(comment: str, line: int) -> tuple[int, str, set[str]] | None:
+    match = DIRECTIVE_PATTERN.fullmatch(comment[1:].strip())
+    if match is None:
+        return None
+    rule_text = match.group(2)
+    if rule_text is None or re.search(r",\s*(?:,|$)", rule_text):
+        return None
+    rule_names = re.split(r"[\s,]+", rule_text.strip())
+    if not rule_names or not all(RULE_NAME_PATTERN.fullmatch(name) for name in rule_names):
+        return None
+    return line, match.group(1).casefold(), {_rule_identity(name) for name in rule_names}
+
+
+def _rule_identity(name: str) -> str:
+    return name.casefold()
 
 
 def _source_files(
@@ -466,6 +569,7 @@ def _help_text() -> str:
         "\n"
         "Reporting:\n"
         "  --reportfile <path>               Write the complete report to a file\n"
+        "  --strict                          Include suppressed findings\n"
         "  --only, --enable, --disable <list> Filter loaded rules\n"
         "  --minimumpriority <1-5>           Include priorities at or above the lower bound\n"
         "  --maximumpriority <1-5>           Include priorities at or below the upper bound\n"
