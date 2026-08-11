@@ -40,6 +40,11 @@ UNUSED_LOCAL_VARIABLE_RULE_NAME = "UnusedLocalVariable"
 UNUSED_FORMAL_PARAMETER_RULE_NAME = "UnusedFormalParameter"
 UNUSED_PRIVATE_FIELD_RULE_NAME = "UnusedPrivateField"
 UNUSED_PRIVATE_METHOD_RULE_NAME = "UnusedPrivateMethod"
+BOOLEAN_ARGUMENT_FLAG_RULE_NAME = "BooleanArgumentFlag"
+ELSE_EXPRESSION_RULE_NAME = "ElseExpression"
+STATIC_ACCESS_RULE_NAME = "StaticAccess"
+IF_STATEMENT_ASSIGNMENT_RULE_NAME = "IfStatementAssignment"
+DUPLICATED_ARRAY_KEY_RULE_NAME = "DuplicatedArrayKey"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -191,6 +196,12 @@ class PrivateMemberUsage:
     accessed_names: frozenset[str]
     exported_names: frozenset[str]
     requires_conservative_handling: bool
+
+
+@dataclass(frozen=True)
+class CleanCodeCallable:
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    owner_name: str | None
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -828,7 +839,347 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_unused_formal_parameter_findings(path, source, tree, rules),
         *_unused_private_field_findings(path, tree, rules),
         *_unused_private_method_findings(path, tree, rules),
+        *_clean_code_findings(path, source, tree, rules),
     ]
+
+
+def _clean_code_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    return [
+        *_boolean_argument_flag_findings(path, tree, rules),
+        *_else_expression_findings(path, tree, rules),
+        *_static_access_findings(path, tree, rules),
+        *_if_statement_assignment_findings(path, source, tree, rules),
+        *_duplicated_array_key_findings(path, tree, rules),
+    ]
+
+
+def _boolean_argument_flag_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, BOOLEAN_ARGUMENT_FLAG_RULE_NAME)
+    if rule is None:
+        return []
+    exceptions = _exception_names(rule)
+    ignored = _ignore_pattern(rule)
+    findings: list[Finding] = []
+    for callable_info in _clean_code_callables(tree):
+        node = callable_info.node
+        if (
+            isinstance(node, ast.Lambda)
+            or node.name.startswith("_")
+            or callable_info.owner_name in exceptions
+            or (ignored.pattern and ignored.search(node.name))
+        ):
+            continue
+        for parameter in _boolean_parameters(node.args):
+            if parameter.arg in {"self", "cls"} or parameter.arg.startswith("_"):
+                continue
+            context = _clean_code_context(callable_info)
+            findings.append(
+                Finding(
+                    path,
+                    parameter.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"The method {context} has a boolean flag argument {parameter.arg}, which is a certain sign "
+                    "of a Single Responsibility Principle violation.",
+                    context=context,
+                )
+            )
+    return findings
+
+
+def _boolean_parameters(arguments: ast.arguments) -> list[ast.arg]:
+    positional = [*arguments.posonlyargs, *arguments.args]
+    defaults = {
+        id(parameter): default
+        for parameter, default in zip(positional[-len(arguments.defaults) :], arguments.defaults)
+    } if arguments.defaults else {}
+    defaults.update(
+        {
+            id(parameter): default
+            for parameter, default in zip(arguments.kwonlyargs, arguments.kw_defaults)
+            if default is not None
+        }
+    )
+    return [
+        parameter
+        for parameter in _arguments(arguments)
+        if _is_boolean_flag_annotation(parameter.annotation)
+        or _is_boolean_literal(defaults.get(id(parameter)))
+    ]
+
+
+def _is_boolean_flag_annotation(node: ast.expr | None) -> bool:
+    if _is_boolean_annotation(node):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_boolean_flag_annotation(node.left) or _is_boolean_flag_annotation(node.right)
+    if isinstance(node, ast.Subscript) and _is_boolean_union_name(node.value):
+        values = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+        return any(_is_boolean_flag_annotation(value) for value in values)
+    return False
+
+
+def _is_boolean_union_name(node: ast.expr) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in {"Optional", "Union"}
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "typing"
+        and node.attr in {"Optional", "Union"}
+    )
+
+
+def _is_boolean_literal(node: ast.expr | None) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, bool)
+
+
+def _else_expression_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, ELSE_EXPRESSION_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    for callable_info in _clean_code_callables(tree):
+        for node in _executable_nodes(callable_info.node):
+            if not isinstance(node, ast.If) or not node.orelse:
+                continue
+            if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+                continue
+            context = _clean_code_context(callable_info)
+            findings.append(
+                Finding(
+                    path,
+                    node.orelse[0].lineno,
+                    rule.name,
+                    rule.priority,
+                    f"The method {context} uses an else expression. Else clauses are basically not necessary "
+                    "and you can simplify the code by not using them.",
+                    context=context,
+                )
+            )
+    return findings
+
+
+def _static_access_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, STATIC_ACCESS_RULE_NAME)
+    if rule is None:
+        return []
+    exceptions = _exception_names(rule)
+    ignored = _ignore_pattern(rule)
+    findings: list[Finding] = []
+    for callable_info in _clean_code_callables(tree):
+        name = _clean_code_callable_name(callable_info.node)
+        if ignored.pattern and ignored.search(name):
+            continue
+        for node in _executable_nodes(callable_info.node):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            receiver = node.func.value
+            if not isinstance(receiver, ast.Name) or not receiver.id[:1].isupper():
+                continue
+            if receiver.id == callable_info.owner_name or receiver.id in exceptions:
+                continue
+            context = _clean_code_context(callable_info)
+            findings.append(
+                Finding(
+                    path,
+                    node.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid using static access to class '{receiver.id}' in method '{name}'.",
+                    context=context,
+                )
+            )
+    return findings
+
+
+def _if_statement_assignment_findings(
+    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, IF_STATEMENT_ASSIGNMENT_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.If, ast.While)):
+            continue
+        collector = _NamedExpressionCollector()
+        collector.visit(node.test)
+        findings.extend(
+            Finding(
+                path,
+                assignment.lineno,
+                rule.name,
+                rule.priority,
+                "Avoid assigning values to variables in if clauses and the like "
+                f"(line '{assignment.lineno}', column '{_character_column(source, assignment)}').",
+            )
+            for assignment in collector.assignments
+        )
+    return findings
+
+
+def _character_column(source: str, node: ast.AST) -> int:
+    line = source.splitlines()[node.lineno - 1]
+    prefix = line.encode("utf-8")[: node.col_offset].decode("utf-8")
+    return len(prefix) + 1
+
+
+class _NamedExpressionCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.assignments: list[ast.NamedExpr] = []
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.assignments.append(node)
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _duplicated_array_key_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, DUPLICATED_ARRAY_KEY_RULE_NAME)
+    if rule is None:
+        return []
+    findings: list[Finding] = []
+    for dictionary in ast.walk(tree):
+        if not isinstance(dictionary, ast.Dict):
+            continue
+        keys: dict[object, ast.expr] = {}
+        for key in dictionary.keys:
+            known, value = _static_dictionary_key(key)
+            if not known or key is None:
+                continue
+            if value in keys:
+                display = ast.unparse(key)
+                findings.append(
+                    Finding(
+                        path,
+                        key.lineno,
+                        rule.name,
+                        rule.priority,
+                        f"Duplicated array key {display}, first declared at line {keys[value].lineno}.",
+                        context=display,
+                    )
+                )
+            else:
+                keys[value] = key
+    return findings
+
+
+def _static_dictionary_key(node: ast.expr | None) -> tuple[bool, object]:
+    if isinstance(node, ast.Constant) and type(node.value) in {
+        str,
+        bytes,
+        int,
+        float,
+        complex,
+        bool,
+        type(None),
+        type(Ellipsis),
+    }:
+        return True, node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        known, value = _static_dictionary_key(node.operand)
+        if known and type(value) in {int, float, complex, bool}:
+            return True, +value if isinstance(node.op, ast.UAdd) else -value
+    if isinstance(node, ast.Tuple):
+        values = [_static_dictionary_key(element) for element in node.elts]
+        if all(known for known, _ in values):
+            return True, tuple(value for _, value in values)
+    return False, None
+
+
+def _clean_code_callables(tree: ast.Module) -> list[CleanCodeCallable]:
+    owner_collector = _CallableOwnerCollector()
+    owner_collector.visit(tree)
+    owners = owner_collector.owners
+    return sorted(
+        [
+            CleanCodeCallable(node, owners.get(id(node)))
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        ],
+        key=lambda callable_info: (callable_info.node.lineno, callable_info.node.col_offset),
+    )
+
+
+class _CallableOwnerCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.owners: dict[int, str] = {}
+        self.owner_name: str | None = None
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        previous_owner = self.owner_name
+        self.owner_name = node.name
+        for statement in node.body:
+            self.visit(statement)
+        self.owner_name = previous_owner
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_callable(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_callable(node)
+
+    def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        if self.owner_name is not None:
+            self.owners[id(node)] = self.owner_name
+        previous_owner = self.owner_name
+        self.owner_name = None
+        for statement in node.body:
+            self.visit(statement)
+        self.owner_name = previous_owner
+
+
+def _clean_code_callable_name(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> str:
+    return "<lambda>" if isinstance(node, ast.Lambda) else node.name
+
+
+def _clean_code_context(callable_info: CleanCodeCallable) -> str:
+    name = _clean_code_callable_name(callable_info.node)
+    return f"{callable_info.owner_name}.{name}" if callable_info.owner_name else name
+
+
+def _executable_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
+    collector = _ExecutableNodeCollector()
+    if isinstance(node, ast.Lambda):
+        collector.visit(node.body)
+    else:
+        for statement in node.body:
+            collector.visit(statement)
+    return collector.nodes
+
+
+class _ExecutableNodeCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.nodes: list[ast.AST] = []
+
+    def generic_visit(self, node: ast.AST) -> None:
+        self.nodes.append(node)
+        super().generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+
+def _exception_names(rule: LoadedRule) -> set[str]:
+    return {name.strip() for name in rule.properties.get("exceptions", "").split(",") if name.strip()}
 
 
 def _unused_local_variable_findings(

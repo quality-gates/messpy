@@ -2005,6 +2005,254 @@ class CommandAcceptanceTests(unittest.TestCase):
         report = stdout.getvalue()
         self.assertIn("UnusedFormalParameter [priority 3] Avoid unused parameters such as 'unused'.", report)
 
+    def test_cleancode_finds_each_honest_python_hazard_through_the_command_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "hazards.py"
+            source.write_text(
+                "class Logger:\n"
+                "    @staticmethod\n"
+                "    def write(value):\n"
+                "        return value\n"
+                "\n"
+                "def choose(flag: bool):\n"
+                "    if flag:\n"
+                "        return 1\n"
+                "    else:\n"
+                "        return 0\n"
+                "\n"
+                "def inspect(values):\n"
+                "    if current := values:\n"
+                "        return Logger.write(current)\n"
+                "    return {\"alpha\": 1, \"alpha\": 2}\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "cleancode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        for rule_name in [
+            "BooleanArgumentFlag",
+            "ElseExpression",
+            "StaticAccess",
+            "IfStatementAssignment",
+            "DuplicatedArrayKey",
+        ]:
+            self.assertIn(rule_name, report)
+
+    def test_cleancode_keeps_clean_boundaries_and_dynamic_dictionary_keys_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "clean_hazards.py"
+            source.write_text(
+                "dynamic_key = object()\n"
+                "\n"
+                "class Worker:\n"
+                "    def choose(self, value: object = None):\n"
+                "        if value is None:\n"
+                "            return Worker.default()\n"
+                "        elif value:\n"
+                "            return logger.write(value)\n"
+                "        return {dynamic_key: 1, dynamic_key: 2, \"first\": 1, \"second\": 2}\n"
+                "\n"
+                "    @staticmethod\n"
+                "    def default():\n"
+                "        return 0\n"
+                "\n"
+                "def calculate(values):\n"
+                "    current = values\n"
+                "    return (stored := current)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "cleancode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_cleancode_uses_python_syntax_boundaries_without_guessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "boundaries.py"
+            source.write_text(
+                "from typing import Optional\n"
+                "\n"
+                "class Logger:\n"
+                "    @staticmethod\n"
+                "    def write():\n"
+                "        return None\n"
+                "\n"
+                "    @staticmethod\n"
+                "    def close():\n"
+                "        return None\n"
+                "\n"
+                "if enabled:\n"
+                "    Logger.write()\n"
+                "else:\n"
+                "    Logger.close()\n"
+                "\n"
+                "def inspect(option: bool | None = False, *, enabled: Optional[bool] = None, unknown: service.bool = None):\n"
+                "    if (lambda: (hidden := option)):\n"
+                "        pass\n"
+                "    while current := enabled:\n"
+                "        break\n"
+                "    if \"é\" and (unicode_name := enabled):\n"
+                "        pass\n"
+                "    return {True: 1, 1: 2, -True: 3, -1: 4, (\"known\", 1): 5, (\"known\", True): 6, ...: 7, ...: 8, dynamic: 9, dynamic: 10, [1]: 11, [1]: 12}\n"
+                "\n"
+                "class Worker:\n"
+                "    if enabled:\n"
+                "        def run(self):\n"
+                "            return Worker.build()\n"
+                "\n"
+                "    @staticmethod\n"
+                "    def build():\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            reports = {}
+            for rule_name in [
+                "BooleanArgumentFlag",
+                "ElseExpression",
+                "StaticAccess",
+                "IfStatementAssignment",
+                "DuplicatedArrayKey",
+            ]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(source), "text", "cleancode", "--only", rule_name],
+                    stdout,
+                    stderr,
+                )
+                reports[rule_name] = (status, stdout.getvalue(), stderr.getvalue())
+
+        self.assertEqual(2, reports["BooleanArgumentFlag"][0])
+        self.assertEqual(2, reports["BooleanArgumentFlag"][1].count("BooleanArgumentFlag"))
+        self.assertNotIn("unknown", reports["BooleanArgumentFlag"][1])
+        self.assertEqual((0, "", ""), reports["ElseExpression"])
+        self.assertEqual((0, "", ""), reports["StaticAccess"])
+        self.assertEqual(2, reports["IfStatementAssignment"][0])
+        self.assertEqual(2, reports["IfStatementAssignment"][1].count("IfStatementAssignment"))
+        self.assertIn("column '17'", reports["IfStatementAssignment"][1])
+        self.assertNotIn("hidden", reports["IfStatementAssignment"][1])
+        self.assertEqual(2, reports["DuplicatedArrayKey"][0])
+        self.assertEqual(4, reports["DuplicatedArrayKey"][1].count("DuplicatedArrayKey"))
+        self.assertEqual("", reports["DuplicatedArrayKey"][2])
+
+    def test_cleancode_honors_boolean_and_static_access_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "configured_hazards.py"
+            ruleset = directory / "configured.xml"
+            source.write_text(
+                "class Logger:\n"
+                "    @staticmethod\n"
+                "    def write(value):\n"
+                "        return value\n"
+                "\n"
+                "class Gateway:\n"
+                "    @staticmethod\n"
+                "    def write(value):\n"
+                "        return value\n"
+                "\n"
+                "class Service:\n"
+                "    if enabled:\n"
+                "        def choose(self, flag: bool):\n"
+                "            return Logger.write(flag)\n"
+                "\n"
+                "def ignored_choice(flag: bool):\n"
+                "    return Logger.write(flag)\n"
+                "\n"
+                "def active_choice(flag: bool):\n"
+                "    return Gateway.write(flag)\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset><rule ref=\"cleancode\"><properties>"
+                "<property name=\"exceptions\" value=\"Service,Logger\"/>"
+                "<property name=\"ignorepattern\" value=\"^ignored_\"/>"
+                "</properties></rule></ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertEqual(1, report.count("BooleanArgumentFlag"))
+        self.assertEqual(1, report.count("StaticAccess"))
+        self.assertIn("active_choice", report)
+        self.assertIn("Gateway", report)
+        self.assertNotIn("ignored_choice", report)
+
+    def test_python_policy_permits_ordinary_idioms_and_opinionated_selects_every_clean_code_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ordinary_source = directory / "ordinary_policy.py"
+            hazard_source = directory / "opinionated_policy.py"
+            logger = (
+                "class Logger:\n"
+                "    @staticmethod\n"
+                "    def write(value):\n"
+                "        return value\n"
+                "\n"
+            )
+            ordinary_source.write_text(
+                logger
+                + "def choose(flag: bool):\n"
+                "    if flag:\n"
+                "        return Logger.write(flag)\n"
+                "    else:\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            hazard_source.write_text(
+                logger
+                + "def choose(flag: bool):\n"
+                "    if current := flag:\n"
+                "        return Logger.write({\"same\": 1, \"same\": 2})\n"
+                "    else:\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            python_stdout = StringIO()
+            python_stderr = StringIO()
+            python_status = run(
+                [str(ordinary_source), "text", "python"], python_stdout, python_stderr
+            )
+            selected_reports = []
+            for rule_name in [
+                "BooleanArgumentFlag",
+                "ElseExpression",
+                "StaticAccess",
+                "IfStatementAssignment",
+                "DuplicatedArrayKey",
+            ]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(hazard_source), "text", "opinionated", "--only", rule_name],
+                    stdout,
+                    stderr,
+                )
+                selected_reports.append((rule_name, status, stdout.getvalue(), stderr.getvalue()))
+
+        self.assertEqual(0, python_status)
+        self.assertEqual("", python_stdout.getvalue())
+        self.assertEqual("", python_stderr.getvalue())
+        for rule_name, status, report, errors in selected_reports:
+            self.assertEqual(2, status)
+            self.assertEqual("", errors)
+            self.assertIn(rule_name, report)
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
