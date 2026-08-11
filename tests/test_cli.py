@@ -254,6 +254,128 @@ class CommandAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual("", stderr.getvalue())
 
+    def test_disable_next_line_hides_only_the_named_finding_on_the_next_source_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "suppressed.py"
+            source.write_text(
+                "# messpy-disable-next-line ExcessiveMethodLength\n"
+                + _long_function("waived")
+                + "\n"
+                + _long_function("still_reported"),
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual(f"{_finding_for(source, 'still_reported', 104)}\n", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_disable_next_line_does_not_skip_an_unsuitable_source_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "next_line.py"
+            source.write_text(
+                "# messpy-disable-next-line ExcessiveMethodLength\n"
+                "marker = 1\n"
+                + _long_function("still_reported"),
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual(f"{_finding_for(source, 'still_reported', 3)}\n", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_strict_includes_a_suppressed_finding_without_changing_its_location(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "strict.py"
+            source.write_text(
+                "# messpy-disable-next-line excessivemethodlength\n" + _long_function("waived"),
+                encoding="utf-8",
+            )
+
+            normal_stdout = StringIO()
+            normal_stderr = StringIO()
+            normal_status = run([str(source), "text", "codesize"], normal_stdout, normal_stderr)
+            strict_stdout = StringIO()
+            strict_stderr = StringIO()
+            strict_status = run([str(source), "text", "codesize", "--strict"], strict_stdout, strict_stderr)
+
+        self.assertEqual(0, normal_status)
+        self.assertEqual("", normal_stdout.getvalue())
+        self.assertEqual("", normal_stderr.getvalue())
+        self.assertEqual(2, strict_status)
+        self.assertEqual(
+            f"{_finding_for(source, 'waived', 2).replace('[priority 3]', '[priority 3] [suppressed]')}\n",
+            strict_stdout.getvalue(),
+        )
+        self.assertEqual("", strict_stderr.getvalue())
+
+    def test_regions_nest_and_malformed_or_other_tool_comments_do_not_hide_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "regions.py"
+            ruleset = temporary / "policy.xml"
+            source.write_text(
+                "# messpy-disable ExcessiveMethodLength MissingRule\n"
+                + _function_with_passes("outer", 3)
+                + "# messpy-disable ExcessiveMethodLength\n"
+                + _function_with_passes("nested", 3)
+                + "# messpy-enable ExcessiveMethodLength\n"
+                + _function_with_passes("outer_still_active", 3)
+                + "# messpy-enable MissingRule\n"
+                + _function_with_passes("partially_enabled", 3)
+                + "# messpy-enable ExcessiveMethodLength\n"
+                + _function_with_passes("released", 3)
+                + "# messpy-enable ExcessiveMethodLength\n"
+                + _function_with_passes("unbalanced_enable", 3)
+                + "# noqa: E501\n"
+                + _function_with_passes("noqa", 3)
+                + "# type: ignore\n"
+                + _function_with_passes("type_checker", 3)
+                + "# fmt: off\n"
+                + _function_with_passes("formatter", 3)
+                + "# pragma: no cover\n"
+                + _function_with_passes("coverage", 3)
+                + "# messpy-disable\n"
+                + _function_with_passes("malformed_region", 3)
+                + "# messpy-disable-next-line ExcessiveMethodLength,\n"
+                + _function_with_passes("malformed_next_line", 3),
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="team policy">
+    <rule ref="codesize"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        for name in [
+            "released",
+            "unbalanced_enable",
+            "noqa",
+            "type_checker",
+            "formatter",
+            "coverage",
+            "malformed_region",
+            "malformed_next_line",
+        ]:
+            self.assertIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+        for name in ["outer", "nested", "outer_still_active", "partially_enabled"]:
+            self.assertNotIn(f"The method {name} has 4 lines of code.", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_malformed_source_reports_an_error_without_hiding_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
@@ -599,6 +721,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("--exclude", stdout.getvalue())
         self.assertIn("--ignore-tests", stdout.getvalue())
         self.assertIn("--reportfile", stdout.getvalue())
+        self.assertIn("--strict", stdout.getvalue())
         self.assertIn("--ignore-errors-on-exit", stdout.getvalue())
         self.assertIn("--ignore-violations-on-exit", stdout.getvalue())
         self.assertIn("Input directory symlinks are scanned; nested directory symlinks are skipped.", stdout.getvalue())
@@ -615,9 +738,9 @@ def _function_with_passes(name: str, count: int) -> str:
     return f"def {name}():\n" + "    pass\n" * count
 
 
-def _finding_for(path: Path, name: str) -> str:
+def _finding_for(path: Path, name: str, line: int = 1) -> str:
     return (
-        f"{path.resolve().as_posix()}:1: ExcessiveMethodLength "
+        f"{path.resolve().as_posix()}:{line}: ExcessiveMethodLength "
         "[priority 3] "
         f"The method {name} has 101 lines of code. The configured limit is 100."
     )
