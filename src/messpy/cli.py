@@ -914,17 +914,13 @@ def _npath_block(statements: Sequence[ast.stmt]) -> int:
 
 def _npath_statement(node: ast.stmt) -> int:
     if isinstance(node, ast.If):
-        return (
-            _npath_expression(node.test)
-            + _npath_block(node.body)
-            + _npath_block(node.orelse)
-        )
+        return _npath_expression(node.test) * (_npath_block(node.body) + _npath_block(node.orelse))
     if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
         condition = node.iter if isinstance(node, (ast.For, ast.AsyncFor)) else node.test
-        return _npath_expression(condition) + _npath_block(node.body) + _npath_block(node.orelse)
+        return _npath_expression(condition) * (_npath_block(node.body) + _npath_block(node.orelse))
     if isinstance(node, (ast.Try, ast.TryStar)):
         handlers = sum(_npath_block(handler.body) for handler in node.handlers)
-        return _npath_block(node.body) + handlers + _npath_block(node.orelse) + _npath_block(node.finalbody)
+        return (_npath_block(node.body) + handlers) * _npath_block(node.orelse) * _npath_block(node.finalbody)
     if isinstance(node, ast.Match):
         return sum(
             _npath_block(case.body) + (_npath_expression(case.guard) if case.guard is not None else 0)
@@ -944,7 +940,7 @@ def _npath_expression(node: ast.AST) -> int:
     if isinstance(node, ast.IfExp):
         return _npath_expression(node.test) + _npath_expression(node.body) + _npath_expression(node.orelse)
     if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
-        return _npath_comprehension(node.generators)
+        return _npath_comprehension(node)
     if isinstance(node, ast.Lambda):
         return 1
     complexity = 1
@@ -953,11 +949,18 @@ def _npath_expression(node: ast.AST) -> int:
     return complexity
 
 
-def _npath_comprehension(generators: Sequence[ast.comprehension]) -> int:
+def _npath_comprehension(
+    node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp,
+) -> int:
     complexity = 1
-    for generator in generators:
-        complexity *= 1 + len(generator.ifs)
-    return complexity
+    for generator in node.generators:
+        filters = 1
+        for condition in generator.ifs:
+            filters += _npath_expression(condition)
+        complexity *= _npath_expression(generator.iter) * filters
+    if isinstance(node, ast.DictComp):
+        return complexity * _npath_expression(node.key) * _npath_expression(node.value)
+    return complexity * _npath_expression(node.elt)
 
 
 def _excessive_parameter_list_findings(

@@ -880,8 +880,8 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "    while value:\n        break\n"
                 "    try:\n        raise RuntimeError\n"
                 "    except RuntimeError:\n        pass\n"
-                "    branch = 1 if value else 0\n"
-                "    values = [item for item in range(2) if item]\n"
+                "    branch = max(1 if value else 0, 0)\n"
+                "    values = [1 if item else 0 for item in range(2) if item]\n"
                 "    match value:\n"
                 "        case 1:\n            pass\n"
                 "        case _:\n            pass\n"
@@ -906,8 +906,8 @@ class CommandAcceptanceTests(unittest.TestCase):
             )
             ruleset.write_text(
                 """<ruleset name="callable metrics">
-    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="11" /></properties></rule>
-    <rule ref="NPathComplexity"><properties><property name="minimum" value="1728" /></properties></rule>
+    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="12" /></properties></rule>
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="1152" /></properties></rule>
     <rule ref="ExcessiveMethodLength"><properties><property name="minimum" value="3" /></properties></rule>
     <rule ref="ExcessiveParameterList"><properties><property name="minimum" value="10" /></properties></rule>
 </ruleset>
@@ -954,13 +954,13 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         report = stdout.getvalue()
         self.assertIn(
-            "CyclomaticComplexity [priority 3] The function decision_flow() has a Cyclomatic Complexity of 11. "
-            "The configured cyclomatic complexity threshold is 11.",
+            "CyclomaticComplexity [priority 3] The function decision_flow() has a Cyclomatic Complexity of 12. "
+            "The configured cyclomatic complexity threshold is 12.",
             report,
         )
         self.assertIn(
-            "NPathComplexity [priority 3] The function decision_flow() has an NPath complexity of 1728. "
-            "The configured NPath complexity threshold is 1728.",
+            "NPathComplexity [priority 3] The function decision_flow() has an NPath complexity of 1152. "
+            "The configured NPath complexity threshold is 1152.",
             report,
         )
         self.assertIn(
@@ -1004,6 +1004,21 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertTrue((FIXTURES / reference["php_fixture"]).is_file())
         python_fixture = FIXTURES / reference["python_fixture"]
         self.assertTrue(python_fixture.is_file())
+        self.assertEqual(
+            "vendor/bin/phpmd tests/fixtures/phpmd_2_15_0_callable_metrics.php text codesize",
+            reference["phpmd_command"],
+        )
+        self.assertEqual(
+            [
+                "CyclomaticComplexity    The function decisionFlow() has a Cyclomatic Complexity of 10. "
+                "The configured cyclomatic complexity threshold is 10.",
+                "NPathComplexity         The function decisionFlow() has an NPath complexity of 512. "
+                "The configured NPath complexity threshold is 200.",
+                "ExcessiveParameterList  The function decisionFlow has 10 parameters. "
+                "Consider reducing the number of parameters to less than 10.",
+            ],
+            reference["phpmd_text_output"],
+        )
 
         reports: dict[str, str] = {}
         for rule_name, source in [
@@ -1022,7 +1037,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         expected_messages = {
             "CyclomaticComplexity": "The function decision_flow() has a Cyclomatic Complexity of 10. "
             "The configured cyclomatic complexity threshold is 10.",
-            "NPathComplexity": "The function decision_flow() has an NPath complexity of 19683. "
+            "NPathComplexity": "The function decision_flow() has an NPath complexity of 512. "
             "The configured NPath complexity threshold is 200.",
             "ExcessiveParameterList": "The function decision_flow has 10 parameters. "
             "Consider reducing the number of parameters to less than 10.",
@@ -1032,6 +1047,83 @@ class CommandAcceptanceTests(unittest.TestCase):
         for rule in reference["rules"]:
             self.assertIn(f"{rule['name']} [priority {rule['priority']}]", reports[rule["name"]])
             self.assertIn(expected_messages[rule["name"]], reports[rule["name"]])
+            self.assertEqual(1, reports[rule["name"]].count(f"{rule['name']} [priority"))
+            for other_rule in reference["rules"]:
+                if other_rule["name"] != rule["name"]:
+                    self.assertNotIn(other_rule["name"], reports[rule["name"]])
+
+    def test_callable_metrics_below_each_default_threshold_are_clean(self) -> None:
+        sources = {
+            "CyclomaticComplexity": "def choose(value):\n" + "    if value:\n        return value\n" * 8,
+            "NPathComplexity": "def choose(value):\n" + "    if value:\n        value += 1\n" * 7,
+            "ExcessiveMethodLength": _function_with_passes("choose", 98),
+            "ExcessiveParameterList": "def choose(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n    pass\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            for rule_name, source_text in sources.items():
+                source = temporary / f"{rule_name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run([str(source), "text", rule_name], stdout, stderr)
+
+                self.assertEqual(0, status, rule_name)
+                self.assertEqual("", stdout.getvalue(), rule_name)
+                self.assertEqual("", stderr.getvalue(), rule_name)
+
+    def test_callable_metrics_leave_idiomatic_python_quiet(self) -> None:
+        source_text = (
+            "def normalized_labels(raw_labels: list[str]) -> list[str]:\n"
+            "    labels = [label.strip().lower() for label in raw_labels if label.strip()]\n"
+            "    return sorted(set(labels))\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "labels.py"
+            source.write_text(source_text, encoding="utf-8")
+            for rule_name in [
+                "CyclomaticComplexity",
+                "NPathComplexity",
+                "ExcessiveMethodLength",
+                "ExcessiveParameterList",
+            ]:
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run([str(source), "text", rule_name], stdout, stderr)
+
+                self.assertEqual(0, status, rule_name)
+                self.assertEqual("", stdout.getvalue(), rule_name)
+                self.assertEqual("", stderr.getvalue(), rule_name)
+
+    def test_npath_counts_conditional_expression_in_comprehension_element(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "comprehension.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def choose(values):\n    return [1 if value else 0 for value in values]\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function choose() has an NPath complexity of 3. The configured NPath complexity threshold is 3.",
+            stdout.getvalue(),
+        )
 
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
