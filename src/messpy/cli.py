@@ -265,7 +265,7 @@ def _analyze(source_files: Sequence[Path]) -> tuple[list[str], list[str]]:
                 f"{source_file.as_posix()}:{line}: ProcessingError Could not parse {source_file}: {error.msg}"
             )
             continue
-        except OSError as error:
+        except (OSError, UnicodeError) as error:
             processing_errors.append(
                 f"{source_file.as_posix()}:1: ProcessingError Could not process {source_file}: {error}"
             )
