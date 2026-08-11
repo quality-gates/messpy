@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "messpy"
+version = "0.1.0"
+description = "Mess detector for Python."
+requires-python = ">=3.11"
+
+[project.scripts]
+messpy = "messpy.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/messpy"]

@@ -1,0 +1,76 @@
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).parent.parent
+FIXTURES = ROOT / "tests" / "fixtures"
+
+
+class DistributionAcceptanceTests(unittest.TestCase):
+    def test_built_wheel_installs_and_runs_the_messpy_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            wheel_directory = temporary / "wheels"
+            environment = temporary / "environment"
+            subprocess.run(
+                [sys.executable, "-m", "pip", "wheel", str(ROOT), "--wheel-dir", str(wheel_directory)],
+                check=True,
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                [sys.executable, "-m", "venv", str(environment)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            executable = environment / "bin" / "messpy"
+            subprocess.run(
+                [
+                    environment / "bin" / "python",
+                    "-m",
+                    "pip",
+                    "install",
+                    "--no-index",
+                    "--find-links",
+                    str(wheel_directory),
+                    "messpy",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            help_result = subprocess.run(
+                [executable, "--help"], capture_output=True, text=True, check=False
+            )
+            version_result = subprocess.run(
+                [executable, "--version"], capture_output=True, text=True, check=False
+            )
+            clean_result = subprocess.run(
+                [executable, str(FIXTURES / "clean.py"), "text", "codesize"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            finding_result = subprocess.run(
+                [executable, str(FIXTURES / "long_function.py"), "text", "codesize"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(0, help_result.returncode)
+        self.assertIn("messpy <path> text codesize", help_result.stdout)
+        self.assertEqual(0, version_result.returncode)
+        self.assertEqual("0.1.0\n", version_result.stdout)
+        self.assertEqual(0, clean_result.returncode)
+        self.assertEqual("", clean_result.stdout)
+        self.assertEqual(2, finding_result.returncode)
+        self.assertIn("ExcessiveMethodLength", finding_result.stdout)
