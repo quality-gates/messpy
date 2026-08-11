@@ -2401,6 +2401,171 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn(rule_name, report)
         self.assertEqual((0, "", ""), (goto_status, goto_stdout.getvalue(), goto_stderr.getvalue()))
 
+    def test_design_metrics_find_dependency_state_and_cohesion_hazards(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "design_metrics.py"
+            imports = "".join(f"from dependency{index} import Type{index}\n" for index in range(13))
+            source.write_text(
+                imports
+                + "\nshared = {}\n"
+                "if runtime_enabled:\n"
+                "    conditional_state = {}\n"
+                "conditional_state[\"value\"] = 1\n"
+                "if registry := {}:\n"
+                "    registry.update(value=1)\n"
+                "\ndef mutate():\n"
+                "    shared[\"value\"] = 1\n"
+                "\nclass Coupled(Type0):\n"
+                "    @Type1.decorate\n"
+                "    def build(self, value: Type2) -> Type3:\n"
+                "        return (Type4(), Type5(), Type6(), Type7(), Type8(), Type9(), Type10(), Type11(), Type12())\n"
+                "\nclass NonTrivialSetters:\n"
+                "    def load_left(self): self.left_state = left_factory.build()\n"
+                "    def load_right(self): self.right_state = right_factory.build()\n"
+                "\nclass Disconnected:\n"
+                "    def left(self):\n"
+                "        self.left_state += 1\n"
+                "        return self.left_state\n"
+                "\n    def right(self):\n"
+                "        self.right_state += 1\n"
+                "        return self.right_state\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "design"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("CouplingBetweenObjects [priority 2]", report)
+        self.assertIn("value of 13", report)
+        self.assertIn("GlobalVariable [priority 1]", report)
+        self.assertIn("shared", report)
+        self.assertIn("conditional_state", report)
+        self.assertIn("registry", report)
+        self.assertIn("class NonTrivialSetters", report)
+        self.assertIn("LackOfCohesionOfMethods [priority 3]", report)
+        self.assertIn("value of 2", report)
+
+    def test_design_metrics_keep_exact_boundaries_and_python_idioms_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "clean_design_metrics.py"
+            imports = "".join(f"from dependency{index} import Type{index}\n" for index in range(12))
+            source.write_text(
+                imports
+                + "from abc import abstractmethod\n"
+                "from typing import Final, Protocol as Proto\n"
+                "\nTOKEN: Final = \"stable\"\n"
+                "read_only = {}\n"
+                "\nclass Connected:\n"
+                "    def first(self):\n"
+                "        self.state = 1\n"
+                "\n    def second(self):\n"
+                "        return self.first() + self.state\n"
+                "\n    @property\n"
+                "    def value(self):\n"
+                "        return self.state\n"
+                "\n    @abstractmethod\n"
+                "    def required(self):\n"
+                "        self.unrelated += 1\n"
+                "        return self.unrelated\n"
+                "\n    def stub(self): ...\n"
+                "\n    @staticmethod\n"
+                "    def helper():\n"
+                "        return Type0()\n"
+                "\n    @classmethod\n"
+                "    def construct(cls):\n"
+                "        return cls()\n"
+                "\nclass AccessorConnected:\n"
+                "    @property\n"
+                "    def item(self):\n"
+                "        return self._item\n"
+                "\n    def through_property(self):\n"
+                "        self.total = self.item\n"
+                "        return self.total\n"
+                "\n    def through_field(self):\n"
+                "        self.total = self._item\n"
+                "        return self.total\n"
+                "\nclass Contract(Proto):\n"
+                "    def first(self): self.first_state += 1; return self.first_state\n"
+                "    def second(self): self.second_state += 1; return self.second_state\n"
+                "\nclass Twelve(Type0, Type1, Type2, Type3, Type4, Type5, Type6, Type7, Type8, Type9, Type10, Type11):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            reports = {}
+            for rule_name in ["CouplingBetweenObjects", "GlobalVariable", "LackOfCohesionOfMethods"]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(source), "text", "design", "--only", rule_name], stdout, stderr)
+                reports[rule_name] = (status, stdout.getvalue(), stderr.getvalue())
+
+        for result in reports.values():
+            self.assertEqual((0, "", ""), result)
+
+    def test_design_metrics_honor_configured_thresholds_and_immutable_state_option(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "configured_metrics.py"
+            ruleset = directory / "configured-metrics.xml"
+            source.write_text(
+                "from first import First\n"
+                "from second import Second\n"
+                "from typing import Final\n"
+                "\nTOKEN: Final = 1\n"
+                "read_only = {}\n"
+                "\n@First.decorate\n"
+                "class Coupled(First):\n"
+                "    field: Second\n"
+                "    duplicate: Second\n"
+                "\nclass SyntaxDependencies:\n"
+                "    def build(self, value: \"quoted.Dependency\"):\n"
+                "        from local_dep import Local\n"
+                "        return Local(), external.Dependency(), value\n"
+                "\nclass ScopedDependencies:\n"
+                "    def shadow(self, External): return External\n"
+                "    def build(self): return External(), Other()\n"
+                "\nclass AliasedModuleDependencies:\n"
+                "    def build(self):\n"
+                "        import package.module as dependency\n"
+                "        return dependency.First(), dependency.Second()\n"
+                "\nclass RelativeDependencies:\n"
+                "    def build(self, value: \"quoted.Other\"):\n"
+                "        from . import Relative\n"
+                "        return Relative(), value\n"
+                "\nclass ThreeParts:\n"
+                "    def first(self): self.first_state += 1; return self.first_state\n"
+                "    def second(self): self.second_state += 1; return self.second_state\n"
+                "    def third(self): self.third_state += 1; return self.third_state\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"CouplingBetweenObjects\"><properties><property name=\"maximum\" value=\"2\"/></properties></rule>"
+                "<rule ref=\"GlobalVariable\"><properties><property name=\"report-immutable\" value=\"true\"/></properties></rule>"
+                "<rule ref=\"LackOfCohesionOfMethods\"><properties><property name=\"maximum\" value=\"2\"/></properties></rule>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("value of 2", report)
+        self.assertIn("read_only", report)
+        self.assertIn("TOKEN", report)
+        self.assertIn("class SyntaxDependencies has a coupling between objects value of 3", report)
+        self.assertIn("class ScopedDependencies has a coupling between objects value of 2", report)
+        self.assertIn("class AliasedModuleDependencies has a coupling between objects value of 2", report)
+        self.assertIn("class RelativeDependencies has a coupling between objects value of 2", report)
+        self.assertIn("value of 3", report)
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()

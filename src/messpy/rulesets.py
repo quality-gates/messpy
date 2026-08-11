@@ -146,6 +146,15 @@ _CATALOG = {
         properties={"unwanted-functions": "", "markers": "TODO,FIXME,HACK"},
     ),
     "emptycatchblock": LoadedRule(name="EmptyCatchBlock", priority=2, properties={}),
+    "couplingbetweenobjects": LoadedRule(
+        name="CouplingBetweenObjects", priority=2, properties={"maximum": "13"}
+    ),
+    "globalvariable": LoadedRule(
+        name="GlobalVariable", priority=1, properties={"report-immutable": "false"}
+    ),
+    "lackofcohesionofmethods": LoadedRule(
+        name="LackOfCohesionOfMethods", priority=3, properties={"maximum": "1"}
+    ),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -177,12 +186,18 @@ _BUILT_IN_RULESETS = {
         "CountInLoopExpression",
         "DevelopmentCodeFragment",
         "EmptyCatchBlock",
+        "CouplingBetweenObjects",
+        "GlobalVariable",
+        "LackOfCohesionOfMethods",
     ),
     "python": (
         "IfStatementAssignment",
         "DuplicatedArrayKey",
         "DevelopmentCodeFragment",
         "EmptyCatchBlock",
+        "CouplingBetweenObjects",
+        "GlobalVariable",
+        "LackOfCohesionOfMethods",
     ),
     "opinionated": (
         "BooleanArgumentFlag",

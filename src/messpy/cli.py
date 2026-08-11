@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -49,6 +50,9 @@ EXIT_EXPRESSION_RULE_NAME = "ExitExpression"
 COUNT_IN_LOOP_EXPRESSION_RULE_NAME = "CountInLoopExpression"
 DEVELOPMENT_CODE_FRAGMENT_RULE_NAME = "DevelopmentCodeFragment"
 EMPTY_CATCH_BLOCK_RULE_NAME = "EmptyCatchBlock"
+COUPLING_BETWEEN_OBJECTS_RULE_NAME = "CouplingBetweenObjects"
+GLOBAL_VARIABLE_RULE_NAME = "GlobalVariable"
+LACK_OF_COHESION_RULE_NAME = "LackOfCohesionOfMethods"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -866,6 +870,9 @@ def _design_findings(
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
         *_development_fragment_findings(path, source, tree, rules, parents, contexts, bindings),
         *_empty_catch_findings(path, tree, rules, parents, contexts),
+        *_coupling_findings(path, tree, rules),
+        *_global_variable_findings(path, tree, rules, parents, bindings),
+        *_cohesion_findings(path, tree, rules),
     ]
 
 
@@ -1048,6 +1055,444 @@ def _is_empty_handler(handler: ast.ExceptHandler) -> bool:
         isinstance(statement, ast.Expr)
         and isinstance(statement.value, ast.Constant)
         and statement.value.value is Ellipsis
+    )
+
+
+def _coupling_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, COUPLING_BETWEEN_OBJECTS_RULE_NAME)
+    if rule is None:
+        return []
+    maximum = _integer_property(rule, "maximum")
+    aliases = _module_import_aliases(tree)
+    module_names = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    findings: list[Finding] = []
+    for class_info in _classes(tree):
+        local_names = {
+            class_info.name,
+            *module_names,
+            *class_info.fields,
+            *(method.name for method in class_info.methods),
+        }
+        collector = _DependencyCollector(aliases, local_names)
+        for expression in [*class_info.node.bases, *class_info.node.decorator_list]:
+            collector.visit(expression)
+        for statement in class_info.node.body:
+            if not isinstance(statement, ast.ClassDef):
+                collector.visit(statement)
+        count = len(collector.dependencies)
+        if count < maximum:
+            continue
+        findings.append(
+            _class_finding(
+                path,
+                class_info,
+                rule,
+                f"The class {class_info.name} has a coupling between objects value of {count}. "
+                f"Consider to reduce the number of dependencies under {maximum}.",
+            )
+        )
+    return findings
+
+
+def _module_import_aliases(tree: ast.Module) -> dict[str, tuple[str, bool]]:
+    aliases: dict[str, tuple[str, bool]] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Import):
+            for item in statement.names:
+                binding = item.asname or item.name.split(".", 1)[0]
+                target = item.name if item.asname else binding
+                aliases[binding] = (target, False)
+        elif isinstance(statement, ast.ImportFrom):
+            module = _import_from_module(statement)
+            for item in statement.names:
+                aliases[item.asname or item.name] = (_imported_name(module, item.name), True)
+    return aliases
+
+
+def _import_from_module(node: ast.ImportFrom) -> str:
+    return f"{'.' * node.level}{node.module or ''}"
+
+
+def _imported_name(module: str, name: str) -> str:
+    separator = "" if module.endswith(".") else "."
+    return f"{module}{separator}{name}"
+
+
+class _DependencyCollector(ast.NodeVisitor):
+    def __init__(self, aliases: dict[str, tuple[str, bool]], local_names: set[str]) -> None:
+        self.aliases = dict(aliases)
+        self.local_names = local_names
+        self.dependencies: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self._add(node.id)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for item in node.names:
+            binding = item.asname or item.name.split(".", 1)[0]
+            target = item.name if item.asname else binding
+            self.aliases[binding] = (target, False)
+            self.local_names.discard(binding)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        module = _import_from_module(node)
+        for item in node.names:
+            dependency = _imported_name(module, item.name)
+            binding = item.asname or item.name
+            self.aliases[binding] = (dependency, True)
+            self.local_names.discard(binding)
+
+    def visit_arg(self, node: ast.arg) -> None:
+        self._visit_annotation(node.annotation)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._visit_annotation(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_function(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        name = _dotted_name(node)
+        if name:
+            self._add(name)
+        else:
+            self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        outer_names = self.local_names
+        outer_aliases = self.aliases
+        scope_names = {
+            *(argument.arg for argument in _arguments(node.args)),
+            *_direct_bindings(node),
+        }
+        self.local_names = outer_names | scope_names
+        self.aliases = {
+            name: alias for name, alias in outer_aliases.items() if name not in scope_names
+        }
+        try:
+            for decorator in node.decorator_list:
+                self.visit(decorator)
+            for argument in _arguments(node.args):
+                self.visit_arg(argument)
+            for default in [*node.args.defaults, *node.args.kw_defaults]:
+                if default is not None:
+                    self.visit(default)
+            self._visit_annotation(node.returns)
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.local_names = outer_names
+            self.aliases = outer_aliases
+
+    def _visit_annotation(self, annotation: ast.expr | None) -> None:
+        if annotation is None:
+            return
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            try:
+                parsed = ast.parse(annotation.value, mode="eval")
+            except SyntaxError:
+                return
+            self.visit(parsed.body)
+            return
+        self.visit(annotation)
+
+    def _add(self, name: str) -> None:
+        root, *tail = name.split(".")
+        if root in self.local_names or root in dir(builtins) or root == "typing":
+            return
+        if root in self.aliases:
+            imported, is_symbol = self.aliases[root]
+            dependency = imported if is_symbol else ".".join([imported, *tail[:1]])
+        elif tail:
+            dependency = ".".join([root, *tail[:1]])
+        elif root[:1].isupper():
+            dependency = root
+        else:
+            return
+        if not dependency.startswith(("typing.", "collections.abc.")):
+            self.dependencies.add(dependency)
+
+
+def _global_variable_findings(
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> list[Finding]:
+    rule = _rule(rules, GLOBAL_VARIABLE_RULE_NAME)
+    if rule is None:
+        return []
+    candidates: dict[str, ast.Name] = {}
+    immutable_candidates: set[str] = set()
+    initial_targets: set[int] = set()
+    collector = _ModuleBindingCollector()
+    collector.visit(tree)
+    for target, annotation in collector.bindings:
+        for name in _target_names(target):
+            if name.id in candidates:
+                continue
+            candidates[name.id] = name
+            initial_targets.add(id(name))
+            if annotation is not None and _is_final_annotation(annotation):
+                immutable_candidates.add(name.id)
+    mutated: set[str] = set()
+    mutators = {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            if id(node) not in initial_targets and node.id in candidates and _is_module_assignment(node, parents):
+                mutated.add(node.id)
+        elif isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            root = _root_name(node)
+            if root in candidates and not _is_function_shadowed(root, node, parents, bindings):
+                mutated.add(root)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutators:
+            root = _root_name(node.func.value)
+            if root in candidates and not _is_function_shadowed(root, node, parents, bindings):
+                mutated.add(root)
+    selected = (
+        set(candidates)
+        if _boolean_property(rule, "report-immutable")
+        else mutated - immutable_candidates
+    )
+    return [
+        Finding(
+            path,
+            candidates[name].lineno,
+            rule.name,
+            rule.priority,
+            f"Avoid using static mutable state: {name}.",
+            context=name,
+        )
+        for name in sorted(selected, key=lambda item: candidates[item].lineno)
+    ]
+
+
+class _ModuleBindingCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.bindings: list[tuple[ast.AST, ast.expr | None]] = []
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.bindings.extend((target, None) for target in node.targets)
+        self.visit(node.value)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.bindings.append((node.target, node.annotation))
+            self.visit(node.value)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.bindings.append((node.target, None))
+        self.visit(node.value)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _is_module_assignment(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            return any(
+                isinstance(statement, ast.Global) and isinstance(node, ast.Name) and node.id in statement.names
+                for statement in ast.walk(current)
+            )
+    return True
+
+
+def _root_name(node: ast.AST) -> str:
+    current = node
+    while isinstance(current, (ast.Attribute, ast.Subscript)):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else ""
+
+
+def _cohesion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, LACK_OF_COHESION_RULE_NAME)
+    if rule is None:
+        return []
+    maximum = _integer_property(rule, "maximum")
+    findings: list[Finding] = []
+    for class_info in _classes(tree):
+        lcom = _lcom4(class_info)
+        if lcom <= maximum:
+            continue
+        findings.append(
+            _class_finding(
+                path,
+                class_info,
+                rule,
+                f"The class {class_info.name} has a Lack of Cohesion Of Methods (LCOM4) value of {lcom}. "
+                f"Consider to split this class into {lcom} smaller classes.",
+            )
+        )
+    return findings
+
+
+def _lcom4(class_info: ClassInfo) -> int:
+    accessor_fields = _accessor_fields(class_info)
+    methods: dict[str, _MethodRelationships] = {}
+    for method in class_info.methods:
+        if (
+            method.name.startswith("__")
+            or _has_property_decorator(method)
+            or _has_decorator(method, "staticmethod")
+            or _has_decorator(method, "classmethod")
+            or _is_contract_method(method)
+            or _has_decorator(method, "abstractmethod")
+            or method.name in accessor_fields
+        ):
+            continue
+        receiver = _instance_receiver(method)
+        if receiver is None:
+            continue
+        collector = _MethodRelationshipCollector(receiver, accessor_fields)
+        for statement in method.body:
+            collector.visit(statement)
+        methods[method.name] = _MethodRelationships(collector.fields, collector.calls)
+    active = {
+        name
+        for name, relationships in methods.items()
+        if relationships.fields or relationships.calls & methods.keys()
+    }
+    active.update(
+        called
+        for relationships in methods.values()
+        for called in relationships.calls
+        if called in methods
+    )
+    if not active:
+        return 1
+    connected = {name: name for name in active}
+
+    def find(name: str) -> str:
+        while connected[name] != name:
+            connected[name] = connected[connected[name]]
+            name = connected[name]
+        return name
+
+    def union(left: str, right: str) -> None:
+        connected[find(left)] = find(right)
+
+    names = sorted(active)
+    for index, left in enumerate(names):
+        for right in names[index + 1 :]:
+            if methods[left].fields & methods[right].fields:
+                union(left, right)
+    for name in names:
+        for called in methods[name].calls & active:
+            union(name, called)
+    return len({find(name) for name in active})
+
+
+@dataclass(frozen=True)
+class _MethodRelationships:
+    fields: frozenset[str]
+    calls: frozenset[str]
+
+
+class _MethodRelationshipCollector(ast.NodeVisitor):
+    def __init__(self, receiver: str, accessor_fields: dict[str, str]) -> None:
+        self.receiver = receiver
+        self.accessor_fields = accessor_fields
+        self.fields: frozenset[str] = frozenset()
+        self.calls: frozenset[str] = frozenset()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == self.receiver
+        ):
+            if node.func.attr in self.accessor_fields:
+                self.fields = self.fields | {self.accessor_fields[node.func.attr]}
+            else:
+                self.calls = self.calls | {node.func.attr}
+            for argument in [*node.args, *node.keywords]:
+                self.visit(argument.value if isinstance(argument, ast.keyword) else argument)
+            return
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.value, ast.Name) and node.value.id == self.receiver:
+            self.fields = self.fields | {self.accessor_fields.get(node.attr, node.attr)}
+            return
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def _accessor_fields(class_info: ClassInfo) -> dict[str, str]:
+    return {
+        method.name: field
+        for method in class_info.methods
+        if (field := _trivial_accessor_field(method)) is not None
+    }
+
+
+def _trivial_accessor_field(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    if len(method.body) != 1:
+        return None
+    statement = method.body[0]
+    if isinstance(statement, ast.Return):
+        target = statement.value
+    elif isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        if not _is_plain_accessor_value(statement.value, method):
+            return None
+        target = statement.targets[0]
+    elif isinstance(statement, ast.AnnAssign):
+        if statement.value is None or not _is_plain_accessor_value(statement.value, method):
+            return None
+        target = statement.target
+    else:
+        return None
+    if (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return target.attr
+    return None
+
+
+def _is_plain_accessor_value(
+    value: ast.expr, method: ast.FunctionDef | ast.AsyncFunctionDef
+) -> bool:
+    receiver = _instance_receiver(method)
+    return (
+        isinstance(value, ast.Name)
+        and value.id != receiver
+        and value.id in {argument.arg for argument in _arguments(method.args)}
     )
 
 
@@ -2786,8 +3231,9 @@ def _excessive_class_complexity_findings(
 
 def _classes(tree: ast.Module) -> list[ClassInfo]:
     classes = []
+    protocol_names = _protocol_base_names(tree)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef) or _is_protocol(node):
+        if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
         methods = tuple(
             statement
