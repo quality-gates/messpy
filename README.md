@@ -1,6 +1,29 @@
 # messpy
 
-`messpy` is a dependency-free Python mess detector with PHPMD-compatible rule identities, composable policies, deterministic reports, and syntax-only analysis. It supports every released Python minor from 3.11 onward.
+Catch maintainability problems in Python before they calcify: oversized functions and classes, tangled dependencies, dead private code, muddy naming, and other mess that reviews keep rediscovering.
+
+`messpy` is a local CLI. It reads source as text, never imports or runs your project, and needs no project dependencies installed. Python 3.11+.
+
+## Quick start
+
+```console
+python -m pip install messpy
+messpy src text python --ignore-tests
+```
+
+That scans `src` with the recommended low-noise policy and prints findings on stdout. Exit `0` is clean, `2` means findings, `1` means the tool or a source file failed.
+
+Common next steps:
+
+```console
+messpy src text python,opinionated --ignore-tests
+messpy src sarif python --ignore-tests --reportfile reports/messpy.sarif
+messpy src github python --ignore-tests
+```
+
+Full command syntax, options, and discovery: [docs/usage.md](docs/usage.md).
+What each rule checks: [docs/rules.md](docs/rules.md).
+Machine-readable report shapes: [docs/reports.md](docs/reports.md).
 
 ## Install
 
@@ -11,21 +34,9 @@ python -m pip install messpy
 messpy --version
 ```
 
-## Run
+## Tune the gate
 
-```console
-messpy <path[,path...]> <format> <ruleset[,ruleset...]> [options]
-messpy src text python --ignore-tests
-messpy src sarif python,opinionated --reportfile reports/messpy.sarif
-```
-
-Full command syntax, options, exit codes, and discovery behavior: [docs/usage.md](docs/usage.md).
-Rule catalogue, thresholds, and Python adaptations: [docs/rules.md](docs/rules.md).
-Machine report schemas: [docs/reports.md](docs/reports.md).
-
-## Policies and custom XML
-
-`python` is the recommended low-noise policy. Combine `python,opinionated` for every applicable built-in. Non-applicable identities such as `GotoStatement` remain loadable and quiet.
+Start with `python`. Add `opinionated` when you want the stricter checks the recommended set leaves out. Point at a custom XML ruleset when thresholds or membership need to live in the repo:
 
 ```xml
 <ruleset name="team policy">
@@ -41,22 +52,20 @@ Machine report schemas: [docs/reports.md](docs/reports.md).
 </ruleset>
 ```
 
-References are case-insensitive and may name a built-in, one rule, or another XML file. Rulesets can nest; later overrides win; `<exclude name="..."/>` removes a loaded rule.
-
-## Suppressions
-
-```python
-# messpy-disable-next-line RuleName,OtherRule
-value = risky_operation()
-
-# messpy-disable RuleName
-# nested disable regions are supported
-# messpy-enable RuleName
+```console
+messpy src text path/to/team-policy.xml --ignore-tests
 ```
 
-Names are case-insensitive. Malformed directives are ignored. Normal reports omit suppressed findings; `--strict` keeps them marked suppressed.
+## Suppress one intentional exception
 
-## Automation
+```python
+# messpy-disable-next-line RuleName
+value = deliberate_exception()
+```
+
+Region form: `messpy-disable` / `messpy-enable`. Names are case-insensitive. `--strict` keeps suppressed findings visible in the report.
+
+## Drop it into CI
 
 ```yaml
 # GitHub Actions
@@ -74,4 +83,4 @@ artifacts:
 
 ## Maintainers
 
-CI builds and tests the package across supported Python minors and platforms, inspects wheel/sdist contents, and dogfoods the installed command. Publishing uses already-tested CI artifacts through trusted publishing; see [docs/releasing.md](docs/releasing.md). Fuzzing notes live in [docs/fuzzing.md](docs/fuzzing.md).
+Release process: [docs/releasing.md](docs/releasing.md). Fuzzing: [docs/fuzzing.md](docs/fuzzing.md).
