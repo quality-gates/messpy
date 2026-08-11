@@ -254,6 +254,146 @@ class CommandAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual("", stderr.getvalue())
 
+    def test_malformed_source_reports_an_error_without_hiding_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            violating = project / "violating.py"
+            malformed = project / "malformed.py"
+            violating.write_text(_long_function("violating"), encoding="utf-8")
+            malformed.write_text("def broken(:\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(project), "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(_finding_for(violating, "violating"), stdout.getvalue())
+        self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_exit_ignore_flags_change_status_without_changing_the_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            violating = project / "violating.py"
+            malformed = project / "malformed.py"
+            violating.write_text(_long_function("violating"), encoding="utf-8")
+            malformed.write_text("def broken(:\n", encoding="utf-8")
+
+            default_stdout = StringIO()
+            default_stderr = StringIO()
+            default_status = run([str(project), "text", "codesize"], default_stdout, default_stderr)
+            errors_ignored_stdout = StringIO()
+            errors_ignored_stderr = StringIO()
+            errors_ignored_status = run(
+                [str(project), "text", "codesize", "--ignore-errors-on-exit"],
+                errors_ignored_stdout,
+                errors_ignored_stderr,
+            )
+            violations_ignored_stdout = StringIO()
+            violations_ignored_stderr = StringIO()
+            violations_ignored_status = run(
+                [str(violating), "text", "codesize", "--ignore-violations-on-exit"],
+                violations_ignored_stdout,
+                violations_ignored_stderr,
+            )
+            all_ignored_stdout = StringIO()
+            all_ignored_stderr = StringIO()
+            all_ignored_status = run(
+                [
+                    str(project),
+                    "text",
+                    "codesize",
+                    "--ignore-errors-on-exit",
+                    "--ignore-violations-on-exit",
+                ],
+                all_ignored_stdout,
+                all_ignored_stderr,
+            )
+
+        self.assertEqual(1, default_status)
+        self.assertEqual(2, errors_ignored_status)
+        self.assertEqual(0, violations_ignored_status)
+        self.assertEqual(0, all_ignored_status)
+        self.assertEqual(default_stdout.getvalue(), errors_ignored_stdout.getvalue())
+        self.assertEqual(default_stdout.getvalue(), all_ignored_stdout.getvalue())
+        self.assertEqual(f"{_finding_for(violating, 'violating')}\n", violations_ignored_stdout.getvalue())
+        self.assertEqual("", default_stderr.getvalue())
+        self.assertEqual(default_stderr.getvalue(), errors_ignored_stderr.getvalue())
+        self.assertEqual(default_stderr.getvalue(), all_ignored_stderr.getvalue())
+        self.assertEqual("", violations_ignored_stderr.getvalue())
+
+    def test_reportfile_replaces_the_complete_report_without_writing_stdout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            report_file = temporary / "reports" / "messpy.txt"
+            report_file.parent.mkdir()
+            report_file.write_text("stale report", encoding="utf-8")
+            source = temporary / "violating.py"
+            source.write_text(_long_function("violating"), encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "codesize", "--reportfile", str(report_file)], stdout, stderr
+            )
+
+            report = report_file.read_text(encoding="utf-8")
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(f"{_finding_for(source, 'violating')}\n", report)
+
+    def test_reportfile_write_failure_is_an_operational_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "violating.py"
+            source.write_text(_long_function("violating"), encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [
+                    str(source),
+                    "text",
+                    "codesize",
+                    "--reportfile",
+                    str(temporary / "missing" / "messpy.txt"),
+                ],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("Unable to write report", stderr.getvalue())
+
+    def test_command_errors_have_deterministic_diagnostics(self) -> None:
+        cases = [
+            ([], "Missing required arguments: <paths> <format> <ruleset[,ruleset...]>"),
+            (["missing.py", "text", "codesize"], "Input path does not exist"),
+            (["input.py", "text", "codesize", "--reportfile"], "Missing value for option: --reportfile"),
+            (["input.py", "text", "codesize", "extra"], "Unexpected positional argument: extra"),
+            (["input.py", "text", "codesize", "--unknown"], "Unknown option: --unknown"),
+            (
+                ["input.py", "text", "codesize", "--minimum-priority", "0"],
+                "--minimum-priority expects a priority between 1 and 5, received '0'.",
+            ),
+            (["input.py", "unknown", "codesize"], "Unknown format: unknown"),
+            (["input.py", "text", "unknown"], "Unknown ruleset 'unknown'."),
+        ]
+
+        for arguments, diagnostic in cases:
+            with self.subTest(arguments=arguments):
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(arguments, stdout, stderr)
+
+                self.assertEqual(1, status)
+                self.assertEqual("", stdout.getvalue())
+                self.assertIn(diagnostic, stderr.getvalue())
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
@@ -265,6 +405,9 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("--suffixes", stdout.getvalue())
         self.assertIn("--exclude", stdout.getvalue())
         self.assertIn("--ignore-tests", stdout.getvalue())
+        self.assertIn("--reportfile", stdout.getvalue())
+        self.assertIn("--ignore-errors-on-exit", stdout.getvalue())
+        self.assertIn("--ignore-violations-on-exit", stdout.getvalue())
         self.assertIn("Input directory symlinks are scanned; nested directory symlinks are skipped.", stdout.getvalue())
         self.assertIn("0 clean", stdout.getvalue())
         self.assertIn("2 findings", stdout.getvalue())
