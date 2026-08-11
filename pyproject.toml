@@ -8,6 +8,9 @@ version = "0.1.0"
 description = "Mess detector for Python."
 requires-python = ">=3.11"
 
+[project.optional-dependencies]
+fuzz = ["atheris>=2.3.0,<3"]
+
 [project.scripts]
 messpy = "messpy.cli:main"
 
