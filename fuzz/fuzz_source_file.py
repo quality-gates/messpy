@@ -11,11 +11,16 @@ with atheris.instrument_imports(include=["messpy"], enable_loader_override=False
     from messpy.cli import run
 
 
+NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+
+
 def fuzz_source_file(source_bytes: bytes) -> None:
     with TemporaryDirectory() as temporary_directory:
         source_file = Path(temporary_directory) / "source.py"
         source_file.write_bytes(source_bytes)
-        run([str(source_file), "text", "codesize"], StringIO(), StringIO())
+        status = run([str(source_file), "text", "codesize"], StringIO(), StringIO())
+    if status not in NORMAL_EXIT_STATUSES:
+        raise AssertionError(f"Unexpected MessPy exit status: {status}")
 
 
 def main() -> None:
