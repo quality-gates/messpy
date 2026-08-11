@@ -37,6 +37,34 @@ class SourceAnalysisSeedCorpusAcceptanceTests(unittest.TestCase):
         self.assertEqual(expected_statuses, actual_statuses)
 
 
+class SourceAnalysisReplayAcceptanceTests(unittest.TestCase):
+    def test_stored_source_inputs_replay_without_atheris_or_fuzz_state(self) -> None:
+        environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+
+        result = subprocess.run(
+            [sys.executable, "fuzz/replay_source_file.py", str(SEED_CORPUS)],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "".join(
+                f"Replayed source-analysis input: {SEED_CORPUS / name}\n"
+                for name in [
+                    "clean.py",
+                    "excessive_method_length.py",
+                    "malformed.py",
+                    "non_utf8.py",
+                ]
+            ),
+            result.stdout,
+        )
+
+
 @unittest.skipUnless(importlib.util.find_spec("atheris"), "Atheris is not installed")
 class SourceAnalysisFuzzTargetAcceptanceTests(unittest.TestCase):
     def test_bounded_source_analysis_fuzz_command_completes(self) -> None:
