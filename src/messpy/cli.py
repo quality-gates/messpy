@@ -28,6 +28,13 @@ TOO_MANY_FIELDS_RULE_NAME = "TooManyFields"
 TOO_MANY_METHODS_RULE_NAME = "TooManyMethods"
 TOO_MANY_PUBLIC_METHODS_RULE_NAME = "TooManyPublicMethods"
 EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME = "ExcessiveClassComplexity"
+SHORT_CLASS_NAME_RULE_NAME = "ShortClassName"
+LONG_CLASS_NAME_RULE_NAME = "LongClassName"
+SHORT_VARIABLE_RULE_NAME = "ShortVariable"
+LONG_VARIABLE_RULE_NAME = "LongVariable"
+SHORT_METHOD_NAME_RULE_NAME = "ShortMethodName"
+CONSTANT_NAMING_CONVENTIONS_RULE_NAME = "ConstantNamingConventions"
+BOOLEAN_GET_METHOD_NAME_RULE_NAME = "BooleanGetMethodName"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -153,6 +160,19 @@ class ClassInfo:
     name: str
     fields: tuple[str, ...]
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
+
+
+@dataclass(frozen=True)
+class NamingTarget:
+    name: str
+    line: int
+    role: str
+
+
+@dataclass(frozen=True)
+class NamingCallable:
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+    role: str
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -785,7 +805,204 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_excessive_method_length_findings(path, tree, rules),
         *_excessive_parameter_list_findings(path, tree, rules),
         *_class_findings(path, source, tree, rules),
+        *_naming_findings(path, tree, rules),
     ]
+
+
+def _naming_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    targets, callables = _naming_roles(tree)
+    findings: list[Finding] = []
+    findings.extend(_short_class_name_findings(path, targets, rules))
+    findings.extend(_long_class_name_findings(path, targets, rules))
+    findings.extend(_short_variable_findings(path, targets, rules))
+    findings.extend(_long_variable_findings(path, targets, rules))
+    findings.extend(_short_method_name_findings(path, targets, rules))
+    findings.extend(_constant_naming_findings(path, targets, rules))
+    findings.extend(_boolean_get_method_name_findings(path, callables, rules))
+    return findings
+
+
+def _short_class_name_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, SHORT_CLASS_NAME_RULE_NAME)
+    if rule is None:
+        return []
+    minimum = _integer_property(rule, "minimum")
+    return [
+        _naming_finding(
+            path,
+            target,
+            rule,
+            f"Avoid using short class names like {target.name}. Configured minimum length is {minimum}.",
+        )
+        for target in targets
+        if target.role == "class" and not _is_exempt_name(target.name) and len(target.name) < minimum
+    ]
+
+
+def _long_class_name_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, LONG_CLASS_NAME_RULE_NAME)
+    if rule is None:
+        return []
+    maximum = _integer_property(rule, "maximum")
+    return [
+        _naming_finding(
+            path,
+            target,
+            rule,
+            f"Avoid excessively long class names like {target.name}. Configured maximum length is {maximum}.",
+        )
+        for target in targets
+        if target.role == "class" and not _is_exempt_name(target.name) and len(target.name) > maximum
+    ]
+
+
+def _short_variable_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, SHORT_VARIABLE_RULE_NAME)
+    if rule is None:
+        return []
+    minimum = _integer_property(rule, "minimum")
+    return _variable_length_findings(path, targets, rule, minimum, too_long=False)
+
+
+def _long_variable_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, LONG_VARIABLE_RULE_NAME)
+    if rule is None:
+        return []
+    maximum = _integer_property(rule, "maximum")
+    return _variable_length_findings(path, targets, rule, maximum, too_long=True)
+
+
+def _variable_length_findings(
+    path: Path, targets: Sequence[NamingTarget], rule: LoadedRule, limit: int, too_long: bool
+) -> list[Finding]:
+    if too_long:
+        message = lambda target: (
+            f"Avoid excessively long variable names like {target.name}. Configured maximum length is {limit}."
+        )
+    else:
+        message = lambda target: f"Avoid variables with short names like {target.name}. Configured minimum length is {limit}."
+    return [
+        _naming_finding(path, target, rule, message(target))
+        for target in targets
+        if target.role in {"parameter", "property", "variable"}
+        and not _is_exempt_name(target.name)
+        and (len(target.name) > limit if too_long else len(target.name) < limit)
+    ]
+
+
+def _short_method_name_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, SHORT_METHOD_NAME_RULE_NAME)
+    if rule is None:
+        return []
+    minimum = _integer_property(rule, "minimum")
+    return [
+        _naming_finding(
+            path,
+            target,
+            rule,
+            f"Avoid using short method names like {target.name}(). Configured minimum length is {minimum}.",
+        )
+        for target in targets
+        if target.role in {"function", "method"} and not _is_exempt_name(target.name) and len(target.name) < minimum
+    ]
+
+
+def _constant_naming_findings(path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = _rule(rules, CONSTANT_NAMING_CONVENTIONS_RULE_NAME)
+    if rule is None:
+        return []
+    return [
+        _naming_finding(
+            path,
+            target,
+            rule,
+            f"The constant {target.name} should use UPPER_CASE naming.",
+        )
+        for target in targets
+        if target.role == "constant"
+        and not _is_exempt_name(target.name)
+        and re.fullmatch(r"[A-Z][A-Z0-9_]*", target.name) is None
+    ]
+
+
+def _boolean_get_method_name_findings(
+    path: Path, callables: Sequence[NamingCallable], rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = _rule(rules, BOOLEAN_GET_METHOD_NAME_RULE_NAME)
+    if rule is None:
+        return []
+    return [
+        Finding(
+            path,
+            callable_info.node.lineno,
+            rule.name,
+            rule.priority,
+            f"The boolean method {callable_info.node.name}() should not use the get prefix.",
+            context=callable_info.node.name,
+        )
+        for callable_info in callables
+        if callable_info.role == "method"
+        and _is_getter_name(callable_info.node.name)
+        and _has_boolean_result(callable_info.node)
+    ]
+
+
+def _naming_finding(path: Path, target: NamingTarget, rule: LoadedRule, message: str) -> Finding:
+    return Finding(path, target.line, rule.name, rule.priority, message, context=target.name)
+
+
+def _is_exempt_name(name: str) -> bool:
+    return name.startswith("_") or name in {"self", "cls", "e", "err", "exc", "ex", "i", "j", "k", "n", "x", "y", "z"}
+
+
+def _is_getter_name(name: str) -> bool:
+    return name.startswith("get_") or (name.startswith("get") and len(name) > 3 and name[3].isupper())
+
+
+def _has_boolean_result(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if _is_boolean_annotation(node.returns):
+        return True
+    returns = _return_values(node.body)
+    return bool(returns) and all(_is_boolean_expression(value) for value in returns)
+
+
+def _is_boolean_annotation(node: ast.expr | None) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "bool"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "bool"
+    return isinstance(node, ast.Constant) and node.value == "bool"
+
+
+def _return_values(statements: Sequence[ast.stmt]) -> list[ast.expr]:
+    values: list[ast.expr] = []
+    for statement in statements:
+        if isinstance(statement, ast.Return) and statement.value is not None:
+            values.append(statement.value)
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+            continue
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.stmt):
+                values.extend(_return_values([child]))
+    return values
+
+
+def _is_boolean_expression(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Compare)
+        or isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)
+        or isinstance(node, ast.Constant) and isinstance(node.value, bool)
+        or isinstance(node, ast.Call) and _called_name(node.func) in {"bool", "isinstance", "issubclass"}
+    )
+
+
+def _called_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
 
 
 def _cyclomatic_complexity_findings(
@@ -1050,6 +1267,152 @@ class _CallableCollector:
             for node in ast.walk(tree)
             if isinstance(node, ast.Lambda)
         )
+
+
+def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
+    collector = _NamingRoleCollector()
+    collector.visit(tree)
+    targets = sorted(collector.targets, key=lambda target: (target.line, target.role, target.name))
+    callables = sorted(collector.callables, key=lambda callable_info: callable_info.node.lineno)
+    return targets, callables
+
+
+class _NamingRoleCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.targets: list[NamingTarget] = []
+        self.callables: list[NamingCallable] = []
+        self.contexts: list[str] = []
+        self.class_depth = 0
+        self.receivers: list[str | None] = []
+        self.constant_target_ids: set[int] = set()
+        self.generic_target_ids: set[int] = set()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._add_target(node.name, node.lineno, "class")
+        self.contexts.append("class")
+        self.class_depth += 1
+        for statement in node.body:
+            self.visit(statement)
+        self.class_depth -= 1
+        self.contexts.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_callable(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_callable(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if _is_type_parameter_factory(node.value):
+            self.generic_target_ids.update(id(target) for name in node.targets for target in _target_names(name))
+        if self._is_module_or_class_scope():
+            self.constant_target_ids.update(
+                id(target)
+                for name in node.targets
+                for target in _target_names(name)
+                if re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None
+            )
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if _is_final_annotation(node.annotation) or (
+            self._is_module_or_class_scope()
+            and any(re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None for target in _target_names(node.target))
+        ):
+            self.constant_target_ids.update(id(target) for target in _target_names(node.target))
+        self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if not isinstance(node.ctx, ast.Store):
+            return
+        if id(node) in self.generic_target_ids:
+            return
+        role = "constant" if id(node) in self.constant_target_ids else self._variable_role()
+        self._add_target(node.id, node.lineno, role)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        receiver = self.receivers[-1] if self.receivers else None
+        if (
+            isinstance(node.ctx, ast.Store)
+            and self.class_depth > 0
+            and receiver is not None
+            and isinstance(node.value, ast.Name)
+            and node.value.id == receiver
+        ):
+            self._add_target(node.attr, node.lineno, "property")
+        self.generic_visit(node)
+
+    def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        direct_class_member = bool(self.contexts and self.contexts[-1] == "class")
+        role = "property" if direct_class_member and _has_decorator(node, "property") else (
+            "method" if direct_class_member else "function"
+        )
+        self._add_target(node.name, node.lineno, role)
+        self.callables.append(NamingCallable(node, role))
+        for argument in _arguments(node.args):
+            self._add_target(argument.arg, argument.lineno, "parameter")
+        receiver = _instance_receiver(node) if direct_class_member else None
+        self.contexts.append("function")
+        self.receivers.append(receiver)
+        for statement in node.body:
+            self.visit(statement)
+        self.receivers.pop()
+        self.contexts.pop()
+
+    def _variable_role(self) -> str:
+        return "property" if self.contexts and self.contexts[-1] == "class" else "variable"
+
+    def _is_module_or_class_scope(self) -> bool:
+        return not self.contexts or self.contexts[-1] == "class"
+
+    def _add_target(self, name: str, line: int, role: str) -> None:
+        target = NamingTarget(name, line, role)
+        if target not in self.targets:
+            self.targets.append(target)
+
+
+def _arguments(arguments: ast.arguments) -> list[ast.arg]:
+    values = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    if arguments.vararg is not None:
+        values.append(arguments.vararg)
+    if arguments.kwarg is not None:
+        values.append(arguments.kwarg)
+    return values
+
+
+def _target_names(node: ast.AST) -> list[ast.Name]:
+    if isinstance(node, ast.Name):
+        return [node]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [name for element in node.elts for name in _target_names(element)]
+    return []
+
+
+def _is_final_annotation(node: ast.expr) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "Final"
+    if isinstance(node, ast.Attribute):
+        return node.attr == "Final"
+    return isinstance(node, ast.Subscript) and _is_final_annotation(node.value)
+
+
+def _is_type_parameter_factory(node: ast.expr) -> bool:
+    return isinstance(node, ast.Call) and _called_name(node.func) in {"TypeVar", "ParamSpec", "TypeVarTuple"}
 
 
 def _excessive_method_length_findings(
