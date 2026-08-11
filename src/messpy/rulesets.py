@@ -18,6 +18,46 @@ class RulesetError(Exception):
 
 
 _CATALOG = {
+    "shortclassname": LoadedRule(
+        name="ShortClassName",
+        priority=3,
+        properties={"minimum": "3"},
+    ),
+    "longclassname": LoadedRule(
+        name="LongClassName",
+        priority=3,
+        properties={"maximum": "40"},
+    ),
+    "shortvariable": LoadedRule(
+        name="ShortVariable",
+        priority=3,
+        properties={"minimum": "3"},
+    ),
+    "longvariable": LoadedRule(
+        name="LongVariable",
+        priority=3,
+        properties={"maximum": "20"},
+    ),
+    "shortmethodname": LoadedRule(
+        name="ShortMethodName",
+        priority=3,
+        properties={"minimum": "3"},
+    ),
+    "constantnamingconventions": LoadedRule(
+        name="ConstantNamingConventions",
+        priority=3,
+        properties={},
+    ),
+    "booleangetmethodname": LoadedRule(
+        name="BooleanGetMethodName",
+        priority=3,
+        properties={},
+    ),
+    "constructorwithnameasenclosingclass": LoadedRule(
+        name="ConstructorWithNameAsEnclosingClass",
+        priority=3,
+        properties={},
+    ),
     "cyclomaticcomplexity": LoadedRule(
         name="CyclomaticComplexity",
         priority=3,
@@ -70,6 +110,16 @@ _CATALOG = {
     ),
 }
 _BUILT_IN_RULESETS = {
+    "naming": (
+        "ShortClassName",
+        "LongClassName",
+        "ShortVariable",
+        "LongVariable",
+        "ShortMethodName",
+        "ConstantNamingConventions",
+        "BooleanGetMethodName",
+        "ConstructorWithNameAsEnclosingClass",
+    ),
     "codesize": (
         "CyclomaticComplexity",
         "NPathComplexity",

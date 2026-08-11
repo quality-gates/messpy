@@ -1386,6 +1386,198 @@ class CommandAcceptanceTests(unittest.TestCase):
         ]:
             self.assertNotIn(rule_name, stdout.getvalue())
 
+    def test_naming_rules_find_unambiguous_python_roles_in_one_cli_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "names.py"
+            source.write_text(
+                "from typing import Final, TypeVar\n"
+                "\n"
+                "T = TypeVar(\"T\")\n"
+                "\n"
+                "def go():\n"
+                "    return None\n"
+                "\n"
+                "class Ab:\n"
+                "    pass\n"
+                "\n"
+                "class ThisClassNameIsLongerThanTheDefaultMaximum:\n"
+                "    pass\n"
+                "\n"
+                "class Holder:\n"
+                "    ab = 1\n"
+                "\n"
+                "    def ok(self, ab):\n"
+                "        very_long_variable_name = ab\n"
+                "        return very_long_variable_name\n"
+                "\n"
+                "    def get_ready(self) -> bool:\n"
+                "        return True\n"
+                "\n"
+                "wrong_constant: Final = 1\n"
+                "UPPER_CASE: Final = 2\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "naming"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        for rule_name in [
+            "ShortClassName",
+            "LongClassName",
+            "ShortVariable",
+            "LongVariable",
+            "ShortMethodName",
+            "ConstantNamingConventions",
+            "BooleanGetMethodName",
+        ]:
+            self.assertIn(rule_name, report)
+        self.assertNotIn("ConstructorWithNameAsEnclosingClass", report)
+
+    def test_naming_rules_scope_exemptions_and_boolean_proof_to_python_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "role_scoped_names.py"
+            source.write_text(
+                "class e:\n"
+                "    pass\n"
+                "\n"
+                "class Holder:\n"
+                "    ab = 1\n"
+                "    x = 1\n"
+                "    y = 2\n"
+                "\n"
+                "    def i(self):\n"
+                "        return None\n"
+                "\n"
+                "    def get_remote(self):\n"
+                "        return service.bool()\n"
+                "\n"
+                "    def get_annotated(self) -> service.bool:\n"
+                "        return object()\n"
+                "\n"
+                "    def get_partial(self):\n"
+                "        if condition:\n"
+                "            return True\n"
+                "\n"
+                "    @property\n"
+                "    def p(self):\n"
+                "        return 1\n"
+                "\n"
+                "    @p.setter\n"
+                "    def p(self, value):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "naming"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("ShortClassName [priority 3] Avoid using short class names like e.", report)
+        self.assertIn("ShortVariable [priority 3] Avoid variables with short names like ab.", report)
+        self.assertNotIn("ShortVariable [priority 3] Avoid variables with short names like x.", report)
+        self.assertNotIn("ShortVariable [priority 3] Avoid variables with short names like y.", report)
+        self.assertIn("ShortMethodName [priority 3] Avoid using short method names like i().", report)
+        self.assertNotIn("ShortMethodName [priority 3] Avoid using short method names like p().", report)
+        self.assertNotIn("BooleanGetMethodName", report)
+
+    def test_naming_rules_honor_configured_lengths_at_the_cli_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "configured_names.py"
+            ruleset = temporary / "configured-naming.xml"
+            source.write_text(
+                "class Four:\n"
+                "    four = 1\n"
+                "\n"
+                "    def four(self, four):\n"
+                "        longer = four\n"
+                "        return longer\n"
+                "\n"
+                "class ExactlyFive:\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="configured naming">
+    <rule ref="ShortClassName"><properties><property name="minimum" value="5" /></properties></rule>
+    <rule ref="LongClassName"><properties><property name="maximum" value="10" /></properties></rule>
+    <rule ref="ShortVariable"><properties><property name="minimum" value="5" /></properties></rule>
+    <rule ref="LongVariable"><properties><property name="maximum" value="5" /></properties></rule>
+    <rule ref="ShortMethodName"><properties><property name="minimum" value="5" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("ShortClassName [priority 3] Avoid using short class names like Four. Configured minimum length is 5.", report)
+        self.assertIn("LongClassName [priority 3] Avoid excessively long class names like ExactlyFive. Configured maximum length is 10.", report)
+        self.assertIn("ShortVariable [priority 3] Avoid variables with short names like four. Configured minimum length is 5.", report)
+        self.assertIn("LongVariable [priority 3] Avoid excessively long variable names like longer. Configured maximum length is 5.", report)
+        self.assertIn("ShortMethodName [priority 3] Avoid using short method names like four(). Configured minimum length is 5.", report)
+
+    def test_naming_rules_keep_python_idioms_and_default_boundaries_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "idiomatic_names.py"
+            source_text = (
+                "from typing import Final, TypeVar\n"
+                "\n"
+                "T = TypeVar(\"T\")\n"
+                "\n"
+                "class Cat:\n"
+                "    age = 1\n"
+                "\n"
+                "    def run(self, value, /, *, option):\n"
+                "        abc = value\n"
+                "        very_long_variable_n = option\n"
+                "        for i, x, y in enumerate((abc, very_long_variable_n)):\n"
+                "            abc += i + x + y\n"
+                "        try:\n"
+                "            raise ValueError\n"
+                "        except ValueError as exc:\n"
+                "            return abc\n"
+                "\n"
+                "    def get_value(self):\n"
+                "        return object()\n"
+                "\n"
+                "    def is_ready(self) -> bool:\n"
+                "        return True\n"
+                "\n"
+                "    def _go(self):\n"
+                "        __internal__ = 1\n"
+                "        return __internal__\n"
+                "\n"
+                "MAXIMUM_VALUE: Final = 1\n"
+                "__all__: Final = (\"Cat\",)\n"
+                "THIS_IS_AN_UPPER_CASE_CONSTANT_LONGER_THAN_TWENTY = 1\n"
+                + f"class {'C' * 40}:\n    pass\n"
+            )
+            source.write_text(
+                source_text,
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "naming"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
