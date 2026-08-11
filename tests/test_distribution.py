@@ -195,8 +195,8 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertIn("NPathComplexity", metrics_result.stdout)
         self.assertIn("ExcessiveParameterList", metrics_result.stdout)
         self.assertEqual(2, ignore_tests_result.returncode)
-        self.assertIn(application.as_posix(), ignore_tests_result.stdout)
-        self.assertNotIn(test_module.as_posix(), ignore_tests_result.stdout)
+        self.assertIn(application.resolve().as_posix(), ignore_tests_result.stdout)
+        self.assertNotIn(test_module.resolve().as_posix(), ignore_tests_result.stdout)
         for ruleset_name, result in bundled_ruleset_results.items():
             with self.subTest(ruleset_name=ruleset_name):
                 self.assertEqual(0, result.returncode)
