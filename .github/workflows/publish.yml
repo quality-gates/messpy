@@ -1,0 +1,83 @@
+name: Publish tested distributions
+
+on:
+  workflow_dispatch:
+    inputs:
+      ci_run_id:
+        description: Successful CI run containing messpy-distributions
+        required: true
+        type: string
+      tag:
+        description: Release tag in vVERSION form
+        required: true
+        type: string
+      first_publication:
+        description: Require the messpy name to be unclaimed immediately before publishing
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+      - name: Verify the selected CI run and tag identify this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.ci_run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          case "$RELEASE_TAG" in v*) ;; *) exit 1 ;; esac
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          test "$(gh api repos/${{ github.repository }}/actions/runs/$RUN_ID --jq .path)" = ".github/workflows/ci.yml"
+          test "$(gh api repos/${{ github.repository }}/actions/runs/$RUN_ID --jq .conclusion)" = success
+          test "$(gh api repos/${{ github.repository }}/actions/runs/$RUN_ID --jq .head_sha)" = "$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: messpy-distributions
+          path: dist
+          run-id: ${{ inputs.ci_run_id }}
+          github-token: ${{ github.token }}
+      - name: Verify downloaded publication artifacts and tag version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python scripts/inspect_distribution.py dist
+          PYTHONPATH=src python -c 'import os; from messpy import __version__; assert os.environ["RELEASE_TAG"] == f"v{__version__}"'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: validated-messpy-distributions
+          path: dist/*
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/messpy
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: validated-messpy-distributions
+          path: dist
+      - name: Recheck PyPI name immediately before first publication
+        if: ${{ inputs.first_publication }}
+        run: |
+          status=$(curl --silent --show-error --output pypi-response.json --write-out '%{http_code}' https://pypi.org/pypi/messpy/json)
+          test "$status" = 404
+      - uses: pypa/gh-action-pypi-publish@ec4db0b4ddc65acdf4bff5fa45ac92d78b56bdf0
+        with:
+          packages-dir: dist
