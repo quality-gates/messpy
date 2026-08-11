@@ -2017,13 +2017,14 @@ def _unused_local_variable_findings(
             )
     for node, table in _comprehension_scopes(source, tree):
         reported: set[str] = set()
+        used_names = _comprehension_used_names(node) if table is None else frozenset()
         for generator in node.generators:
             for target in _target_names(generator.target):
-                symbol = table.lookup(target.id)
+                symbol = table.lookup(target.id) if table is not None else None
                 if (
                     target.id.startswith("_")
-                    or symbol.is_referenced()
-                    or not symbol.is_local()
+                    or (symbol.is_referenced() if symbol is not None else target.id in used_names)
+                    or (symbol is not None and not symbol.is_local())
                     or target.id in reported
                 ):
                     continue
@@ -2111,7 +2112,12 @@ def _function_scopes(
 
 def _comprehension_scopes(
     source: str, tree: ast.Module
-) -> list[tuple[ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp, symtable.SymbolTable]]:
+) -> list[
+    tuple[
+        ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        symtable.SymbolTable | None,
+    ]
+]:
     tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]] = defaultdict(list)
     _collect_comprehension_tables(symtable.symtable(source, "<source>", "exec"), tables)
     names = {
@@ -2125,9 +2131,82 @@ def _comprehension_scopes(
         if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             continue
         candidates = tables[(names[type(node)], node.lineno)]
-        if candidates:
-            scopes.append((node, candidates.pop(0)))
+        scopes.append((node, candidates.pop(0) if candidates else None))
     return scopes
+
+
+def _comprehension_used_names(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+) -> frozenset[str]:
+    used: set[str] = set()
+    for index, generator in enumerate(node.generators):
+        for target in _target_names(generator.target):
+            visitor = _ScopedNameUseVisitor(target.id)
+            shadowed = False
+            for later_index, later_generator in enumerate(node.generators[index:], start=index):
+                if later_index == index:
+                    for condition in later_generator.ifs:
+                        visitor.visit(condition)
+                    continue
+                visitor.visit(later_generator.iter)
+                if target.id in {name.id for name in _target_names(later_generator.target)}:
+                    shadowed = True
+                    break
+                for condition in later_generator.ifs:
+                    visitor.visit(condition)
+            if not shadowed:
+                visitor.visit(node.key if isinstance(node, ast.DictComp) else node.elt)
+                if isinstance(node, ast.DictComp):
+                    visitor.visit(node.value)
+            if visitor.used:
+                used.add(target.id)
+    return frozenset(used)
+
+
+class _ScopedNameUseVisitor(ast.NodeVisitor):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.used = False
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and node.id == self.name:
+            self.used = True
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for default in [*node.args.defaults, *node.args.kw_defaults]:
+            if default is not None:
+                self.visit(default)
+        if self.name not in {argument.arg for argument in _arguments(node.args)}:
+            self.visit(node.body)
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._visit_comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._visit_comprehension(node)
+
+    def _visit_comprehension(
+        self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
+    ) -> None:
+        shadowed = False
+        for generator in node.generators:
+            self.visit(generator.iter)
+            if self.name in {target.id for target in _target_names(generator.target)}:
+                shadowed = True
+                break
+            for condition in generator.ifs:
+                self.visit(condition)
+        if shadowed:
+            return
+        self.visit(node.key if isinstance(node, ast.DictComp) else node.elt)
+        if isinstance(node, ast.DictComp):
+            self.visit(node.value)
 
 
 def _collect_comprehension_tables(
