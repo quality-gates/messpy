@@ -17,6 +17,13 @@ class DistributionAcceptanceTests(unittest.TestCase):
             temporary = Path(temporary_directory)
             wheel_directory = temporary / "wheels"
             environment = temporary / "environment"
+            project = temporary / "project"
+            application = project / "application.py"
+            test_module = project / "tests" / "test_application.py"
+            test_module.parent.mkdir(parents=True)
+            source = (FIXTURES / "long_function.py").read_text(encoding="utf-8")
+            application.write_text(source, encoding="utf-8")
+            test_module.write_text(source, encoding="utf-8")
             subprocess.run(
                 [sys.executable, "-m", "pip", "wheel", str(ROOT), "--wheel-dir", str(wheel_directory)],
                 check=True,
@@ -65,12 +72,21 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            ignore_tests_result = subprocess.run(
+                [executable, str(project), "text", "codesize", "--ignore-tests"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
 
         self.assertEqual(0, help_result.returncode)
-        self.assertIn("messpy <path> text codesize", help_result.stdout)
+        self.assertIn("messpy <paths> text codesize", help_result.stdout)
         self.assertEqual(0, version_result.returncode)
         self.assertEqual("0.1.0\n", version_result.stdout)
         self.assertEqual(0, clean_result.returncode)
         self.assertEqual("", clean_result.stdout)
         self.assertEqual(2, finding_result.returncode)
         self.assertIn("ExcessiveMethodLength", finding_result.stdout)
+        self.assertEqual(2, ignore_tests_result.returncode)
+        self.assertIn(application.as_posix(), ignore_tests_result.stdout)
+        self.assertNotIn(test_module.as_posix(), ignore_tests_result.stdout)
