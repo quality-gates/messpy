@@ -18,13 +18,35 @@ class RulesetError(Exception):
 
 
 _CATALOG = {
+    "cyclomaticcomplexity": LoadedRule(
+        name="CyclomaticComplexity",
+        priority=3,
+        properties={"reportlevel": "10"},
+    ),
+    "npathcomplexity": LoadedRule(
+        name="NPathComplexity",
+        priority=3,
+        properties={"minimum": "200"},
+    ),
+    "excessiveparameterlist": LoadedRule(
+        name="ExcessiveParameterList",
+        priority=3,
+        properties={"minimum": "10"},
+    ),
     "excessivemethodlength": LoadedRule(
         name="ExcessiveMethodLength",
         priority=3,
         properties={"minimum": "100"},
     )
 }
-_BUILT_IN_RULESETS = {"codesize": ("ExcessiveMethodLength",)}
+_BUILT_IN_RULESETS = {
+    "codesize": (
+        "CyclomaticComplexity",
+        "NPathComplexity",
+        "ExcessiveMethodLength",
+        "ExcessiveParameterList",
+    )
+}
 
 
 def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:

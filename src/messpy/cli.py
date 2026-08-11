@@ -18,7 +18,10 @@ from typing import TextIO
 
 from .rulesets import LoadedRule, RulesetError, filter_rules, load_rulesets
 
-RULE_NAME = "ExcessiveMethodLength"
+METHOD_LENGTH_RULE_NAME = "ExcessiveMethodLength"
+CYCLOMATIC_COMPLEXITY_RULE_NAME = "CyclomaticComplexity"
+NPATH_COMPLEXITY_RULE_NAME = "NPathComplexity"
+EXCESSIVE_PARAMETER_LIST_RULE_NAME = "ExcessiveParameterList"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -128,6 +131,14 @@ class ProcessingError:
     path: Path
     line: int
     message: str
+
+
+@dataclass(frozen=True)
+class CallableInfo:
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    name: str
+    kind: str
+    parameter_count: int
 
 
 def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
@@ -394,7 +405,7 @@ def _analyze(
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
         findings.extend(
-            _apply_suppressions(source, _excessive_method_length_findings(source_file, tree, rules))
+            _apply_suppressions(source, _callable_findings(source_file, tree, rules))
         )
     return findings, processing_errors
 
@@ -755,10 +766,288 @@ def _exit_status(
     return 0
 
 
+def _callable_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    return [
+        *_cyclomatic_complexity_findings(path, tree, rules),
+        *_npath_complexity_findings(path, tree, rules),
+        *_excessive_method_length_findings(path, tree, rules),
+        *_excessive_parameter_list_findings(path, tree, rules),
+    ]
+
+
+def _cyclomatic_complexity_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = next((candidate for candidate in rules if candidate.name == CYCLOMATIC_COMPLEXITY_RULE_NAME), None)
+    if rule is None:
+        return []
+    try:
+        threshold = int(rule.properties["reportlevel"])
+    except (KeyError, ValueError) as error:
+        raise RulesetError("CyclomaticComplexity property 'reportLevel' must be an integer.") from error
+    findings: list[Finding] = []
+    for callable_info in _callables(tree):
+        complexity = _cyclomatic_complexity(callable_info.node)
+        if complexity < threshold:
+            continue
+        message = (
+            f"The {callable_info.kind} {callable_info.name}() has a Cyclomatic Complexity of {complexity}. "
+            f"The configured cyclomatic complexity threshold is {threshold}."
+        )
+        findings.append(
+            Finding(
+                path,
+                callable_info.node.lineno,
+                CYCLOMATIC_COMPLEXITY_RULE_NAME,
+                rule.priority,
+                message,
+                context=callable_info.name,
+            )
+        )
+    return findings
+
+
+def _cyclomatic_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> int:
+    visitor = _CyclomaticComplexityVisitor()
+    if isinstance(node, ast.Lambda):
+        visitor.visit(node.body)
+    else:
+        for statement in node.body:
+            visitor.visit(statement)
+    return 1 + visitor.decisions
+
+
+class _CyclomaticComplexityVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.decisions = 0
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+    def visit_If(self, node: ast.If) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_While(self, node: ast.While) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        self.decisions += 1
+        self.generic_visit(node)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        self.decisions += len(node.values) - 1
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self.visit(node.value)
+
+    def visit_comprehension(self, node: ast.comprehension) -> None:
+        self.decisions += 1 + len(node.ifs)
+        self.generic_visit(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        self.decisions += len(node.cases)
+        self.generic_visit(node)
+
+
+def _npath_complexity_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
+    if rule is None:
+        return []
+    try:
+        threshold = int(rule.properties["minimum"])
+    except (KeyError, ValueError) as error:
+        raise RulesetError("NPathComplexity property 'minimum' must be an integer.") from error
+    findings: list[Finding] = []
+    for callable_info in _callables(tree):
+        complexity = _npath_complexity(callable_info.node)
+        if complexity < threshold:
+            continue
+        message = (
+            f"The {callable_info.kind} {callable_info.name}() has an NPath complexity of {complexity}. "
+            f"The configured NPath complexity threshold is {threshold}."
+        )
+        findings.append(
+            Finding(
+                path,
+                callable_info.node.lineno,
+                NPATH_COMPLEXITY_RULE_NAME,
+                rule.priority,
+                message,
+                context=callable_info.name,
+            )
+        )
+    return findings
+
+
+def _npath_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> int:
+    return _npath_expression(node.body) if isinstance(node, ast.Lambda) else _npath_block(node.body)
+
+
+def _npath_block(statements: Sequence[ast.stmt]) -> int:
+    complexity = 1
+    for statement in statements:
+        complexity *= _npath_statement(statement)
+    return complexity
+
+
+def _npath_statement(node: ast.stmt) -> int:
+    if isinstance(node, ast.If):
+        return (
+            _npath_expression(node.test)
+            + _npath_block(node.body)
+            + _npath_block(node.orelse)
+        )
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        condition = node.iter if isinstance(node, (ast.For, ast.AsyncFor)) else node.test
+        return _npath_expression(condition) + _npath_block(node.body) + _npath_block(node.orelse)
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        handlers = sum(_npath_block(handler.body) for handler in node.handlers)
+        return _npath_block(node.body) + handlers + _npath_block(node.orelse) + _npath_block(node.finalbody)
+    if isinstance(node, ast.Match):
+        return sum(
+            _npath_block(case.body) + (_npath_expression(case.guard) if case.guard is not None else 0)
+            for case in node.cases
+        )
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return 1
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise)):
+        value = getattr(node, "value", None)
+        return _npath_expression(value) if value is not None else 1
+    return 1
+
+
+def _npath_expression(node: ast.AST) -> int:
+    if isinstance(node, ast.BoolOp):
+        return sum(_npath_expression(value) for value in node.values)
+    if isinstance(node, ast.IfExp):
+        return _npath_expression(node.test) + _npath_expression(node.body) + _npath_expression(node.orelse)
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
+        return _npath_comprehension(node.generators)
+    if isinstance(node, ast.Lambda):
+        return 1
+    return 1
+
+
+def _npath_comprehension(generators: Sequence[ast.comprehension]) -> int:
+    complexity = 1
+    for generator in generators:
+        complexity *= 1 + len(generator.ifs)
+    return complexity
+
+
+def _excessive_parameter_list_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule = next((candidate for candidate in rules if candidate.name == EXCESSIVE_PARAMETER_LIST_RULE_NAME), None)
+    if rule is None:
+        return []
+    try:
+        threshold = int(rule.properties["minimum"])
+    except (KeyError, ValueError) as error:
+        raise RulesetError("ExcessiveParameterList property 'minimum' must be an integer.") from error
+    findings: list[Finding] = []
+    for callable_info in _callables(tree):
+        if callable_info.parameter_count < threshold:
+            continue
+        message = (
+            f"The {callable_info.kind} {callable_info.name} has {callable_info.parameter_count} parameters. "
+            f"Consider reducing the number of parameters to less than {threshold}."
+        )
+        findings.append(
+            Finding(
+                path,
+                callable_info.node.lineno,
+                EXCESSIVE_PARAMETER_LIST_RULE_NAME,
+                rule.priority,
+                message,
+                context=callable_info.name,
+            )
+        )
+    return findings
+
+
+def _parameter_count(arguments: ast.arguments) -> int:
+    return (
+        len(arguments.posonlyargs)
+        + len(arguments.args)
+        + len(arguments.kwonlyargs)
+        + int(arguments.vararg is not None)
+        + int(arguments.kwarg is not None)
+    )
+
+
+def _callables(tree: ast.Module) -> list[CallableInfo]:
+    collector = _CallableCollector()
+    for statement in tree.body:
+        collector.visit_statement(statement, in_class_body=False)
+    collector.add_lambdas(tree)
+    return sorted(collector.callables, key=lambda callable_info: callable_info.node.lineno)
+
+
+class _CallableCollector:
+    def __init__(self) -> None:
+        self.callables: list[CallableInfo] = []
+
+    def visit_statement(self, node: ast.stmt, in_class_body: bool) -> None:
+        if isinstance(node, ast.ClassDef):
+            for statement in node.body:
+                self.visit_statement(statement, in_class_body=True)
+            return
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            kind = "method" if in_class_body else "function"
+            receiver_count = int(kind == "method" and not _is_static_method(node) and _has_parameter(node.args))
+            self.callables.append(
+                CallableInfo(node, node.name, kind, _parameter_count(node.args) - receiver_count)
+            )
+            for statement in node.body:
+                self.visit_statement(statement, in_class_body=False)
+            return
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.stmt):
+                self.visit_statement(child, in_class_body=in_class_body)
+
+    def add_lambdas(self, tree: ast.Module) -> None:
+        self.callables.extend(
+            CallableInfo(node, "<lambda>", "lambda", _parameter_count(node.args))
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Lambda)
+        )
+
+
+def _is_static_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(isinstance(decorator, ast.Name) and decorator.id == "staticmethod" for decorator in node.decorator_list)
+
+
+def _has_parameter(arguments: ast.arguments) -> bool:
+    return bool(arguments.posonlyargs or arguments.args)
+
+
 def _excessive_method_length_findings(
     path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
 ) -> list[Finding]:
-    rule = next((candidate for candidate in rules if candidate.name == RULE_NAME), None)
+    rule = next((candidate for candidate in rules if candidate.name == METHOD_LENGTH_RULE_NAME), None)
     if rule is None:
         return []
     try:
@@ -766,17 +1055,25 @@ def _excessive_method_length_findings(
     except (KeyError, ValueError) as error:
         raise RulesetError("ExcessiveMethodLength property 'minimum' must be an integer.") from error
     findings: list[Finding] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for callable_info in _callables(tree):
+        node = callable_info.node
         line_count = (node.end_lineno or node.lineno) - node.lineno + 1
-        if line_count <= method_length_limit:
+        if line_count < method_length_limit:
             continue
         message = (
-            f"The method {node.name} has {line_count} lines of code. "
+            f"The method {callable_info.name} has {line_count} lines of code. "
             f"The configured limit is {method_length_limit}."
         )
-        findings.append(Finding(path, node.lineno, RULE_NAME, rule.priority, message, context=node.name))
+        findings.append(
+            Finding(
+                path,
+                node.lineno,
+                METHOD_LENGTH_RULE_NAME,
+                rule.priority,
+                message,
+                context=callable_info.name,
+            )
+        )
     return findings
 
 

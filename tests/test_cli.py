@@ -863,6 +863,118 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", unknown_ruleset_exclusion_stdout.getvalue())
         self.assertIn("Unknown rule exclusion 'ExcessiveMethodLenght'.", unknown_ruleset_exclusion_stderr.getvalue())
 
+    def test_callable_metrics_cover_python_callables_and_exact_configured_thresholds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "callables.py"
+            ruleset = temporary / "callable-metrics.xml"
+            parameter_ruleset = temporary / "parameter-forms.xml"
+            lambda_ruleset = temporary / "lambda-metrics.xml"
+            source.write_text(
+                "def decision_flow(value: int | None) -> int:\n"
+                "    if value and value > 0:\n        pass\n"
+                "    for item in [value]:\n        pass\n"
+                "    while value:\n        break\n"
+                "    try:\n        raise RuntimeError\n"
+                "    except RuntimeError:\n        pass\n"
+                "    branch = 1 if value else 0\n"
+                "    values = [item for item in range(2) if item]\n"
+                "    match value:\n"
+                "        case 1:\n            pass\n"
+                "        case _:\n            pass\n"
+                "    return branch\n\n"
+                "def exact_length():\n    pass\n    pass\n\n"
+                "def function(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n    pass\n\n"
+                "async def async_function(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n    pass\n\n"
+                "class Service:\n"
+                "    def __init__(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    async def async_method(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def receiver_only(self, first, second, third, fourth, fifth, sixth, seventh, eighth, ninth):\n        pass\n\n"
+                "    @staticmethod\n"
+                "    def static_method(first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth):\n        pass\n\n"
+                "    def parameter_forms(self, first, /, second, *rest, named, **extra):\n        pass\n\n"
+                "lambda_value = lambda first, second, third, fourth, fifth, sixth, seventh, eighth, ninth, tenth: first\n"
+                "lambda_decision = lambda value: 1 if value else 0\n\n"
+                "def annotated(value: dict[str, list[int | None]]) -> tuple[int | None, ...]:\n    return (value,)[0]\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="callable metrics">
+    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="11" /></properties></rule>
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="1728" /></properties></rule>
+    <rule ref="ExcessiveMethodLength"><properties><property name="minimum" value="3" /></properties></rule>
+    <rule ref="ExcessiveParameterList"><properties><property name="minimum" value="10" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            parameter_ruleset.write_text(
+                """<ruleset name="parameter forms">
+    <rule ref="ExcessiveParameterList"><properties><property name="minimum" value="5" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            lambda_ruleset.write_text(
+                """<ruleset name="lambda metrics">
+    <rule ref="CyclomaticComplexity"><properties><property name="reportLevel" value="2" /></properties></rule>
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+            parameter_stdout = StringIO()
+            parameter_stderr = StringIO()
+            parameter_status = run(
+                [str(source), "text", str(parameter_ruleset)],
+                parameter_stdout,
+                parameter_stderr,
+            )
+            lambda_stdout = StringIO()
+            lambda_stderr = StringIO()
+            lambda_status = run(
+                [str(source), "text", str(lambda_ruleset)],
+                lambda_stdout,
+                lambda_stderr,
+            )
+            parameter_report = parameter_stdout.getvalue()
+            lambda_report = lambda_stdout.getvalue()
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn(
+            "CyclomaticComplexity [priority 3] The function decision_flow() has a Cyclomatic Complexity of 11. "
+            "The configured cyclomatic complexity threshold is 11.",
+            report,
+        )
+        self.assertIn(
+            "NPathComplexity [priority 3] The function decision_flow() has an NPath complexity of 1728. "
+            "The configured NPath complexity threshold is 1728.",
+            report,
+        )
+        self.assertIn("The method exact_length has 3 lines of code. The configured limit is 3.", report)
+        for name in ["function", "async_function", "__init__", "method", "async_method", "static_method", "<lambda>"]:
+            self.assertIn(f"ExcessiveParameterList [priority 3] The", report)
+            self.assertIn(name, report)
+        self.assertNotIn("receiver_only has", report)
+        self.assertNotIn("annotated has", report)
+        self.assertEqual(2, parameter_status)
+        self.assertEqual("", parameter_stderr.getvalue())
+        self.assertIn(
+            "The method parameter_forms has 5 parameters. Consider reducing the number of parameters to less than 5.",
+            parameter_report,
+        )
+        self.assertEqual(2, lambda_status)
+        self.assertEqual("", lambda_stderr.getvalue())
+        self.assertIn("The lambda <lambda>() has a Cyclomatic Complexity of 2.", lambda_report)
+        self.assertIn("The lambda <lambda>() has an NPath complexity of 3.", lambda_report)
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
