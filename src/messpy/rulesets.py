@@ -13,6 +13,12 @@ class LoadedRule:
     properties: dict[str, str]
 
 
+@dataclass(frozen=True)
+class BuiltInRuleReference:
+    name: str
+    properties: dict[str, str]
+
+
 class RulesetError(Exception):
     pass
 
@@ -208,6 +214,25 @@ _BUILT_IN_RULESETS = {
         "LackOfCohesionOfMethods",
     ),
     "python": (
+        "CyclomaticComplexity",
+        "NPathComplexity",
+        "ExcessiveMethodLength",
+        "ExcessiveClassLength",
+        "ExcessiveParameterList",
+        "ExcessivePublicCount",
+        "TooManyFields",
+        "TooManyMethods",
+        "TooManyPublicMethods",
+        "ExcessiveClassComplexity",
+        "ShortClassName",
+        "LongClassName",
+        BuiltInRuleReference("LongVariable", {"maximum": "35"}),
+        "ShortMethodName",
+        "ConstantNamingConventions",
+        "BooleanGetMethodName",
+        "UnusedPrivateField",
+        "UnusedLocalVariable",
+        "UnusedPrivateMethod",
         "IfStatementAssignment",
         "DuplicatedArrayKey",
         "DevelopmentCodeFragment",
@@ -215,6 +240,11 @@ _BUILT_IN_RULESETS = {
         "CouplingBetweenObjects",
         "GlobalVariable",
         "LackOfCohesionOfMethods",
+        "CamelCaseClassName",
+        "CamelCaseMethodName",
+        "CamelCasePropertyName",
+        "CamelCaseParameterName",
+        "CamelCaseVariableName",
     ),
     "controversial": (
         "CamelCaseClassName",
@@ -224,13 +254,13 @@ _BUILT_IN_RULESETS = {
         "CamelCaseVariableName",
     ),
     "opinionated": (
+        "ShortVariable",
+        "UnusedFormalParameter",
         "BooleanArgumentFlag",
         "ElseExpression",
         "StaticAccess",
-        "IfStatementAssignment",
-        "DuplicatedArrayKey",
-        "ExitExpression",
         "CountInLoopExpression",
+        "ExitExpression",
     ),
     "codesize": (
         "CyclomaticComplexity",
@@ -290,7 +320,7 @@ def _load_reference(
 ) -> list[LoadedRule]:
     identity = _built_in_identity(reference)
     if identity in _BUILT_IN_RULESETS:
-        return [_catalog_rule(name) for name in _BUILT_IN_RULESETS[identity]]
+        return [_built_in_rule(reference) for reference in _BUILT_IN_RULESETS[identity]]
     if identity in _CATALOG:
         return [_catalog_rule(reference)]
 
@@ -398,6 +428,13 @@ def _exclude(rules: dict[str, LoadedRule], name: str) -> None:
     if identity not in rules:
         raise RulesetError(f"Unknown rule exclusion '{name}'.")
     rules.pop(identity)
+
+
+def _built_in_rule(reference: str | BuiltInRuleReference) -> LoadedRule:
+    if isinstance(reference, str):
+        return _catalog_rule(reference)
+    rule = _catalog_rule(reference.name)
+    return replace(rule, properties={**rule.properties, **reference.properties})
 
 
 def _catalog_rule(name: str) -> LoadedRule:

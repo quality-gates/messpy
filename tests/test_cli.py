@@ -2193,7 +2193,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("Gateway", report)
         self.assertNotIn("ignored_choice", report)
 
-    def test_python_policy_permits_ordinary_idioms_and_opinionated_selects_every_clean_code_rule(self) -> None:
+    def test_python_policy_permits_ordinary_idioms_and_opinionated_selects_every_strict_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
             ordinary_source = directory / "ordinary_policy.py"
@@ -2215,12 +2215,17 @@ class CommandAcceptanceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             hazard_source.write_text(
-                logger
-                + "def choose(flag: bool):\n"
-                "    if current := flag:\n"
-                "        return Logger.write({\"same\": 1, \"same\": 2})\n"
+                "import sys\n\n"
+                + logger
+                + "def choose(values, unused_parameter, flag: bool):\n"
+                "    ab = len(values)\n"
+                "    Logger.write(ab)\n"
+                "    while len(values) > ab:\n"
+                "        break\n"
+                "    if flag:\n"
+                "        return ab\n"
                 "    else:\n"
-                "        return 0\n",
+                "        sys.exit(1)\n",
                 encoding="utf-8",
             )
             python_stdout = StringIO()
@@ -2230,11 +2235,13 @@ class CommandAcceptanceTests(unittest.TestCase):
             )
             selected_reports = []
             for rule_name in [
+                "ShortVariable",
+                "UnusedFormalParameter",
                 "BooleanArgumentFlag",
                 "ElseExpression",
                 "StaticAccess",
-                "IfStatementAssignment",
-                "DuplicatedArrayKey",
+                "CountInLoopExpression",
+                "ExitExpression",
             ]:
                 stdout = StringIO()
                 stderr = StringIO()
@@ -2664,6 +2671,129 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(0, status)
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
+
+    def test_complete_python_policies_compose_catalogue_and_project_behavior(self) -> None:
+        fixture = Path(__file__).parent / "fixtures" / "policy_project"
+        idiomatic = fixture / "idiomatic.py"
+        strict = fixture / "strict_hazards.py"
+        recommended = fixture / "recommended_hazards.py"
+        components = {
+            "codesize": [
+                "CyclomaticComplexity", "NPathComplexity", "ExcessiveMethodLength",
+                "ExcessiveClassLength", "ExcessiveParameterList", "ExcessivePublicCount",
+                "TooManyFields", "TooManyMethods", "TooManyPublicMethods", "ExcessiveClassComplexity",
+            ],
+            "naming": [
+                "ShortClassName", "LongClassName", "ShortVariable", "LongVariable",
+                "ShortMethodName", "ConstantNamingConventions", "BooleanGetMethodName",
+                "ConstructorWithNameAsEnclosingClass",
+            ],
+            "unusedcode": [
+                "UnusedPrivateField", "UnusedLocalVariable", "UnusedPrivateMethod", "UnusedFormalParameter",
+            ],
+            "cleancode": [
+                "BooleanArgumentFlag", "ElseExpression", "StaticAccess",
+                "IfStatementAssignment", "DuplicatedArrayKey",
+            ],
+            "design": [
+                "ExitExpression", "GotoStatement", "CountInLoopExpression",
+                "DevelopmentCodeFragment", "EmptyCatchBlock", "CouplingBetweenObjects",
+                "GlobalVariable", "LackOfCohesionOfMethods",
+            ],
+            "controversial": [
+                "CamelCaseClassName", "CamelCaseMethodName", "CamelCasePropertyName",
+                "CamelCaseParameterName", "CamelCaseVariableName",
+            ],
+        }
+        for component, names in components.items():
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(idiomatic), "text", component, "--verbose"], stdout, stderr)
+            self.assertEqual(2 if component == "naming" else 0, status, component)
+            if component != "naming":
+                self.assertEqual("", stdout.getvalue(), component)
+            self.assertEqual(f"Loaded rules: {', '.join(names)}\n", stderr.getvalue(), component)
+
+        python_names = [
+            *components["codesize"],
+            "ShortClassName", "LongClassName", "LongVariable", "ShortMethodName",
+            "ConstantNamingConventions", "BooleanGetMethodName", "UnusedPrivateField",
+            "UnusedLocalVariable", "UnusedPrivateMethod", "IfStatementAssignment",
+            "DuplicatedArrayKey", "DevelopmentCodeFragment", "EmptyCatchBlock",
+            "CouplingBetweenObjects", "GlobalVariable", "LackOfCohesionOfMethods",
+            *components["controversial"],
+        ]
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(idiomatic), "text", "python", "--verbose"], stdout, stderr)
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(f"Loaded rules: {', '.join(python_names)}\n", stderr.getvalue())
+
+        strict_names = [
+            "ShortVariable", "UnusedFormalParameter", "BooleanArgumentFlag", "ElseExpression",
+            "StaticAccess", "CountInLoopExpression", "ExitExpression",
+        ]
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(strict), "text", "opinionated", "--verbose"], stdout, stderr)
+        self.assertEqual(2, status)
+        self.assertEqual(f"Loaded rules: {', '.join(strict_names)}\n", stderr.getvalue())
+        for name in strict_names:
+            self.assertIn(name, stdout.getvalue())
+
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(fixture), "text", "python,opinionated", "--verbose"], stdout, stderr)
+        self.assertEqual(2, status)
+        self.assertEqual(f"Loaded rules: {', '.join([*python_names, *strict_names])}\n", stderr.getvalue())
+        self.assertIn("DuplicatedArrayKey", stdout.getvalue())
+        for name in strict_names:
+            self.assertIn(name, stdout.getvalue())
+
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run(
+            [str(fixture), "text", "python,opinionated", "--maximum-priority", "1"],
+            stdout,
+            stderr,
+        )
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("BooleanArgumentFlag [priority 1]", stdout.getvalue())
+        self.assertIn("IfStatementAssignment [priority 1]", stdout.getvalue())
+        self.assertNotIn("[priority 2]", stdout.getvalue())
+        self.assertNotIn("[priority 3]", stdout.getvalue())
+
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(strict), "text", "python"], stdout, stderr)
+        self.assertEqual(0, status)
+        self.assertEqual("", stderr.getvalue())
+        for name in strict_names:
+            self.assertNotIn(name, stdout.getvalue())
+
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(recommended), "text", "python"], stdout, stderr)
+        self.assertEqual(2, status)
+        self.assertIn("descriptive_name_exactly_boundaryxxx", stdout.getvalue())
+
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run([str(idiomatic), "text", str(fixture / "custom-python.xml")], stdout, stderr)
+        self.assertEqual(2, status)
+        self.assertIn("descriptive_name_exactly_boundaryxx", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+        for ruleset, name in [
+            ("naming", "ConstructorWithNameAsEnclosingClass"),
+            ("design", "GotoStatement"),
+        ]:
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(fixture), "text", ruleset, "--only", name], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
 
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
