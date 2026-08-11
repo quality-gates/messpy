@@ -21,6 +21,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
             application = project / "application.py"
             metrics = project / "metrics.py"
             unused_module = project / "unused.py"
+            empty_module = project / "empty.py"
             test_module = project / "tests" / "test_application.py"
             ruleset = project / "team-policy.xml"
             test_module.parent.mkdir(parents=True)
@@ -41,6 +42,7 @@ class DistributionAcceptanceTests(unittest.TestCase):
             )
             test_module.write_text(source, encoding="utf-8")
             unused_module.write_text("def build():\n    discarded = 1\n", encoding="utf-8")
+            empty_module.write_text("", encoding="utf-8")
             ruleset.write_text(
                 """<ruleset name="team policy">
     <rule ref="rulesets/codesize.xml">
@@ -64,10 +66,12 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            executable = environment / "bin" / "messpy"
+            scripts_directory = environment / ("Scripts" if sys.platform == "win32" else "bin")
+            executable = scripts_directory / ("messpy.exe" if sys.platform == "win32" else "messpy")
+            environment_python = scripts_directory / ("python.exe" if sys.platform == "win32" else "python")
             subprocess.run(
                 [
-                    environment / "bin" / "python",
+                    environment_python,
                     "-m",
                     "pip",
                     "install",
@@ -117,6 +121,25 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            bundled_rule_counts = {
+                "codesize": 10,
+                "naming": 8,
+                "unusedcode": 4,
+                "cleancode": 5,
+                "design": 8,
+                "controversial": 5,
+                "python": 31,
+                "opinionated": 7,
+            }
+            bundled_ruleset_results = {
+                ruleset_name: subprocess.run(
+                    [executable, str(empty_module), "text", ruleset_name, "--verbose"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                for ruleset_name in bundled_rule_counts
+            }
             custom_ruleset_result = subprocess.run(
                 [
                     executable,
@@ -174,6 +197,14 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, ignore_tests_result.returncode)
         self.assertIn(application.as_posix(), ignore_tests_result.stdout)
         self.assertNotIn(test_module.as_posix(), ignore_tests_result.stdout)
+        for ruleset_name, result in bundled_ruleset_results.items():
+            with self.subTest(ruleset_name=ruleset_name):
+                self.assertEqual(0, result.returncode)
+                self.assertEqual("", result.stdout)
+                prefix = "Loaded rules: "
+                self.assertTrue(result.stderr.startswith(prefix))
+                loaded_names = result.stderr.removeprefix(prefix).strip().split(", ")
+                self.assertEqual(bundled_rule_counts[ruleset_name], len(loaded_names))
         self.assertEqual(2, custom_ruleset_result.returncode)
         self.assertIn("ExcessiveMethodLength [priority 2]", custom_ruleset_result.stdout)
         self.assertIn("Current threshold is set to 3. Avoid really long methods.", custom_ruleset_result.stdout)

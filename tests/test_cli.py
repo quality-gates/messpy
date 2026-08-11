@@ -1935,6 +1935,27 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_unusedcode_distinguishes_prebinding_and_shadowed_comprehension_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "comprehension_scopes.py"
+            source.write_text(
+                "def prebinding(item):\n"
+                "    return [0 for item in item]\n"
+                "\ndef nested(values):\n"
+                "    return [0 for item in values if any(item for item in values)]\n"
+                "\ndef used(values):\n"
+                "    return [item for item in values]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(2, stdout.getvalue().count("such as 'item'"))
+
     def test_unusedcode_keeps_exported_private_members_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "exported_member.py"
