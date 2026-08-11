@@ -2566,6 +2566,105 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("class RelativeDependencies has a coupling between objects value of 2", report)
         self.assertIn("value of 3", report)
 
+    def test_controversial_adapts_stable_camel_case_rules_to_python_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "strict_names.py"
+            source.write_text(
+                "ordinary_ = 1\n"
+                "transform = lambda badLambdaParameter: badLambdaParameter\n"
+                "\ndef build_callback(callback=lambda badDefaultParameter: None):\n"
+                "    return callback\n"
+                "\nclass bad_class:\n"
+                "    BadProperty = 1\n"
+                "\n    def badMethod(self, badParameter):\n"
+                "        self.OtherProperty = badParameter\n"
+                "        localValue = self.OtherProperty\n"
+                "        return localValue\n"
+                "\n    @property\n"
+                "    def BadAccessor(self):\n"
+                "        return self.OtherProperty\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "controversial"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        expected = {
+            "CamelCaseClassName [priority 1] The class bad_class is not named in CapWords.",
+            "CamelCaseMethodName [priority 1] The method badMethod is not named in snake_case.",
+            "CamelCasePropertyName [priority 1] The property BadProperty is not named in snake_case.",
+            "CamelCasePropertyName [priority 1] The property OtherProperty is not named in snake_case.",
+            "CamelCasePropertyName [priority 1] The property BadAccessor is not named in snake_case.",
+            "CamelCaseParameterName [priority 1] The parameter badParameter is not named in snake_case.",
+            "CamelCaseParameterName [priority 1] The parameter badLambdaParameter is not named in snake_case.",
+            "CamelCaseParameterName [priority 1] The parameter badDefaultParameter is not named in snake_case.",
+            "CamelCaseVariableName [priority 1] The variable ordinary_ is not named in snake_case.",
+            "CamelCaseVariableName [priority 1] The variable localValue is not named in snake_case.",
+        }
+        for finding in expected:
+            self.assertIn(finding, report)
+        self.assertEqual(len(expected), len(report.splitlines()))
+
+    def test_controversial_accepts_capwords_and_role_appropriate_snake_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "clean_strict_names.py"
+            source.write_text(
+                "class HTTP2Client:\n"
+                "    retry_count = 0\n"
+                "\n    def fetch_value(self, item_count, *, default_value=None):\n"
+                "        current_value = item_count\n"
+                "        self.last_value = current_value\n"
+                "        return current_value if current_value else default_value\n"
+                "\n    @property\n"
+                "    def display_name(self):\n"
+                "        return self.last_value\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "controversial"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_controversial_keeps_idiomatic_private_generic_and_computed_names_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "idiomatic_names.py"
+            source.write_text(
+                "from typing import TypeVar\n"
+                "\nValueType = TypeVar(\"ValueType\")\n"
+                "DEFAULT_VALUE = 1\n"
+                "\nclass _private_helper:\n"
+                "    pass\n"
+                "\nclass PublicAPI:\n"
+                "    def __init__(self, value, /, *args, keyword_only=None, **kwargs):\n"
+                "        self.__privateValue = value\n"
+                "        class_ = keyword_only\n"
+                "        setattr(self, \"runtimeName\", class_)\n"
+                "        for i in args:\n"
+                "            self._privateValue = i\n"
+                "\n    def _privateMethod(self, cls):\n"
+                "        try:\n"
+                "            return cls\n"
+                "        except Exception as e:\n"
+                "            return e\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "controversial"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
