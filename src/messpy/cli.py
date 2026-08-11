@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from html import escape as html_escape
 import json
+import keyword
 import re
 import symtable
 import sys
@@ -53,6 +54,11 @@ EMPTY_CATCH_BLOCK_RULE_NAME = "EmptyCatchBlock"
 COUPLING_BETWEEN_OBJECTS_RULE_NAME = "CouplingBetweenObjects"
 GLOBAL_VARIABLE_RULE_NAME = "GlobalVariable"
 LACK_OF_COHESION_RULE_NAME = "LackOfCohesionOfMethods"
+CAMEL_CASE_CLASS_RULE_NAME = "CamelCaseClassName"
+CAMEL_CASE_METHOD_RULE_NAME = "CamelCaseMethodName"
+CAMEL_CASE_PROPERTY_RULE_NAME = "CamelCasePropertyName"
+CAMEL_CASE_PARAMETER_RULE_NAME = "CamelCaseParameterName"
+CAMEL_CASE_VARIABLE_RULE_NAME = "CamelCaseVariableName"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -2440,6 +2446,7 @@ def _naming_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) 
     findings.extend(_short_method_name_findings(path, targets, rules))
     findings.extend(_constant_naming_findings(path, targets, rules))
     findings.extend(_boolean_get_method_name_findings(path, callables, rules))
+    findings.extend(_strict_python_naming_findings(path, targets, rules))
     return findings
 
 
@@ -2566,6 +2573,54 @@ def _boolean_get_method_name_findings(
         and _is_getter_name(callable_info.node.name)
         and _has_boolean_result(callable_info.node)
     ]
+
+
+def _strict_python_naming_findings(
+    path: Path, targets: Sequence[NamingTarget], rules: Sequence[LoadedRule]
+) -> list[Finding]:
+    rule_roles = {
+        CAMEL_CASE_CLASS_RULE_NAME: {"class"},
+        CAMEL_CASE_METHOD_RULE_NAME: {"function", "method"},
+        CAMEL_CASE_PROPERTY_RULE_NAME: {"property"},
+        CAMEL_CASE_PARAMETER_RULE_NAME: {"parameter"},
+        CAMEL_CASE_VARIABLE_RULE_NAME: {"variable"},
+    }
+    findings: list[Finding] = []
+    for rule_name, roles in rule_roles.items():
+        rule = _rule(rules, rule_name)
+        if rule is None:
+            continue
+        for target in targets:
+            if target.role not in roles or _is_exempt_target(target):
+                continue
+            if target.role == "class":
+                valid = re.fullmatch(r"[A-Z][A-Za-z0-9]*", target.name) is not None
+                convention = "CapWords"
+            else:
+                valid = _is_snake_case_name(target.name)
+                convention = "snake_case"
+            if valid:
+                continue
+            subject = "method" if target.role == "function" else target.role
+            findings.append(
+                _naming_finding(
+                    path,
+                    target,
+                    rule,
+                    f"The {subject} {target.name} is not named in {convention}.",
+                )
+            )
+    return findings
+
+
+def _is_snake_case_name(name: str) -> bool:
+    if re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", name) is not None:
+        return True
+    return (
+        name.endswith("_")
+        and keyword.iskeyword(name[:-1])
+        and re.fullmatch(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", name[:-1]) is not None
+    )
 
 
 def _naming_finding(path: Path, target: NamingTarget, rule: LoadedRule, message: str) -> Finding:
@@ -2947,6 +3002,18 @@ class _NamingRoleCollector(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_callable(node)
 
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        for argument in _arguments(node.args):
+            self._add_target(argument.arg, argument.lineno, "parameter")
+        for default in [*node.args.defaults, *node.args.kw_defaults]:
+            if default is not None:
+                self.visit(default)
+        self.contexts.append("function")
+        self.receivers.append(None)
+        self.visit(node.body)
+        self.receivers.pop()
+        self.contexts.pop()
+
     def visit_Assign(self, node: ast.Assign) -> None:
         if _is_type_parameter_factory(node.value):
             self.generic_target_ids.update(id(target) for name in node.targets for target in _target_names(name))
@@ -3011,6 +3078,11 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.callables.append(NamingCallable(node, role))
         for argument in _arguments(node.args):
             self._add_target(argument.arg, argument.lineno, "parameter")
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in [*node.args.defaults, *node.args.kw_defaults]:
+            if default is not None:
+                self.visit(default)
         receiver = _instance_receiver(node) if direct_class_member else None
         self.contexts.append("function")
         self.receivers.append(receiver)

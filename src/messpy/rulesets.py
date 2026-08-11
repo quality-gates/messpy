@@ -155,6 +155,23 @@ _CATALOG = {
     "lackofcohesionofmethods": LoadedRule(
         name="LackOfCohesionOfMethods", priority=3, properties={"maximum": "1"}
     ),
+    "camelcaseclassname": LoadedRule(name="CamelCaseClassName", priority=1, properties={}),
+    "camelcasemethodname": LoadedRule(
+        name="CamelCaseMethodName",
+        priority=1,
+        properties={"allow-underscore": "false", "allow-underscore-test": "false"},
+    ),
+    "camelcasepropertyname": LoadedRule(
+        name="CamelCasePropertyName",
+        priority=1,
+        properties={"allow-underscore": "false", "allow-underscore-test": "false"},
+    ),
+    "camelcaseparametername": LoadedRule(
+        name="CamelCaseParameterName", priority=1, properties={"allow-underscore": "false"}
+    ),
+    "camelcasevariablename": LoadedRule(
+        name="CamelCaseVariableName", priority=1, properties={"allow-underscore": "false"}
+    ),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -198,6 +215,13 @@ _BUILT_IN_RULESETS = {
         "CouplingBetweenObjects",
         "GlobalVariable",
         "LackOfCohesionOfMethods",
+    ),
+    "controversial": (
+        "CamelCaseClassName",
+        "CamelCaseMethodName",
+        "CamelCasePropertyName",
+        "CamelCaseParameterName",
+        "CamelCaseVariableName",
     ),
     "opinionated": (
         "BooleanArgumentFlag",
