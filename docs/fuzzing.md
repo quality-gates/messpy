@@ -22,8 +22,27 @@ to that corpus directory.
 
 An unexpected MessPy exception stops Atheris. Atheris writes its crashing input
 to a `crash-*` file in the working directory. Reproduce it with the same
-command and replace `-runs=1000` with `crash-<input>`.
+source-analysis target and no fuzz campaign state:
 
 ```sh
-uv run --python 3.11 --extra fuzz python fuzz/fuzz_source_file.py crash-<input>
+uv run --python 3.11 python fuzz/replay_source_file.py crash-<input>
 ```
+
+Store a minimized input that reproduces a confirmed defect in
+`fuzz/regressions/source-analysis/`. An input is the original raw bytes. It
+does not need to be valid Python or use a `.py` suffix. Use a descriptive file
+name that identifies the defect.
+
+Replay every stored input with:
+
+```sh
+uv run --python 3.11 python fuzz/replay_source_file.py fuzz/regressions/source-analysis
+```
+
+The replay command reads each stored input directly. It does not read an
+Atheris corpus or any local fuzz campaign state.
+
+When a confirmed fuzz defect is fixed, add a deterministic MessPy command
+acceptance test for its expected report and exit status. Keep the minimized
+input in the regressions directory so the source-analysis target can replay
+the original input.
