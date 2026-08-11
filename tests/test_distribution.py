@@ -102,9 +102,35 @@ class DistributionAcceptanceTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
+            malformed = project / "malformed.py"
+            malformed.write_text("def broken(:\n", encoding="utf-8")
+            public_report_results = {
+                report_format: subprocess.run(
+                    [
+                        executable,
+                        f"{application},{malformed}",
+                        report_format,
+                        "codesize",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                for report_format in [
+                    "text",
+                    "xml",
+                    "json",
+                    "html",
+                    "ansi",
+                    "github",
+                    "gitlab",
+                    "checkstyle",
+                    "sarif",
+                ]
+            }
 
         self.assertEqual(0, help_result.returncode)
-        self.assertIn("messpy <paths> text codesize", help_result.stdout)
+        self.assertIn("messpy <paths> <format> <ruleset[,ruleset...]> [options]", help_result.stdout)
         self.assertEqual(0, version_result.returncode)
         self.assertEqual("0.1.0\n", version_result.stdout)
         self.assertEqual(0, clean_result.returncode)
@@ -117,3 +143,9 @@ class DistributionAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, custom_ruleset_result.returncode)
         self.assertIn("ExcessiveMethodLength [priority 2]", custom_ruleset_result.stdout)
         self.assertIn("The configured limit is 3.", custom_ruleset_result.stdout)
+        for report_format, result in public_report_results.items():
+            with self.subTest(report_format=report_format):
+                self.assertEqual(1, result.returncode)
+                self.assertEqual("", result.stderr)
+                self.assertIn("ExcessiveMethodLength", result.stdout)
+                self.assertIn("malformed.py", result.stdout)
