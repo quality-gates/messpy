@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from io import StringIO
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ElementTree
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -247,12 +249,164 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(2, status)
         self.assertEqual(
-            f"{long_function.as_posix()}:1: ExcessiveMethodLength "
+            "tests/fixtures/long_function.py:1: ExcessiveMethodLength "
             "[priority 3] The method too_long has 101 lines of code. "
             "The configured limit is 100.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())
+
+    def test_json_report_contains_the_normalized_finding_record(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        source = (FIXTURES / "long_function.py").resolve()
+
+        status = run([str(source), "json", "codesize"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(
+            {
+                "tool": {"name": "messpy", "version": "0.1.0"},
+                "findings": [
+                    {
+                        "path": "tests/fixtures/long_function.py",
+                        "line": 1,
+                        "column": 1,
+                        "ruleName": "ExcessiveMethodLength",
+                        "priority": 3,
+                        "message": "The method too_long has 101 lines of code. The configured limit is 100.",
+                        "context": "too_long",
+                        "suppressed": False,
+                    }
+                ],
+                "errors": [],
+            },
+            json.loads(stdout.getvalue()),
+        )
+
+    def test_public_reports_keep_one_finding_and_one_processing_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            finding_source = project / "finding&source.py"
+            malformed_source = project / "malformed.py"
+            finding_source.write_text(_long_function("too_long"), encoding="utf-8")
+            malformed_source.write_text("def broken(:\n", encoding="utf-8")
+
+            reports: dict[str, str] = {}
+            for report_format in [
+                "text",
+                "xml",
+                "json",
+                "html",
+                "ansi",
+                "github",
+                "gitlab",
+                "checkstyle",
+                "sarif",
+            ]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(project), report_format, "codesize"], stdout, stderr)
+
+                self.assertEqual(1, status, report_format)
+                self.assertEqual("", stderr.getvalue(), report_format)
+                reports[report_format] = stdout.getvalue()
+
+        for report_format in ["text", "html", "ansi", "github"]:
+            self.assertIn("ExcessiveMethodLength", reports[report_format])
+            self.assertIn("ProcessingError", reports[report_format])
+        self.assertIn("finding&amp;source.py", reports["html"])
+        self.assertIn("\x1b[", reports["ansi"])
+        self.assertIn("::warning file=", reports["github"])
+        self.assertIn("::error file=", reports["github"])
+
+        xml = ElementTree.fromstring(reports["xml"])
+        self.assertEqual("messpy", xml.tag)
+        self.assertEqual("0.1.0", xml.get("version"))
+        self.assertEqual("too_long", xml.find("./findings/finding").get("context"))
+        self.assertEqual("ProcessingError", xml.find("./errors/error").get("ruleName"))
+
+        json_report = json.loads(reports["json"])
+        self.assertEqual("too_long", json_report["findings"][0]["context"])
+        self.assertEqual("ProcessingError", json_report["errors"][0]["ruleName"])
+
+        checkstyle = ElementTree.fromstring(reports["checkstyle"])
+        self.assertEqual("checkstyle", checkstyle.tag)
+        self.assertEqual(2, len(checkstyle.findall(".//error")))
+
+        gitlab = json.loads(reports["gitlab"])
+        self.assertEqual(["ExcessiveMethodLength", "ProcessingError"], [entry["check_name"] for entry in gitlab])
+        self.assertEqual({"name": "messpy", "version": "0.1.0"}, gitlab[0]["tool"])
+        self.assertEqual(
+            (
+                f"{finding_source.resolve().as_posix()}:1:1:ExcessiveMethodLength:"
+                "The method too_long has 101 lines of code. The configured limit is 100."
+            ).encode("utf-8").hex(),
+            gitlab[0]["fingerprint"],
+        )
+
+        sarif = json.loads(reports["sarif"])
+        run_record = sarif["runs"][0]
+        self.assertEqual("2.1.0", sarif["version"])
+        self.assertEqual("messpy", run_record["tool"]["driver"]["name"])
+        self.assertEqual("ExcessiveMethodLength", run_record["results"][0]["ruleId"])
+        self.assertFalse(run_record["invocations"][0]["executionSuccessful"])
+
+    def test_text_color_controls_do_not_color_redirected_output_by_default(self) -> None:
+        source = str((FIXTURES / "long_function.py").resolve())
+        reports: dict[str, str] = {}
+        for option in [[], ["--color", "always"], ["--color", "never"]]:
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([source, "text", "codesize", *option], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            reports[option[-1] if option else "auto"] = stdout.getvalue()
+
+        self.assertNotIn("\x1b[", reports["auto"])
+        self.assertIn("\x1b[", reports["always"])
+        self.assertNotIn("\x1b[", reports["never"])
+
+    def test_every_format_keeps_clean_status_and_report_file_content(self) -> None:
+        formats = ["text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            finding_source = temporary / "finding.py"
+            finding_source.write_text(_long_function("too_long"), encoding="utf-8")
+            for report_format in formats:
+                clean_stdout = StringIO()
+                clean_stderr = StringIO()
+                clean_status = run(
+                    [str(FIXTURES / "clean.py"), report_format, "codesize"], clean_stdout, clean_stderr
+                )
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(finding_source), report_format, "codesize"], stdout, stderr)
+                report_file = temporary / f"report.{report_format}"
+                file_stdout = StringIO()
+                file_stderr = StringIO()
+                file_status = run(
+                    [
+                        str(finding_source),
+                        report_format,
+                        "codesize",
+                        "--reportfile",
+                        str(report_file),
+                    ],
+                    file_stdout,
+                    file_stderr,
+                )
+
+                self.assertEqual(0, clean_status, report_format)
+                self.assertEqual("", clean_stderr.getvalue(), report_format)
+                self.assertEqual(2, status, report_format)
+                self.assertEqual("", stderr.getvalue(), report_format)
+                self.assertEqual(2, file_status, report_format)
+                self.assertEqual("", file_stdout.getvalue(), report_format)
+                self.assertEqual("", file_stderr.getvalue(), report_format)
+                self.assertEqual(stdout.getvalue(), report_file.read_text(encoding="utf-8"), report_format)
 
     def test_disable_next_line_hides_only_the_named_finding_on_the_next_source_line(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -716,12 +870,14 @@ class CommandAcceptanceTests(unittest.TestCase):
         status = run(["--help"], stdout, stderr)
 
         self.assertEqual(0, status)
-        self.assertIn("messpy <paths> text codesize", stdout.getvalue())
+        self.assertIn("messpy <paths> <format> <ruleset[,ruleset...]> [options]", stdout.getvalue())
+        self.assertIn("text, xml, json, html, ansi, github, gitlab, checkstyle, sarif", stdout.getvalue())
         self.assertIn("--suffixes", stdout.getvalue())
         self.assertIn("--exclude", stdout.getvalue())
         self.assertIn("--ignore-tests", stdout.getvalue())
         self.assertIn("--reportfile", stdout.getvalue())
         self.assertIn("--strict", stdout.getvalue())
+        self.assertIn("--color <auto|always|never>", stdout.getvalue())
         self.assertIn("--ignore-errors-on-exit", stdout.getvalue())
         self.assertIn("--ignore-violations-on-exit", stdout.getvalue())
         self.assertIn("Input directory symlinks are scanned; nested directory symlinks are skipped.", stdout.getvalue())
