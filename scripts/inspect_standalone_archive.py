@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import re
 import tarfile
 
+from release_contract import ARCHITECTURES, STABLE_VERSION
 
-STABLE_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-ARCHITECTURES = {"amd64", "arm64"}
+
 EXPECTED_MEMBERS = {"LICENSE": 0o644, "messpy": 0o755}
 
 

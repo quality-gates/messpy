@@ -3,12 +3,9 @@ from __future__ import annotations
 import argparse
 import gzip
 from pathlib import Path
-import re
 import tarfile
 
-
-STABLE_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
-ARCHITECTURES = {"amd64", "arm64"}
+from release_contract import ARCHITECTURES, STABLE_VERSION
 
 
 def package(executable: Path, license_file: Path, output: Path, epoch: int) -> None:

@@ -106,19 +106,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         expected_contract = [
-            "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+            "validate-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756",
+            "publish-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756",
             "git merge-base --is-ancestor",
             "python -m unittest discover -s tests",
             "pyinstaller-requirements-macos.txt",
             "--require-hashes",
-            "messpy_${VERSION}_darwin_arm64.tar.gz",
-            "messpy_${VERSION}_darwin_amd64.tar.gz",
             "macos-15-intel",
             "macos-15",
-            "gh release verify-asset",
             "environment: homebrew",
-            "publish-formula.yml/dispatches",
-            "inputs[tool]=messpy",
+            "tool: messpy",
         ]
         for required_text in expected_contract:
             with self.subTest(required_text=required_text):
