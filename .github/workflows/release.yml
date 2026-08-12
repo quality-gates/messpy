@@ -1,0 +1,441 @@
+name: Release standalone executables
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag to retry
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.14.0"
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    name: Validate stable tag and source
+    runs-on: ubuntu-latest
+    outputs:
+      immutable_release: ${{ steps.release.outputs.immutable_release }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: release
+        name: Require a stable version from the default branch
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release tags must match vMAJOR.MINOR.PATCH; got: $TAG" >&2
+            exit 1
+          fi
+          source_sha="$(git rev-list -n 1 "$TAG")"
+          remote_sha="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1)"
+          if [[ -z "$remote_sha" ]]; then
+            remote_sha="$(git ls-remote origin "refs/tags/$TAG" | cut -f1)"
+          fi
+          if [[ -z "$source_sha" || "$remote_sha" != "$source_sha" ]]; then
+            echo "The remote tag does not resolve to the checked-out source commit." >&2
+            exit 1
+          fi
+          if [[ "${{ github.event_name }}" == push ]]; then
+            test "$GITHUB_REF_TYPE" = tag
+            test "$GITHUB_SHA" = "$source_sha"
+          fi
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$source_sha" "origin/$DEFAULT_BRANCH"; then
+            echo "Release source is not on the default branch." >&2
+            exit 1
+          fi
+          version="${TAG#v}"
+          VERSION="$version" PYTHONPATH=src python -c \
+            'import os; from messpy import __version__; assert __version__ == os.environ["VERSION"]'
+
+          immutable_release=false
+          if release="$(gh api "repos/$GH_REPO/releases/tags/$TAG" 2>/dev/null)"; then
+            is_draft="$(jq -r .draft <<<"$release")"
+            is_prerelease="$(jq -r .prerelease <<<"$release")"
+            immutable="$(jq -r .immutable <<<"$release")"
+            test "$is_prerelease" = false
+            if [[ "$is_draft" == false && "$immutable" == true ]]; then
+              immutable_release=true
+            elif [[ "$is_draft" != true ]]; then
+              echo "An existing published release is not immutable." >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "immutable_release=$immutable_release"
+            echo "source_sha=$source_sha"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Test release source
+    needs: validate
+    if: needs.validate.outputs.immutable_release != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Run the complete test suite
+        run: python -m unittest discover -s tests
+      - name: Verify generated docs and self-analysis
+        run: |
+          python scripts/generate_rule_docs.py --check
+          python -m pip install --disable-pip-version-check --no-deps .
+          python scripts/verify_self_analysis.py messpy ci/self-analysis-baseline.txt
+
+  build:
+    name: Build darwin/${{ matrix.arch }}
+    needs: [validate, test]
+    if: needs.validate.outputs.immutable_release != 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            machine: arm64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install the hash-pinned standalone build toolchain
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes -r ci/pyinstaller-requirements-macos.txt
+      - name: Build and package the native executable
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          MACHINE: ${{ matrix.machine }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$MACHINE"
+          source_date_epoch="$(git show -s --format=%ct "$SOURCE_SHA")"
+          export SOURCE_DATE_EPOCH="$source_date_epoch"
+          python -m PyInstaller \
+            --clean --noconfirm --onefile --name messpy \
+            --paths src --target-arch "$MACHINE" \
+            scripts/messpy_standalone.py
+          test "$(lipo -archs dist/messpy)" = "$MACHINE"
+          codesign --verify --strict dist/messpy
+          test "$(dist/messpy --version)" = "$VERSION"
+          mkdir package
+          python scripts/package_standalone.py \
+            dist/messpy LICENSE package "$VERSION" "$ARCH" "$source_date_epoch"
+          python scripts/inspect_standalone_archive.py \
+            "package/messpy_${VERSION}_darwin_${ARCH}.tar.gz" "$VERSION" "$ARCH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          if-no-files-found: error
+          name: messpy-darwin-${{ matrix.arch }}
+          path: package/*.tar.gz
+          retention-days: 7
+
+  package:
+    name: Collect exact release assets
+    needs: [validate, build]
+    if: needs.validate.outputs.immutable_release != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          merge-multiple: true
+          path: dist
+          pattern: messpy-darwin-*
+      - name: Create checksum manifest
+        working-directory: dist
+        run: sha256sum messpy_*.tar.gz | LC_ALL=C sort > checksums.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          if-no-files-found: error
+          name: release-assets
+          path: dist/*
+          retention-days: 7
+
+  smoke:
+    name: Test exact archive on ${{ matrix.runner }}
+    needs: [validate, package]
+    if: needs.validate.outputs.immutable_release != 'true'
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: macos-15-intel
+          - arch: arm64
+            machine: arm64
+            runner: macos-15
+          - arch: amd64
+            machine: x86_64
+            runner: macos-26-intel
+          - arch: arm64
+            machine: arm64
+            runner: macos-26
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: release-assets
+          path: dist
+      - name: Exercise the packaged executable
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          MACHINE: ${{ matrix.machine }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$MACHINE"
+          (cd dist && shasum -a 256 -c checksums.txt)
+          archive="dist/messpy_${VERSION}_darwin_${ARCH}.tar.gz"
+          python scripts/inspect_standalone_archive.py "$archive" "$VERSION" "$ARCH"
+          mkdir "$RUNNER_TEMP/messpy-package"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/messpy-package"
+          executable="$RUNNER_TEMP/messpy-package/messpy"
+          test "$(lipo -archs "$executable")" = "$MACHINE"
+          codesign --verify --strict "$executable"
+          test "$("$executable" --version)" = "$VERSION"
+          "$executable" tests/fixtures/clean.py text codesize
+          set +e
+          "$executable" tests/fixtures/long_function.py json codesize > "$RUNNER_TEMP/finding.json"
+          finding_status=$?
+          printf 'def broken(:\n' > "$RUNNER_TEMP/malformed.py"
+          "$executable" "$RUNNER_TEMP/malformed.py" text codesize > "$RUNNER_TEMP/error.txt"
+          error_status=$?
+          set -e
+          test "$finding_status" = 2
+          test "$error_status" = 1
+          test "$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["tool"]["version"])' "$RUNNER_TEMP/finding.json")" = "$VERSION"
+          grep -Fq ExcessiveMethodLength "$RUNNER_TEMP/finding.json"
+          grep -Fq malformed.py "$RUNNER_TEMP/error.txt"
+
+  release:
+    name: Publish immutable GitHub release
+    needs: [validate, smoke]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      (needs.smoke.result == 'success' || needs.validate.outputs.immutable_release == 'true')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      amd64_sha: ${{ steps.release.outputs.amd64_sha }}
+      arm64_sha: ${{ steps.release.outputs.arm64_sha }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ needs.validate.outputs.source_sha }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        if: needs.validate.outputs.immutable_release != 'true'
+        with:
+          name: release-assets
+          path: dist
+      - id: release
+        name: Create or verify the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          remote_tag_sha() {
+            remote_sha="$(git ls-remote "https://github.com/$GH_REPO.git" "refs/tags/$TAG^{}" | cut -f1)"
+            if [[ -z "$remote_sha" ]]; then
+              remote_sha="$(git ls-remote "https://github.com/$GH_REPO.git" "refs/tags/$TAG" | cut -f1)"
+            fi
+            printf '%s\n' "$remote_sha"
+          }
+          test "$(remote_tag_sha)" = "$SOURCE_SHA"
+          if release="$(gh release view "$TAG" --json databaseId,isDraft 2>/dev/null)"; then
+            release_id="$(jq -r .databaseId <<<"$release")"
+            is_draft="$(jq -r .isDraft <<<"$release")"
+            if [[ "$is_draft" != true ]]; then
+              if [[ "$(gh api "repos/$GH_REPO/releases/$release_id" --jq .immutable)" != true ]]; then
+                echo "The existing published release is not immutable." >&2
+                exit 1
+              fi
+              rm -rf dist
+              mkdir dist
+              gh release download "$TAG" --dir dist
+            fi
+          else
+            gh release create "$TAG" --draft --generate-notes --title "messpy $VERSION" --verify-tag
+            release="$(gh release view "$TAG" --json databaseId,isDraft)"
+            release_id="$(jq -r .databaseId <<<"$release")"
+            is_draft="$(jq -r .isDraft <<<"$release")"
+          fi
+          release_api="repos/$GH_REPO/releases/$release_id"
+          expected_assets="$(printf '%s\n' \
+            "messpy_${VERSION}_darwin_amd64.tar.gz" \
+            "messpy_${VERSION}_darwin_arm64.tar.gz" \
+            checksums.txt | LC_ALL=C sort)"
+          local_assets="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          if [[ "$local_assets" != "$expected_assets" ]]; then
+            echo "Local release assets do not match the release contract." >&2
+            exit 1
+          fi
+          test "$(wc -l < dist/checksums.txt | tr -d ' ')" = 2
+          manifest_assets="$(awk '{print $2}' dist/checksums.txt | LC_ALL=C sort)"
+          expected_archives="$(printf '%s\n' \
+            "messpy_${VERSION}_darwin_amd64.tar.gz" \
+            "messpy_${VERSION}_darwin_arm64.tar.gz" | LC_ALL=C sort)"
+          test "$manifest_assets" = "$expected_archives"
+          (cd dist && sha256sum --strict -c checksums.txt)
+          for arch in amd64 arm64; do
+            python scripts/inspect_standalone_archive.py \
+              "dist/messpy_${VERSION}_darwin_${arch}.tar.gz" "$VERSION" "$arch"
+          done
+
+          if [[ "$is_draft" == true ]]; then
+            mkdir -p existing
+            while IFS= read -r name; do
+              if gh api "$release_api" --jq '.assets[].name' | grep -Fxq "$name"; then
+                gh release download "$TAG" --pattern "$name" --dir existing
+                if ! cmp -s "dist/$name" "existing/$name"; then
+                  echo "Draft asset differs from the tested asset: $name" >&2
+                  exit 1
+                fi
+              else
+                gh release upload "$TAG" "dist/$name"
+              fi
+            done <<<"$expected_assets"
+          fi
+
+          actual_assets="$(gh api "$release_api" --jq '[.assets[].name] | sort | .[]')"
+          if [[ "$actual_assets" != "$expected_assets" ]]; then
+            echo "The release does not contain exactly the tested assets." >&2
+            diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$actual_assets") || true
+            exit 1
+          fi
+          if [[ "$is_draft" == true ]]; then
+            test "$(remote_tag_sha)" = "$SOURCE_SHA"
+            gh release edit "$TAG" --draft=false --latest
+          fi
+          for _attempt in {1..6}; do
+            immutable="$(gh api "$release_api" --jq .immutable)"
+            [[ "$immutable" == true ]] && break
+            sleep 5
+          done
+          if [[ "$immutable" != true ]]; then
+            echo "The published release is not immutable; Homebrew dispatch is blocked." >&2
+            exit 1
+          fi
+          test "$(remote_tag_sha)" = "$SOURCE_SHA"
+          gh release verify "$TAG"
+          while IFS= read -r name; do
+            gh release verify-asset "$TAG" "dist/$name"
+          done <<<"$expected_assets"
+          arm64_sha="$(awk -v asset="messpy_${VERSION}_darwin_arm64.tar.gz" '$2 == asset {print $1}' dist/checksums.txt)"
+          amd64_sha="$(awk -v asset="messpy_${VERSION}_darwin_amd64.tar.gz" '$2 == asset {print $1}' dist/checksums.txt)"
+          [[ "$arm64_sha" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$amd64_sha" =~ ^[0-9a-f]{64}$ ]]
+          {
+            echo "arm64_sha=$arm64_sha"
+            echo "amd64_sha=$amd64_sha"
+            echo "release_id=$release_id"
+          } >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    name: Update the Homebrew tap
+    needs: [validate, release]
+    if: >-
+      always() &&
+      needs.validate.result == 'success' &&
+      needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    environment: homebrew
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        with:
+          app-id: ${{ secrets.HOMEBREW_TAP_APP_ID }}
+          owner: quality-gates
+          permission-actions: write
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          repositories: homebrew-tap
+      - id: dispatch
+        name: Dispatch the tap-owned generic formula workflow
+        shell: bash
+        env:
+          AMD64_SHA: ${{ needs.release.outputs.amd64_sha }}
+          ARM64_SHA: ${{ needs.release.outputs.arm64_sha }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          SOURCE_SHA: ${{ needs.validate.outputs.source_sha }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          response="$(gh api --method POST \
+            repos/quality-gates/homebrew-tap/actions/workflows/publish-formula.yml/dispatches \
+            -F return_run_details=true \
+            -f ref=main \
+            -f 'inputs[tool]=messpy' \
+            -f "inputs[tag]=$TAG" \
+            -f "inputs[version]=$VERSION" \
+            -f "inputs[release_id]=$RELEASE_ID" \
+            -f "inputs[source_sha]=$SOURCE_SHA" \
+            -f "inputs[arm64_asset]=messpy_${VERSION}_darwin_arm64.tar.gz" \
+            -f "inputs[amd64_asset]=messpy_${VERSION}_darwin_amd64.tar.gz" \
+            -f "inputs[arm64_sha]=$ARM64_SHA" \
+            -f "inputs[amd64_sha]=$AMD64_SHA")"
+          run_id="$(jq -r .workflow_run_id <<<"$response")"
+          run_url="$(jq -r .html_url <<<"$response")"
+          test "$run_id" != null
+          test "$run_url" != null
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Tap publication: $run_url" >> "$GITHUB_STEP_SUMMARY"
+      - name: Wait for tap publication
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --repo quality-gates/homebrew-tap --exit-status

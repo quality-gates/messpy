@@ -42,6 +42,7 @@ def inspect(directory: Path) -> None:
             raise AssertionError(f"wheel is missing package files: {sorted(missing)}")
         metadata_name = _single_name(names, ".dist-info/METADATA")
         entry_points_name = _single_name(names, ".dist-info/entry_points.txt")
+        _single_name(names, ".dist-info/licenses/LICENSE")
         metadata = Parser().parsestr(archive.read(metadata_name).decode("utf-8"))
         if metadata["Name"] != project["name"] or metadata["Version"] != expected_version:
             raise AssertionError("wheel metadata has the wrong project identity")
@@ -55,7 +56,7 @@ def inspect(directory: Path) -> None:
     with tarfile.open(source_distributions[0], "r:gz") as archive:
         archive_names = set(archive.getnames())
         names = {name.split("/", 1)[1] for name in archive_names if "/" in name}
-        expected = {"pyproject.toml", *(f"src/{name}" for name in PACKAGE_FILES)}
+        expected = {"LICENSE", "pyproject.toml", *(f"src/{name}" for name in PACKAGE_FILES)}
         missing = expected - names
         if missing:
             raise AssertionError(f"source distribution is missing files: {sorted(missing)}")
