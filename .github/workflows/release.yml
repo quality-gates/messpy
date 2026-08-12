@@ -27,8 +27,8 @@ jobs:
     name: Validate stable tag and source
     runs-on: ubuntu-latest
     outputs:
-      immutable_release: ${{ steps.release.outputs.immutable_release }}
-      source_sha: ${{ steps.release.outputs.source_sha }}
+      immutable_release: ${{ steps.release.outputs['immutable-release'] }}
+      source_sha: ${{ steps.release.outputs['source-sha'] }}
       version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -50,7 +50,7 @@ jobs:
         shell: bash
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          SOURCE_SHA: ${{ steps.release.outputs['source-sha'] }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
