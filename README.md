@@ -27,6 +27,15 @@ Machine-readable report shapes: [docs/reports.md](docs/reports.md).
 
 ## Install
 
+With Homebrew (standalone executable; Python is not required):
+
+```console
+brew install quality-gates/tap/messpy
+messpy --version
+```
+
+Or install the Python package:
+
 ```console
 python -m pip install messpy
 # or: pipx install messpy
