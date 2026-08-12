@@ -40,7 +40,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - id: release
         name: Validate the stable release identity
-        uses: quality-gates/homebrew-tap/.github/actions/validate-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756
+        uses: quality-gates/homebrew-tap/.github/actions/validate-source-release@0076a679dc5f6ee0ef6e28f571b24fc3ec973ae2
         with:
           tool: messpy
           tag: ${{ env.TAG }}
@@ -237,7 +237,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: quality-gates/homebrew-tap/.github/actions/publish-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756
+      - uses: quality-gates/homebrew-tap/.github/actions/publish-source-release@0076a679dc5f6ee0ef6e28f571b24fc3ec973ae2
         with:
           tool: messpy
           tag: ${{ env.TAG }}
