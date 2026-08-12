@@ -106,8 +106,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         expected_contract = [
-            "validate-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756",
-            "publish-source-release@92b635fe61fb926a5b13c7c59f163c3cec3ca756",
+            "validate-source-release@0076a679dc5f6ee0ef6e28f571b24fc3ec973ae2",
+            "publish-source-release@0076a679dc5f6ee0ef6e28f571b24fc3ec973ae2",
             "git merge-base --is-ancestor",
             "python -m unittest discover -s tests",
             "pyinstaller-requirements-macos.txt",
