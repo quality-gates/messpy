@@ -550,6 +550,23 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_duplicate_parameter_name_reports_an_error_without_hiding_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            violating = project / "violating.py"
+            malformed = project / "malformed.py"
+            violating.write_text(_long_function("violating"), encoding="utf-8")
+            malformed.write_text("def broken(s, s):\n    pass\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(project), "text", "codesize,unusedcode"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(_finding_for(violating, "violating"), stdout.getvalue())
+        self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_invalid_source_encoding_reports_an_error_without_hiding_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)

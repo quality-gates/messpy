@@ -478,7 +478,16 @@ def _analyze(
         except (OSError, UnicodeError) as error:
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
-        findings.extend(_apply_suppressions(source, _findings(source_file, source, tree, rules)))
+        try:
+            findings.extend(_apply_suppressions(source, _findings(source_file, source, tree, rules)))
+        except SyntaxError as error:
+            # ast.parse() above accepts some sources (e.g. duplicate parameter
+            # names) that symtable.symtable() rejects; rules that build symbol
+            # tables can hit this second, stricter parse.
+            line = error.lineno or 1
+            processing_errors.append(
+                ProcessingError(source_file, line, f"Could not analyze {source_file}: {error.msg}")
+            )
     return findings, processing_errors
 
 
