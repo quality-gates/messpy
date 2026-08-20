@@ -3,8 +3,8 @@ from __future__ import annotations
 import ast
 import builtins
 from collections import defaultdict
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Sequence, Set as AbstractSet
+from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import json
 import keyword
@@ -124,26 +124,36 @@ RULE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
-class ParsedArguments:
-    paths: list[str]
-    report_format: str
-    rulesets: list[str]
-    suffixes: set[str]
-    exclusions: list[str]
-    ignore_tests: bool
-    ignore_errors_on_exit: bool
-    ignore_violations_on_exit: bool
-    report_file: Path | None
-    only: list[str]
-    enable: list[str]
-    disable: list[str]
+class RuleSelection:
+    rulesets: tuple[str, ...]
+    only: tuple[str, ...]
+    enable: tuple[str, ...]
+    disable: tuple[str, ...]
     minimum_priority: int
     maximum_priority: int
+
+
+@dataclass(frozen=True)
+class ExitPolicy:
+    ignore_errors_on_exit: bool
+    ignore_violations_on_exit: bool
+
+
+@dataclass(frozen=True)
+class ParsedArguments:
+    paths: tuple[str, ...]
+    report_format: str
+    suffixes: frozenset[str]
+    exclusions: tuple[str, ...]
+    ignore_tests: bool
+    report_file: Path | None
     strict: bool
     verbose: bool
     color: str
     show_help: bool
     show_version: bool
+    rule_selection: RuleSelection
+    exit_policy: ExitPolicy
 
 
 class CliError(Exception):
@@ -184,6 +194,7 @@ class ClassInfo:
     name: str
     fields: tuple[str, ...]
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
+    is_ast_visitor: bool
 
 
 @dataclass(frozen=True)
@@ -191,6 +202,7 @@ class NamingTarget:
     name: str
     line: int
     role: str
+    contract: bool = False
 
 
 @dataclass(frozen=True)
@@ -222,60 +234,72 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     parsed_arguments: ParsedArguments | None = None
     try:
         parsed_arguments = _parse_arguments(arguments)
-        if parsed_arguments.show_help:
-            stdout.write(_help_text())
-            return 0
-        if parsed_arguments.show_version:
-            stdout.write(f"{_messpy_version()}\n")
-            return 0
-        if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
-            raise CliError(f"Unknown format: {parsed_arguments.report_format}")
-        rules = filter_rules(
-            load_rulesets(parsed_arguments.rulesets),
-            parsed_arguments.only,
-            parsed_arguments.enable,
-            parsed_arguments.disable,
-            parsed_arguments.minimum_priority,
-            parsed_arguments.maximum_priority,
-        )
-        if parsed_arguments.verbose:
-            stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
-
-        input_paths = [Path(value).resolve() for value in parsed_arguments.paths]
-        source_files = _source_files(
-            input_paths,
-            parsed_arguments.suffixes,
-            parsed_arguments.exclusions,
-            parsed_arguments.ignore_tests,
-        )
-        findings, processing_errors = _analyze(source_files, rules)
-        reported_findings = findings if parsed_arguments.strict else _unsuppressed(findings)
-        report = _render_report(
-            parsed_arguments.report_format,
-            reported_findings,
-            processing_errors,
-            _use_color(parsed_arguments, stdout),
-        )
-        if parsed_arguments.report_file is None:
-            stdout.write(report)
-        else:
-            _write_report(parsed_arguments.report_file, report)
-        return _exit_status(
-            reported_findings,
-            processing_errors,
-            parsed_arguments.ignore_errors_on_exit,
-            parsed_arguments.ignore_violations_on_exit,
-        )
+        early_exit_status = _handle_help_or_version(parsed_arguments, stdout)
+        if early_exit_status is not None:
+            return early_exit_status
+        return _run_analysis(parsed_arguments, stdout, stderr)
     except (CliError, RulesetError) as error:
         stderr.write(f"Error: {error}\n")
-        if (parsed_arguments and parsed_arguments.ignore_errors_on_exit) or getattr(
+        if (parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit) or getattr(
             error, "ignore_errors_on_exit", False
         ):
             return 0
         return 1
     except OSError as error:
         stderr.write(f"Error: {error}\n")
-        return 0 if parsed_arguments and parsed_arguments.ignore_errors_on_exit else 1
+        return 0 if parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit else 1
+
+
+def _handle_help_or_version(parsed_arguments: ParsedArguments, stdout: TextIO) -> int | None:
+    if parsed_arguments.show_help:
+        stdout.write(_help_text())
+        return 0
+    if parsed_arguments.show_version:
+        stdout.write(f"{_messpy_version()}\n")
+        return 0
+    return None
+
+
+def _run_analysis(parsed_arguments: ParsedArguments, stdout: TextIO, stderr: TextIO) -> int:
+    if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
+        raise CliError(f"Unknown format: {parsed_arguments.report_format}")
+    selection = parsed_arguments.rule_selection
+    rules = filter_rules(
+        load_rulesets(selection.rulesets),
+        selection.only,
+        selection.enable,
+        selection.disable,
+        selection.minimum_priority,
+        selection.maximum_priority,
+    )
+    if parsed_arguments.verbose:
+        stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
+
+    input_paths = [Path(value).resolve() for value in parsed_arguments.paths]
+    source_files = _source_files(
+        input_paths,
+        parsed_arguments.suffixes,
+        parsed_arguments.exclusions,
+        parsed_arguments.ignore_tests,
+    )
+    findings, processing_errors = _analyze(source_files, rules)
+    reported_findings = findings if parsed_arguments.strict else _unsuppressed(findings)
+    report = _render_report(
+        parsed_arguments.report_format,
+        reported_findings,
+        processing_errors,
+        _use_color(parsed_arguments, stdout),
+    )
+    if parsed_arguments.report_file is None:
+        stdout.write(report)
+    else:
+        _write_report(parsed_arguments.report_file, report)
+    return _exit_status(
+        reported_findings,
+        processing_errors,
+        parsed_arguments.exit_policy.ignore_errors_on_exit,
+        parsed_arguments.exit_policy.ignore_violations_on_exit,
+    )
 
 
 def main() -> None:
@@ -286,147 +310,195 @@ def _messpy_version() -> str:
     return __version__
 
 
-def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
-    positionals: list[str] = []
-    suffixes = {".py", ".pyi"}
-    exclusions: list[str] = []
-    report_file: Path | None = None
-    ignore_tests = False
-    ignore_errors_on_exit = False
-    ignore_violations_on_exit = False
-    strict = False
-    verbose = False
-    color = "auto"
-    only: list[str] = []
-    enable: list[str] = []
-    disable: list[str] = []
-    minimum_priority = 1
-    maximum_priority = 5
-    show_help = False
-    show_version = False
-    suffixes_provided = False
+@dataclass
+class _RuleSelectionState:
+    only: list[str] = dataclass_field(default_factory=list)
+    enable: list[str] = dataclass_field(default_factory=list)
+    disable: list[str] = dataclass_field(default_factory=list)
+    minimum_priority: int = 1
+    maximum_priority: int = 5
 
+
+@dataclass
+class _ArgumentParseState:
+    positionals: list[str] = dataclass_field(default_factory=list)
+    suffixes: set[str] = dataclass_field(default_factory=lambda: {".py", ".pyi"})
+    suffixes_provided: bool = False
+    exclusions: list[str] = dataclass_field(default_factory=list)
+    report_file: Path | None = None
+    ignore_tests: bool = False
+    ignore_errors_on_exit: bool = False
+    ignore_violations_on_exit: bool = False
+    strict: bool = False
+    verbose: bool = False
+    color: str = "auto"
+    rules: _RuleSelectionState = dataclass_field(default_factory=_RuleSelectionState)
+    show_help: bool = False
+    show_version: bool = False
+
+
+def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
+    state = _ArgumentParseState()
     index = 0
-    while index < len(arguments):
+    argument_count = len(arguments)
+    while index < argument_count:
         argument = arguments[index]
         if argument in {"-h", "--help"}:
-            show_help = True
+            state.show_help = True
             index += 1
             continue
         if argument in {"-v", "--version"}:
-            show_version = True
+            state.show_version = True
             index += 1
             continue
         if not argument.startswith("-"):
-            positionals.append(argument)
+            state.positionals.append(argument)
             index += 1
             continue
 
         option_name, option_value = _split_option(argument)
         if option_name in VALUE_OPTIONS:
-            if option_value is None:
-                if index + 1 == len(arguments) or arguments[index + 1].startswith("-"):
-                    raise CliError(f"Missing value for option: {option_name}", ignore_errors_on_exit)
-                option_value = arguments[index + 1]
-                index += 1
-            if option_name in {"--report-file", "--reportfile"}:
-                report_file = Path(option_value)
-            elif option_name == "--suffixes":
-                normalized_suffixes = _normalized_suffixes(option_value)
-                suffixes = normalized_suffixes if not suffixes_provided else suffixes | normalized_suffixes
-                suffixes_provided = True
-            elif option_name == "--exclude":
-                exclusions.extend(_split_nonempty(option_value))
-            elif option_name == "--color":
-                color = _parse_color(option_value, ignore_errors_on_exit)
-            elif option_name in {"--only", "--enable", "--disable"}:
-                values = _split_nonempty(option_value)
-                if option_name == "--only":
-                    only.extend(values)
-                elif option_name == "--enable":
-                    enable.extend(values)
-                else:
-                    disable.extend(values)
-            elif option_name in {"--minimum-priority", "--minimumpriority"}:
-                minimum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
-            else:
-                maximum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
-            index += 1
+            index = _apply_value_option(state, arguments, index, option_name, option_value)
             continue
         if option_name in BOOLEAN_OPTIONS:
-            if option_value is not None:
-                raise CliError(f"Option does not accept a value: {option_name}", ignore_errors_on_exit)
-            if option_name == "--ignore-tests":
-                ignore_tests = True
-            elif option_name == "--ignore-errors-on-exit":
-                ignore_errors_on_exit = True
-            elif option_name == "--verbose":
-                verbose = True
-            elif option_name == "--strict":
-                strict = True
-            else:
-                ignore_violations_on_exit = True
+            _apply_boolean_option(state, option_name, option_value)
             index += 1
             continue
-        raise CliError(f"Unknown option: {option_name}", ignore_errors_on_exit)
+        raise CliError(f"Unknown option: {option_name}", state.ignore_errors_on_exit)
 
-    if show_help or show_version:
-        if positionals:
-            raise CliError(f"Unexpected positional argument: {positionals[0]}", ignore_errors_on_exit)
-        return ParsedArguments(
-            paths=[],
-            report_format="",
-            rulesets=[],
-            suffixes=suffixes,
-            exclusions=exclusions,
-            ignore_tests=ignore_tests,
-            ignore_errors_on_exit=ignore_errors_on_exit,
-            ignore_violations_on_exit=ignore_violations_on_exit,
-            report_file=report_file,
-            only=only,
-            enable=enable,
-            disable=disable,
-            minimum_priority=minimum_priority,
-            maximum_priority=maximum_priority,
-            strict=strict,
-            verbose=verbose,
-            color=color,
-            show_help=show_help,
-            show_version=show_version,
-        )
-    if len(positionals) < 3:
-        raise CliError(f"Missing required arguments: {REQUIRED_ARGUMENTS}", ignore_errors_on_exit)
-    if len(positionals) > 3:
-        raise CliError(f"Unexpected positional argument: {positionals[3]}", ignore_errors_on_exit)
+    if state.show_help or state.show_version:
+        return _finish_help_or_version_parsing(state)
+    return _finish_analysis_parsing(state)
 
-    paths = _split_nonempty(positionals[0])
-    if not paths:
-        raise CliError("At least one input path is required", ignore_errors_on_exit)
-    rulesets = _split_nonempty(positionals[2])
-    if not rulesets:
-        raise CliError("At least one ruleset is required", ignore_errors_on_exit)
-    if minimum_priority > maximum_priority:
-        raise CliError("Minimum priority must not exceed maximum priority.", ignore_errors_on_exit)
+
+def _apply_value_option(
+    state: _ArgumentParseState, arguments: Sequence[str], index: int, option_name: str, option_value: str | None
+) -> int:
+    if option_value is None:
+        if index + 1 == len(arguments) or arguments[index + 1].startswith("-"):
+            raise CliError(f"Missing value for option: {option_name}", state.ignore_errors_on_exit)
+        option_value = arguments[index + 1]
+        index += 1
+    _dispatch_value_option(state, option_name, option_value)
+    return index + 1
+
+
+def _dispatch_value_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
+    if option_name in {"--report-file", "--reportfile"}:
+        state.report_file = Path(option_value)
+    elif option_name == "--suffixes":
+        state.suffixes = _merged_suffixes(state, option_value)
+        state.suffixes_provided = True
+    elif option_name == "--exclude":
+        state.exclusions.extend(_split_nonempty(option_value))
+    elif option_name == "--color":
+        state.color = _parse_color(option_value, state.ignore_errors_on_exit)
+    elif option_name in {"--only", "--enable", "--disable"}:
+        _apply_rule_selection_option(state, option_name, option_value)
+    elif option_name in {"--minimum-priority", "--minimumpriority"}:
+        state.rules.minimum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+    else:
+        state.rules.maximum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+
+
+def _merged_suffixes(state: _ArgumentParseState, option_value: str) -> set[str]:
+    normalized_suffixes = _normalized_suffixes(option_value)
+    if not state.suffixes_provided:
+        return normalized_suffixes
+    return state.suffixes | normalized_suffixes
+
+
+def _apply_rule_selection_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
+    values = _split_nonempty(option_value)
+    if option_name == "--only":
+        state.rules.only.extend(values)
+    elif option_name == "--enable":
+        state.rules.enable.extend(values)
+    else:
+        state.rules.disable.extend(values)
+
+
+def _apply_boolean_option(state: _ArgumentParseState, option_name: str, option_value: str | None) -> None:
+    if option_value is not None:
+        raise CliError(f"Option does not accept a value: {option_name}", state.ignore_errors_on_exit)
+    if option_name == "--ignore-tests":
+        state.ignore_tests = True
+    elif option_name == "--ignore-errors-on-exit":
+        state.ignore_errors_on_exit = True
+    elif option_name == "--verbose":
+        state.verbose = True
+    elif option_name == "--strict":
+        state.strict = True
+    else:
+        state.ignore_violations_on_exit = True
+
+
+def _finish_help_or_version_parsing(state: _ArgumentParseState) -> ParsedArguments:
+    if state.positionals:
+        raise CliError(f"Unexpected positional argument: {state.positionals[0]}", state.ignore_errors_on_exit)
     return ParsedArguments(
-        paths=paths,
-        report_format=positionals[1],
-        rulesets=rulesets,
-        suffixes=suffixes,
-        exclusions=exclusions,
-        ignore_tests=ignore_tests,
-        ignore_errors_on_exit=ignore_errors_on_exit,
-        ignore_violations_on_exit=ignore_violations_on_exit,
-        report_file=report_file,
-        only=only,
-        enable=enable,
-        disable=disable,
-        minimum_priority=minimum_priority,
-        maximum_priority=maximum_priority,
-        strict=strict,
-        verbose=verbose,
-        color=color,
+        paths=(),
+        report_format="",
+        suffixes=frozenset(state.suffixes),
+        exclusions=tuple(state.exclusions),
+        ignore_tests=state.ignore_tests,
+        report_file=state.report_file,
+        strict=state.strict,
+        verbose=state.verbose,
+        color=state.color,
+        show_help=state.show_help,
+        show_version=state.show_version,
+        rule_selection=_rule_selection(state, rulesets=[]),
+        exit_policy=_exit_policy(state),
+    )
+
+
+def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
+    if len(state.positionals) < 3:
+        raise CliError(f"Missing required arguments: {REQUIRED_ARGUMENTS}", state.ignore_errors_on_exit)
+    if len(state.positionals) > 3:
+        raise CliError(f"Unexpected positional argument: {state.positionals[3]}", state.ignore_errors_on_exit)
+
+    paths = _split_nonempty(state.positionals[0])
+    if not paths:
+        raise CliError("At least one input path is required", state.ignore_errors_on_exit)
+    rulesets = _split_nonempty(state.positionals[2])
+    if not rulesets:
+        raise CliError("At least one ruleset is required", state.ignore_errors_on_exit)
+    if state.rules.minimum_priority > state.rules.maximum_priority:
+        raise CliError("Minimum priority must not exceed maximum priority.", state.ignore_errors_on_exit)
+    return ParsedArguments(
+        paths=tuple(paths),
+        report_format=state.positionals[1],
+        suffixes=frozenset(state.suffixes),
+        exclusions=tuple(state.exclusions),
+        ignore_tests=state.ignore_tests,
+        report_file=state.report_file,
+        strict=state.strict,
+        verbose=state.verbose,
+        color=state.color,
         show_help=False,
         show_version=False,
+        rule_selection=_rule_selection(state, rulesets),
+        exit_policy=_exit_policy(state),
+    )
+
+
+def _rule_selection(state: _ArgumentParseState, rulesets: list[str]) -> RuleSelection:
+    return RuleSelection(
+        rulesets=tuple(rulesets),
+        only=tuple(state.rules.only),
+        enable=tuple(state.rules.enable),
+        disable=tuple(state.rules.disable),
+        minimum_priority=state.rules.minimum_priority,
+        maximum_priority=state.rules.maximum_priority,
+    )
+
+
+def _exit_policy(state: _ArgumentParseState) -> ExitPolicy:
+    return ExitPolicy(
+        ignore_errors_on_exit=state.ignore_errors_on_exit,
+        ignore_violations_on_exit=state.ignore_violations_on_exit,
     )
 
 
@@ -903,21 +975,7 @@ def _exit_expression_findings(
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        original_name = _dotted_name(node.func)
-        name = aliases.get(original_name, original_name)
-        if name not in {"sys.exit", "os._exit", "builtins.exit", "builtins.quit", "exit", "quit"}:
-            continue
-        root_name = original_name.split(".", 1)[0]
-        if original_name != name and _is_function_shadowed(root_name, node, parents, bindings):
-            continue
-        if "." in original_name and (
-            _is_function_shadowed(root_name, node, parents, bindings)
-            or (root_name not in aliases and _is_shadowed(root_name, node, tree, parents, bindings))
-        ):
-            continue
-        if name in {"exit", "quit"} and _is_shadowed(name, node, tree, parents, bindings):
+        if not isinstance(node, ast.Call) or not _is_exit_call(node, tree, aliases, parents, bindings):
             continue
         scope, context = _design_scope(node, parents, contexts)
         if id(scope) in reported_scopes:
@@ -934,6 +992,42 @@ def _exit_expression_findings(
             )
         )
     return findings
+
+
+def _is_exit_call(
+    node: ast.Call,
+    tree: ast.Module,
+    aliases: dict[str, str],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> bool:
+    original_name = _dotted_name(node.func)
+    name = aliases.get(original_name, original_name)
+    if name not in {"sys.exit", "os._exit", "builtins.exit", "builtins.quit", "exit", "quit"}:
+        return False
+    root_name = original_name.split(".", 1)[0]
+    if original_name != name and _is_function_shadowed(root_name, node, parents, bindings):
+        return False
+    if "." in original_name and _exit_root_is_shadowed(
+        root_name, node, tree, aliases, parents, bindings
+    ):
+        return False
+    return name not in {"exit", "quit"} or not _is_shadowed(
+        name, node, tree, parents, bindings
+    )
+
+
+def _exit_root_is_shadowed(
+    root_name: str,
+    node: ast.Call,
+    tree: ast.Module,
+    aliases: dict[str, str],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> bool:
+    return _is_function_shadowed(root_name, node, parents, bindings) or (
+        root_name not in aliases and _is_shadowed(root_name, node, tree, parents, bindings)
+    )
 
 
 def _count_in_loop_findings(
@@ -989,6 +1083,20 @@ def _development_fragment_findings(
         for name in rule.properties.get("unwanted-functions", "").split(",")
         if name.strip()
     }
+    findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, bindings)
+    findings.extend(_development_marker_findings(path, source, rule))
+    return findings
+
+
+def _development_call_findings(
+    path: Path,
+    tree: ast.Module,
+    rule: LoadedRule,
+    unwanted: set[str],
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+    bindings: dict[int, set[str]],
+) -> list[Finding]:
     findings: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -1010,25 +1118,30 @@ def _development_fragment_findings(
                 context=context,
             )
         )
+    return findings
+
+
+def _development_marker_findings(path: Path, source: str, rule: LoadedRule) -> list[Finding]:
     markers = [
         marker.strip().casefold()
         for marker in rule.properties.get("markers", "TODO,FIXME,HACK").split(",")
         if marker.strip()
     ]
-    if markers:
-        for item in tokenize.generate_tokens(StringIO(source).readline):
-            if item.type == token.COMMENT and any(marker in item.string.casefold() for marker in markers):
-                findings.append(
-                    Finding(
-                        path,
-                        item.start[0],
-                        rule.name,
-                        rule.priority,
-                        "Development-only marker found in production source.",
-                        context="module",
-                    )
-                )
-    return findings
+    if not markers:
+        return []
+    return [
+        Finding(
+            path,
+            item.start[0],
+            rule.name,
+            rule.priority,
+            "Development-only marker found in production source.",
+            context="module",
+        )
+        for item in tokenize.generate_tokens(StringIO(source).readline)
+        if item.type == token.COMMENT
+        and any(marker in item.string.casefold() for marker in markers)
+    ]
 
 
 def _empty_catch_findings(
@@ -1083,19 +1196,7 @@ def _coupling_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
     }
     findings: list[Finding] = []
     for class_info in _classes(tree):
-        local_names = {
-            class_info.name,
-            *module_names,
-            *class_info.fields,
-            *(method.name for method in class_info.methods),
-        }
-        collector = _DependencyCollector(aliases, local_names)
-        for expression in [*class_info.node.bases, *class_info.node.decorator_list]:
-            collector.visit(expression)
-        for statement in class_info.node.body:
-            if not isinstance(statement, ast.ClassDef):
-                collector.visit(statement)
-        count = len(collector.dependencies)
+        count = len(_class_dependencies(class_info, aliases, module_names))
         if count < maximum:
             continue
         findings.append(
@@ -1108,6 +1209,29 @@ def _coupling_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
             )
         )
     return findings
+
+
+def _class_dependencies(
+    class_info: ClassInfo,
+    aliases: dict[str, tuple[str, bool]],
+    module_names: set[str],
+) -> set[str]:
+    local_names = {
+        class_info.name,
+        *module_names,
+        *class_info.fields,
+        *(method.name for method in class_info.methods),
+    }
+    collector = _DependencyCollector(aliases, local_names)
+    for expression in [*class_info.node.bases, *class_info.node.decorator_list]:
+        collector.visit(expression)
+    for statement in class_info.node.body:
+        if not isinstance(statement, ast.ClassDef):
+            collector.visit(statement)
+    dependencies = collector.dependencies
+    if class_info.is_ast_visitor:
+        dependencies = {dependency for dependency in dependencies if not dependency.startswith("ast.")}
+    return dependencies
 
 
 def _module_import_aliases(tree: ast.Module) -> dict[str, tuple[str, bool]]:
@@ -1140,6 +1264,18 @@ class _DependencyCollector(ast.NodeVisitor):
         self.local_names = local_names
         self.dependencies: set[str] = set()
 
+    def visit_arg(self, node: ast.arg) -> None:
+        self._visit_annotation(node.annotation)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self._visit_annotation(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+
+    def _visit_annotation(self, annotation: ast.expr | None) -> None:
+        expression = _annotation_expression(annotation)
+        if expression is not None:
+            self.visit(expression)
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
             self._add(node.id)
@@ -1159,18 +1295,10 @@ class _DependencyCollector(ast.NodeVisitor):
             self.aliases[binding] = (dependency, True)
             self.local_names.discard(binding)
 
-    def visit_arg(self, node: ast.arg) -> None:
-        self._visit_annotation(node.annotation)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._visit_annotation(node.annotation)
-        if node.value is not None:
-            self.visit(node.value)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._visit_function(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._visit_function(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -1180,7 +1308,7 @@ class _DependencyCollector(ast.NodeVisitor):
         else:
             self.generic_visit(node)
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -1209,18 +1337,6 @@ class _DependencyCollector(ast.NodeVisitor):
             self.local_names = outer_names
             self.aliases = outer_aliases
 
-    def _visit_annotation(self, annotation: ast.expr | None) -> None:
-        if annotation is None:
-            return
-        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
-            try:
-                parsed = ast.parse(annotation.value, mode="eval")
-            except SyntaxError:
-                return
-            self.visit(parsed.body)
-            return
-        self.visit(annotation)
-
     def _add(self, name: str) -> None:
         root, *tail = name.split(".")
         if root in self.local_names or root in dir(builtins) or root == "typing":
@@ -1238,6 +1354,15 @@ class _DependencyCollector(ast.NodeVisitor):
             self.dependencies.add(dependency)
 
 
+def _annotation_expression(annotation: ast.expr | None) -> ast.expr | None:
+    if not isinstance(annotation, ast.Constant) or not isinstance(annotation.value, str):
+        return annotation
+    try:
+        return ast.parse(annotation.value, mode="eval").body
+    except SyntaxError:
+        return None
+
+
 def _global_variable_findings(
     path: Path,
     tree: ast.Module,
@@ -1248,6 +1373,23 @@ def _global_variable_findings(
     rule = _rule(rules, GLOBAL_VARIABLE_RULE_NAME)
     if rule is None:
         return []
+    candidates, immutable_candidates, initial_targets = _global_candidates(tree)
+    mutated = _mutated_global_names(tree, candidates, initial_targets, parents, bindings)
+    selected = set(candidates) if _boolean_property(rule, "report-immutable") else mutated - immutable_candidates
+    return [
+        Finding(
+            path,
+            candidates[name].lineno,
+            rule.name,
+            rule.priority,
+            f"Avoid using static mutable state: {name}.",
+            context=name,
+        )
+        for name in sorted(selected, key=lambda item: candidates[item].lineno)
+    ]
+
+
+def _global_candidates(tree: ast.Module) -> tuple[dict[str, ast.Name], set[str], set[int]]:
     candidates: dict[str, ast.Name] = {}
     immutable_candidates: set[str] = set()
     initial_targets: set[int] = set()
@@ -1261,36 +1403,58 @@ def _global_variable_findings(
             initial_targets.add(id(name))
             if annotation is not None and _is_final_annotation(annotation):
                 immutable_candidates.add(name.id)
-    mutated: set[str] = set()
+    return candidates, immutable_candidates, initial_targets
+
+
+def _mutated_global_names(
+    tree: ast.Module,
+    candidates: dict[str, ast.Name],
+    initial_targets: set[int],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> set[str]:
     mutators = {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            if id(node) not in initial_targets and node.id in candidates and _is_module_assignment(node, parents):
-                mutated.add(node.id)
-        elif isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            root = _root_name(node)
-            if root in candidates and not _is_function_shadowed(root, node, parents, bindings):
-                mutated.add(root)
-        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutators:
-            root = _root_name(node.func.value)
-            if root in candidates and not _is_function_shadowed(root, node, parents, bindings):
-                mutated.add(root)
-    selected = (
-        set(candidates)
-        if _boolean_property(rule, "report-immutable")
-        else mutated - immutable_candidates
-    )
-    return [
-        Finding(
-            path,
-            candidates[name].lineno,
-            rule.name,
-            rule.priority,
-            f"Avoid using static mutable state: {name}.",
-            context=name,
-        )
-        for name in sorted(selected, key=lambda item: candidates[item].lineno)
-    ]
+    return {
+        name
+        for node in ast.walk(tree)
+        if (name := _mutated_global_name(node, candidates, initial_targets, parents, bindings, mutators))
+    }
+
+
+def _mutated_global_name(
+    node: ast.AST,
+    candidates: dict[str, ast.Name],
+    initial_targets: set[int],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+    mutators: set[str],
+) -> str:
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return node.id if _is_mutated_module_name(node, candidates, initial_targets, parents) else ""
+    if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return _unshadowed_candidate_root(node, candidates, parents, bindings)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutators:
+        return _unshadowed_candidate_root(node.func.value, candidates, parents, bindings)
+    return ""
+
+
+def _is_mutated_module_name(
+    node: ast.Name,
+    candidates: dict[str, ast.Name],
+    initial_targets: set[int],
+    parents: dict[int, ast.AST],
+) -> bool:
+    return id(node) not in initial_targets and node.id in candidates and _is_module_assignment(node, parents)
+
+
+def _unshadowed_candidate_root(
+    node: ast.AST,
+    candidates: dict[str, ast.Name],
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> str:
+    root = _root_name(node)
+    return root if root in candidates and not _is_function_shadowed(root, node, parents, bindings) else ""
 
 
 class _ModuleBindingCollector(ast.NodeVisitor):
@@ -1310,16 +1474,16 @@ class _ModuleBindingCollector(ast.NodeVisitor):
         self.bindings.append((node.target, None))
         self.visit(node.value)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
 
@@ -1366,17 +1530,19 @@ def _cohesion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
 
 def _lcom4(class_info: ClassInfo) -> int:
     accessor_fields = _accessor_fields(class_info)
+    methods = _method_relationships(class_info, accessor_fields)
+    active = _active_methods(methods)
+    if not active:
+        return 1
+    return _relationship_component_count(methods, active)
+
+
+def _method_relationships(
+    class_info: ClassInfo, accessor_fields: dict[str, str]
+) -> dict[str, _MethodRelationships]:
     methods: dict[str, _MethodRelationships] = {}
     for method in class_info.methods:
-        if (
-            method.name.startswith("__")
-            or _has_property_decorator(method)
-            or _has_decorator(method, "staticmethod")
-            or _has_decorator(method, "classmethod")
-            or _is_contract_method(method)
-            or _has_decorator(method, "abstractmethod")
-            or method.name in accessor_fields
-        ):
+        if _excluded_from_cohesion(method, accessor_fields):
             continue
         receiver = _instance_receiver(method)
         if receiver is None:
@@ -1385,6 +1551,25 @@ def _lcom4(class_info: ClassInfo) -> int:
         for statement in method.body:
             collector.visit(statement)
         methods[method.name] = _MethodRelationships(collector.fields, collector.calls)
+    return methods
+
+
+def _excluded_from_cohesion(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    accessor_fields: dict[str, str],
+) -> bool:
+    return (
+        method.name.startswith("__")
+        or _has_property_decorator(method)
+        or _has_decorator(method, "staticmethod")
+        or _has_decorator(method, "classmethod")
+        or _is_contract_method(method)
+        or _has_decorator(method, "abstractmethod")
+        or method.name in accessor_fields
+    )
+
+
+def _active_methods(methods: dict[str, _MethodRelationships]) -> set[str]:
     active = {
         name
         for name, relationships in methods.items()
@@ -1396,28 +1581,33 @@ def _lcom4(class_info: ClassInfo) -> int:
         for called in relationships.calls
         if called in methods
     )
-    if not active:
-        return 1
+    return active
+
+
+def _relationship_component_count(
+    methods: dict[str, _MethodRelationships], active: set[str]
+) -> int:
     connected = {name: name for name in active}
-
-    def find(name: str) -> str:
-        while connected[name] != name:
-            connected[name] = connected[connected[name]]
-            name = connected[name]
-        return name
-
-    def union(left: str, right: str) -> None:
-        connected[find(left)] = find(right)
-
     names = sorted(active)
     for index, left in enumerate(names):
         for right in names[index + 1 :]:
             if methods[left].fields & methods[right].fields:
-                union(left, right)
+                _union_components(connected, left, right)
     for name in names:
         for called in methods[name].calls & active:
-            union(name, called)
-    return len({find(name) for name in active})
+            _union_components(connected, name, called)
+    return len({_find_component(connected, name) for name in active})
+
+
+def _find_component(connected: dict[str, str], name: str) -> str:
+    while connected[name] != name:
+        connected[name] = connected[connected[name]]
+        name = connected[name]
+    return name
+
+
+def _union_components(connected: dict[str, str], left: str, right: str) -> None:
+    connected[_find_component(connected, left)] = _find_component(connected, right)
 
 
 @dataclass(frozen=True)
@@ -1454,13 +1644,13 @@ class _MethodRelationshipCollector(ast.NodeVisitor):
             return
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
 
@@ -1476,18 +1666,7 @@ def _trivial_accessor_field(method: ast.FunctionDef | ast.AsyncFunctionDef) -> s
     if len(method.body) != 1:
         return None
     statement = method.body[0]
-    if isinstance(statement, ast.Return):
-        target = statement.value
-    elif isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        if not _is_plain_accessor_value(statement.value, method):
-            return None
-        target = statement.targets[0]
-    elif isinstance(statement, ast.AnnAssign):
-        if statement.value is None or not _is_plain_accessor_value(statement.value, method):
-            return None
-        target = statement.target
-    else:
-        return None
+    target = _accessor_target(statement, method)
     if (
         isinstance(target, ast.Attribute)
         and isinstance(target.value, ast.Name)
@@ -1497,9 +1676,17 @@ def _trivial_accessor_field(method: ast.FunctionDef | ast.AsyncFunctionDef) -> s
     return None
 
 
-def _is_plain_accessor_value(
-    value: ast.expr, method: ast.FunctionDef | ast.AsyncFunctionDef
-) -> bool:
+def _accessor_target(statement: ast.stmt, method: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.expr | None:
+    if isinstance(statement, ast.Return):
+        return statement.value
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        return statement.targets[0] if _is_plain_accessor_value(statement.value, method) else None
+    if isinstance(statement, ast.AnnAssign) and statement.value is not None:
+        return statement.target if _is_plain_accessor_value(statement.value, method) else None
+    return None
+
+
+def _is_plain_accessor_value(value: ast.expr, method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     receiver = _instance_receiver(method)
     return (
         isinstance(value, ast.Name)
@@ -1533,7 +1720,7 @@ class _ExpressionCallCollector(ast.NodeVisitor):
         self.calls.append(node)
         self.generic_visit(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
 
@@ -1550,17 +1737,29 @@ def _imported_call_aliases(tree: ast.Module) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for statement in tree.body:
         if isinstance(statement, ast.Import):
-            for imported in statement.names:
-                if imported.name in {"sys", "os", "builtins"}:
-                    aliases[imported.asname or imported.name] = imported.name
+            aliases.update(_exit_import_aliases(statement))
         elif isinstance(statement, ast.ImportFrom) and statement.module in {"sys", "os", "builtins"}:
-            for imported in statement.names:
-                aliases[imported.asname or imported.name] = f"{statement.module}.{imported.name}"
+            aliases.update(_exit_import_from_aliases(statement))
     expanded = dict(aliases)
     for alias, target in aliases.items():
         for method in {"exit", "quit", "_exit"}:
             expanded[f"{alias}.{method}"] = f"{target}.{method}"
     return expanded
+
+
+def _exit_import_aliases(statement: ast.Import) -> dict[str, str]:
+    return {
+        imported.asname or imported.name: imported.name
+        for imported in statement.names
+        if imported.name in {"sys", "os", "builtins"}
+    }
+
+
+def _exit_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
+    return {
+        imported.asname or imported.name: f"{statement.module}.{imported.name}"
+        for imported in statement.names
+    }
 
 
 def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
@@ -1605,7 +1804,7 @@ class _ScopeBindingCollector(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.names.add(node.name)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -1665,14 +1864,9 @@ def _boolean_argument_flag_findings(
     ignored = _ignore_pattern(rule)
     findings: list[Finding] = []
     for callable_info in _clean_code_callables(tree):
-        node = callable_info.node
-        if (
-            isinstance(node, ast.Lambda)
-            or node.name.startswith("_")
-            or callable_info.owner_name in exceptions
-            or (ignored.pattern and ignored.search(node.name))
-        ):
+        if _ignore_boolean_flag_callable(callable_info, exceptions, ignored):
             continue
+        node = callable_info.node
         for parameter in _boolean_parameters(node.args):
             if parameter.arg in {"self", "cls"} or parameter.arg.startswith("_"):
                 continue
@@ -1689,6 +1883,17 @@ def _boolean_argument_flag_findings(
                 )
             )
     return findings
+
+
+def _ignore_boolean_flag_callable(
+    callable_info: CleanCodeCallable, exceptions: set[str], ignored: re.Pattern[str]
+) -> bool:
+    node = callable_info.node
+    return isinstance(node, ast.Lambda) or (
+        node.name.startswith("_")
+        or callable_info.owner_name in exceptions
+        or bool(ignored.pattern and ignored.search(node.name))
+    )
 
 
 def _boolean_parameters(arguments: ast.arguments) -> list[ast.arg]:
@@ -1775,14 +1980,7 @@ def _static_access_findings(path: Path, tree: ast.Module, rules: Sequence[Loaded
         name = _clean_code_callable_name(callable_info.node)
         if ignored.pattern and ignored.search(name):
             continue
-        for node in _executable_nodes(callable_info.node):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            receiver = node.func.value
-            if not isinstance(receiver, ast.Name) or not receiver.id[:1].isupper():
-                continue
-            if receiver.id == callable_info.owner_name or receiver.id in exceptions:
-                continue
+        for node, receiver in _static_accesses(callable_info, exceptions):
             context = _clean_code_context(callable_info)
             findings.append(
                 Finding(
@@ -1795,6 +1993,21 @@ def _static_access_findings(path: Path, tree: ast.Module, rules: Sequence[Loaded
                 )
             )
     return findings
+
+
+def _static_accesses(
+    callable_info: CleanCodeCallable, exceptions: set[str]
+) -> list[tuple[ast.Call, ast.Name]]:
+    accesses: list[tuple[ast.Call, ast.Name]] = []
+    for node in _executable_nodes(callable_info.node):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        receiver = node.func.value
+        if not isinstance(receiver, ast.Name) or not receiver.id[:1].isupper():
+            continue
+        if receiver.id != callable_info.owner_name and receiver.id not in exceptions:
+            accesses.append((node, receiver))
+    return accesses
 
 
 def _if_statement_assignment_findings(
@@ -1837,7 +2050,7 @@ class _NamedExpressionCollector(ast.NodeVisitor):
         self.assignments.append(node)
         self.generic_visit(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
 
@@ -1874,7 +2087,17 @@ def _duplicated_array_key_findings(
 
 
 def _static_dictionary_key(node: ast.expr | None) -> tuple[bool, object]:
-    if isinstance(node, ast.Constant) and type(node.value) in {
+    if _is_static_constant(node):
+        return True, node.value
+    if isinstance(node, ast.UnaryOp):
+        return _static_unary_key(node)
+    if isinstance(node, ast.Tuple):
+        return _static_tuple_key(node)
+    return False, None
+
+
+def _is_static_constant(node: ast.expr | None) -> bool:
+    return isinstance(node, ast.Constant) and type(node.value) in {
         str,
         bytes,
         int,
@@ -1883,17 +2106,25 @@ def _static_dictionary_key(node: ast.expr | None) -> tuple[bool, object]:
         bool,
         type(None),
         type(Ellipsis),
-    }:
-        return True, node.value
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        known, value = _static_dictionary_key(node.operand)
-        if known and type(value) in {int, float, complex, bool}:
-            return True, +value if isinstance(node.op, ast.UAdd) else -value
-    if isinstance(node, ast.Tuple):
-        values = [_static_dictionary_key(element) for element in node.elts]
-        if all(known for known, _ in values):
-            return True, tuple(value for _, value in values)
+    }
+
+
+def _static_unary_key(node: ast.UnaryOp) -> tuple[bool, object]:
+    if not isinstance(node.op, (ast.UAdd, ast.USub)):
+        return False, None
+    known, value = _static_dictionary_key(node.operand)
+    if known and type(value) in {int, float, complex, bool}:
+        return True, +value if isinstance(node.op, ast.UAdd) else -value
     return False, None
+
+
+def _static_tuple_key(node: ast.Tuple) -> tuple[bool, object]:
+    values = [_static_dictionary_key(element) for element in node.elts]
+    return (
+        (True, tuple(value for _, value in values))
+        if all(known for known, _ in values)
+        else (False, None)
+    )
 
 
 def _clean_code_callables(tree: ast.Module) -> list[CleanCodeCallable]:
@@ -1965,16 +2196,16 @@ class _ExecutableNodeCollector(ast.NodeVisitor):
         self.nodes.append(node)
         super().generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
 
@@ -1988,8 +2219,20 @@ def _unused_local_variable_findings(
     rule = _rule(rules, UNUSED_LOCAL_VARIABLE_RULE_NAME)
     if rule is None:
         return []
-    findings: list[Finding] = []
     protocol_method_ids = _protocol_method_ids(tree)
+    findings = _unused_function_local_findings(path, source, tree, rule, protocol_method_ids)
+    findings.extend(_unused_comprehension_local_findings(path, source, tree, rule))
+    return findings
+
+
+def _unused_function_local_findings(
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    rule: LoadedRule,
+    protocol_method_ids: set[int],
+) -> list[Finding]:
+    findings: list[Finding] = []
     for node, table, used_names in _function_scopes(source, tree):
         if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
@@ -2002,13 +2245,7 @@ def _unused_local_variable_findings(
         reported: set[str] = set()
         for target in bindings.targets:
             symbol = table.lookup(target.id)
-            if (
-                target.id.startswith("_")
-                or target.id in used_names
-                or not symbol.is_local()
-                or symbol.is_parameter()
-                or target.id in reported
-            ):
+            if _ignore_function_local(target.id, symbol, used_names, reported):
                 continue
             reported.add(target.id)
             findings.append(
@@ -2021,18 +2258,35 @@ def _unused_local_variable_findings(
                     context=target.id,
                 )
             )
+    return findings
+
+
+def _ignore_function_local(
+    name: str,
+    symbol: symtable.Symbol,
+    used_names: frozenset[str],
+    reported: set[str],
+) -> bool:
+    return (
+        name.startswith("_")
+        or name in used_names
+        or not symbol.is_local()
+        or symbol.is_parameter()
+        or name in reported
+    )
+
+
+def _unused_comprehension_local_findings(
+    path: Path, source: str, tree: ast.Module, rule: LoadedRule
+) -> list[Finding]:
+    findings: list[Finding] = []
     for node, table in _comprehension_scopes(source, tree):
         reported: set[str] = set()
         used_names = _comprehension_used_names(node) if table is None else frozenset()
         for generator in node.generators:
             for target in _target_names(generator.target):
                 symbol = table.lookup(target.id) if table is not None else None
-                if (
-                    target.id.startswith("_")
-                    or (symbol.is_referenced() if symbol is not None else target.id in used_names)
-                    or (symbol is not None and not symbol.is_local())
-                    or target.id in reported
-                ):
+                if _ignore_comprehension_local(target.id, symbol, used_names, reported):
                     continue
                 reported.add(target.id)
                 findings.append(
@@ -2042,10 +2296,22 @@ def _unused_local_variable_findings(
                         rule.name,
                         rule.priority,
                         f"Avoid unused local variables such as '{target.id}'.",
-                        context=target.id,
-                    )
+                    context=target.id,
                 )
+            )
     return findings
+
+
+def _ignore_comprehension_local(
+    name: str,
+    symbol: symtable.Symbol | None,
+    used_names: frozenset[str],
+    reported: set[str],
+) -> bool:
+    referenced = symbol.is_referenced() if symbol is not None else name in used_names
+    return name.startswith("_") or referenced or (
+        symbol is not None and not symbol.is_local()
+    ) or name in reported
 
 
 def _unused_formal_parameter_findings(
@@ -2056,18 +2322,11 @@ def _unused_formal_parameter_findings(
         return []
     findings: list[Finding] = []
     protocol_method_ids = _protocol_method_ids(tree)
+    visitor_method_ids = _ast_visitor_method_ids(tree)
     for node, table, used_names in _function_scopes(source, tree):
         if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
-        for parameter in _arguments(node.args):
-            symbol = table.lookup(parameter.arg)
-            if (
-                parameter.arg in {"self", "cls"}
-                or parameter.arg.startswith("_")
-                or parameter.arg in used_names
-                or not symbol.is_parameter()
-            ):
-                continue
+        for parameter in _unused_parameters(node, table, used_names, visitor_method_ids):
             findings.append(
                 Finding(
                     path,
@@ -2081,12 +2340,44 @@ def _unused_formal_parameter_findings(
     return findings
 
 
+def _unused_parameters(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    table: symtable.SymbolTable,
+    used_names: frozenset[str],
+    visitor_method_ids: set[int],
+) -> list[ast.arg]:
+    parameters = _arguments(node.args)
+    visitor_parameter = _visitor_parameter(node, parameters, visitor_method_ids)
+    return [
+        parameter
+        for parameter in parameters
+        if parameter.arg not in {"self", "cls"}
+        and not parameter.arg.startswith("_")
+        and parameter is not visitor_parameter
+        and parameter.arg not in used_names
+        and table.lookup(parameter.arg).is_parameter()
+    ]
+
+
 def _is_conservative_callable(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, is_protocol_method: bool
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    is_protocol_method: bool,
 ) -> bool:
     return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-        is_protocol_method or bool(node.decorator_list) or _is_contract_method(node)
+        is_protocol_method
+        or bool(node.decorator_list)
+        or _is_contract_method(node)
     )
+
+
+def _visitor_parameter(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    parameters: list[ast.arg],
+    visitor_method_ids: set[int],
+) -> ast.arg | None:
+    if id(node) not in visitor_method_ids:
+        return None
+    return next((parameter for parameter in parameters if parameter.arg not in {"self", "cls"}), None)
 
 
 def _protocol_method_ids(tree: ast.Module) -> set[int]:
@@ -2112,8 +2403,53 @@ def _function_scopes(
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
         table = tables.get((name, node.lineno))
         if table is not None:
-            scopes.append((node, table, _scope_usage(table).used_names))
+            used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
+            scopes.append((node, table, used_names))
     return scopes
+
+
+def _comprehension_referenced_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    # symtable can omit enclosing-scope references used only by comprehensions.
+    # Record those loads so they count as uses in the current callable.
+    referenced: set[str] = set()
+    for descendant in _executable_nodes(node):
+        if isinstance(descendant, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            referenced.update(_loaded_non_target_names(descendant))
+    return frozenset(referenced)
+
+
+def _loaded_non_target_names(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+) -> set[str]:
+    own_targets = {
+        target.id for generator in node.generators for target in _target_names(generator.target)
+    }
+    pending = list(ast.iter_child_nodes(node))
+    loaded_names: set[str] = set()
+    while pending:
+        descendant = pending.pop()
+        if isinstance(descendant, ast.Name) and isinstance(descendant.ctx, ast.Load):
+            if descendant.id not in own_targets:
+                loaded_names.add(descendant.id)
+            continue
+        if isinstance(
+            descendant,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Lambda,
+                ast.ClassDef,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(descendant))
+    return loaded_names
 
 
 def _comprehension_scopes(
@@ -2147,26 +2483,44 @@ def _comprehension_used_names(
     used: set[str] = set()
     for index, generator in enumerate(node.generators):
         for target in _target_names(generator.target):
-            visitor = _ScopedNameUseVisitor(target.id)
-            shadowed = False
-            for later_index, later_generator in enumerate(node.generators[index:], start=index):
-                if later_index == index:
-                    for condition in later_generator.ifs:
-                        visitor.visit(condition)
-                    continue
-                visitor.visit(later_generator.iter)
-                if target.id in {name.id for name in _target_names(later_generator.target)}:
-                    shadowed = True
-                    break
-                for condition in later_generator.ifs:
-                    visitor.visit(condition)
-            if not shadowed:
-                visitor.visit(node.key if isinstance(node, ast.DictComp) else node.elt)
-                if isinstance(node, ast.DictComp):
-                    visitor.visit(node.value)
-            if visitor.used:
+            if _comprehension_target_is_used(node, index, target.id):
                 used.add(target.id)
     return frozenset(used)
+
+
+def _comprehension_target_is_used(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    generator_index: int,
+    target_name: str,
+) -> bool:
+    visitor = _ScopedNameUseVisitor(target_name)
+    shadowed = _visit_later_comprehension_clauses(node, generator_index, target_name, visitor)
+    if not shadowed:
+        visitor.visit(node.key if isinstance(node, ast.DictComp) else node.elt)
+        if isinstance(node, ast.DictComp):
+            visitor.visit(node.value)
+    return visitor.used
+
+
+def _visit_later_comprehension_clauses(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    generator_index: int,
+    target_name: str,
+    visitor: _ScopedNameUseVisitor,
+) -> bool:
+    for later_index, later_generator in enumerate(
+        node.generators[generator_index:], start=generator_index
+    ):
+        if later_index == generator_index:
+            for condition in later_generator.ifs:
+                visitor.visit(condition)
+            continue
+        visitor.visit(later_generator.iter)
+        if target_name in {name.id for name in _target_names(later_generator.target)}:
+            return True
+        for condition in later_generator.ifs:
+            visitor.visit(condition)
+    return False
 
 
 class _ScopedNameUseVisitor(ast.NodeVisitor):
@@ -2186,18 +2540,18 @@ class _ScopedNameUseVisitor(ast.NodeVisitor):
             self.visit(node.body)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
-        self._visit_comprehension(node)
+        self.visit_comprehension(node)
 
     def visit_SetComp(self, node: ast.SetComp) -> None:
-        self._visit_comprehension(node)
+        self.visit_comprehension(node)
 
     def visit_DictComp(self, node: ast.DictComp) -> None:
-        self._visit_comprehension(node)
+        self.visit_comprehension(node)
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        self._visit_comprehension(node)
+        self.visit_comprehension(node)
 
-    def _visit_comprehension(
+    def visit_comprehension(
         self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp
     ) -> None:
         shadowed = False
@@ -2288,13 +2642,7 @@ def _unused_private_method_findings(
     findings: list[Finding] = []
     for class_info in _classes(tree):
         for method in class_info.methods:
-            if (
-                not _is_private_name(method.name)
-                or method.name in usage.accessed_names
-                or method.name in usage.exported_names
-                or method.decorator_list
-                or _is_contract_method(method)
-            ):
+            if not _is_unused_private_method(method, usage):
                 continue
             findings.append(
                 Finding(
@@ -2309,6 +2657,19 @@ def _unused_private_method_findings(
     return findings
 
 
+def _is_unused_private_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    usage: PrivateMemberUsage,
+) -> bool:
+    return (
+        _is_private_name(method.name)
+        and method.name not in usage.accessed_names
+        and method.name not in usage.exported_names
+        and not method.decorator_list
+        and not _is_contract_method(method)
+    )
+
+
 class _PrivateFieldCollector(ast.NodeVisitor):
     def __init__(self, node: ast.ClassDef) -> None:
         self.node = node
@@ -2318,19 +2679,26 @@ class _PrivateFieldCollector(ast.NodeVisitor):
         self.receiver: str | None = None
 
     def collect(self) -> dict[str, int]:
+        self._collect_class_fields()
+        self._collect_method_fields()
+        if self.has_unknown_dynamic_access:
+            return {}
+        return {name: line for name, line in self.fields.items() if name not in self.loads}
+
+    def _collect_class_fields(self) -> None:
         for statement in self.node.body:
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
                 for target in targets:
                     for name in _assigned_names(target):
                         self._add_field(name, statement.lineno)
-            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+
+    def _collect_method_fields(self) -> None:
+        for statement in self.node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.receiver = _instance_receiver(statement)
                 for item in statement.body:
                     self.visit(item)
-        if self.has_unknown_dynamic_access:
-            return {}
-        return {name: line for name, line in self.fields.items() if name not in self.loads}
 
     def visit_Call(self, node: ast.Call) -> None:
         names, has_unknown_access = _dynamic_attribute_accesses(node)
@@ -2350,16 +2718,16 @@ class _PrivateFieldCollector(ast.NodeVisitor):
             self._add_field(node.attr, node.lineno)
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
     def _add_field(self, name: str, line: int) -> None:
@@ -2415,30 +2783,50 @@ def _exported_names(tree: ast.Module) -> tuple[set[str], bool]:
     names: set[str] = set()
     has_unknown_exports = False
     for statement in ast.walk(tree):
-        if isinstance(statement, ast.Assign):
-            targets = statement.targets
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            targets = [statement.target]
-            value = statement.value
-        elif (
-            isinstance(statement, ast.AugAssign)
-            and isinstance(statement.target, ast.Name)
-            and statement.target.id == "__all__"
-        ):
+        targets, value, augmented = _export_assignment(statement)
+        if augmented:
             has_unknown_exports = True
             continue
-        else:
+        if targets is None:
             continue
-        if not any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets):
+        if not _assigns_exports(targets):
             continue
-        if not isinstance(value, (ast.List, ast.Tuple, ast.Set)) or not all(
-            isinstance(element, ast.Constant) and isinstance(element.value, str) for element in value.elts
-        ):
+        static_names = _static_export_names(value)
+        if static_names is None:
             has_unknown_exports = True
             continue
-        names.update(element.value for element in value.elts if isinstance(element, ast.Constant))
+        names.update(static_names)
     return names, has_unknown_exports
+
+
+def _assigns_exports(targets: list[ast.expr]) -> bool:
+    return any(isinstance(target, ast.Name) and target.id == "__all__" for target in targets)
+
+
+def _static_export_names(value: ast.expr | None) -> set[str] | None:
+    if not isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+        return None
+    if not all(
+        isinstance(element, ast.Constant) and isinstance(element.value, str)
+        for element in value.elts
+    ):
+        return None
+    return {element.value for element in value.elts if isinstance(element, ast.Constant)}
+
+
+def _export_assignment(
+    statement: ast.AST,
+) -> tuple[list[ast.expr] | None, ast.expr | None, bool]:
+    if isinstance(statement, ast.Assign):
+        return statement.targets, statement.value, False
+    if isinstance(statement, ast.AnnAssign):
+        return [statement.target], statement.value, False
+    augmented = (
+        isinstance(statement, ast.AugAssign)
+        and isinstance(statement.target, ast.Name)
+        and statement.target.id == "__all__"
+    )
+    return None, None, augmented
 
 
 def _dynamic_attribute_accesses(node: ast.AST, aliases: set[str] | None = None) -> tuple[set[str], bool]:
@@ -2448,14 +2836,8 @@ def _dynamic_attribute_accesses(node: ast.AST, aliases: set[str] | None = None) 
     for candidate in calls:
         if not isinstance(candidate, ast.Call):
             continue
-        function_name = _called_name(candidate.func)
-        if function_name in {"getattr", "hasattr", "setattr", "delattr"} | (aliases or set()):
-            attribute_index = 1
-        elif function_name in {"__getattribute__", "__setattr__", "__delattr__"}:
-            attribute_index = 0
-        else:
-            continue
-        if len(candidate.args) <= attribute_index:
+        attribute_index = _dynamic_attribute_index(candidate, aliases or set())
+        if attribute_index is None or len(candidate.args) <= attribute_index:
             continue
         attribute = candidate.args[attribute_index]
         if isinstance(attribute, ast.Constant) and isinstance(attribute.value, str):
@@ -2465,7 +2847,30 @@ def _dynamic_attribute_accesses(node: ast.AST, aliases: set[str] | None = None) 
     return names, has_unknown_access
 
 
-class _FunctionLocalBindings(ast.NodeVisitor):
+def _dynamic_attribute_index(candidate: ast.Call, aliases: set[str]) -> int | None:
+    function_name = _called_name(candidate.func)
+    if function_name in {"getattr", "hasattr", "setattr", "delattr"} | aliases:
+        return 1
+    if function_name in {"__getattribute__", "__setattr__", "__delattr__"}:
+        return 0
+    return None
+
+
+class _NestedScopeSkippingVisitor(ast.NodeVisitor):
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
+        return
+
+
+class _FunctionLocalBindings(_NestedScopeSkippingVisitor):
     def __init__(self) -> None:
         self.targets: list[ast.Name] = []
 
@@ -2488,28 +2893,16 @@ class _FunctionLocalBindings(ast.NodeVisitor):
             self._add_target(node.name, node.lineno, node.col_offset)
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        return
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:
+    def visit_ListComp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_SetComp(self, node: ast.SetComp) -> None:
+    def visit_SetComp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_DictComp(self, node: ast.DictComp) -> None:
+    def visit_DictComp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+    def visit_GeneratorExp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
     def _add_named_expression_targets(self, node: ast.AST) -> None:
@@ -2715,6 +3108,8 @@ def _naming_finding(path: Path, target: NamingTarget, rule: LoadedRule, message:
 def _is_exempt_target(target: NamingTarget) -> bool:
     if target.name.startswith("_"):
         return True
+    if target.contract:
+        return True
     if target.role == "property" and target.name in {"i", "j", "k", "n", "x", "y", "z"}:
         return True
     return target.role in {"parameter", "variable"} and target.name in {
@@ -2832,18 +3227,9 @@ def _cyclomatic_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.La
     return 1 + visitor.decisions
 
 
-class _CyclomaticComplexityVisitor(ast.NodeVisitor):
+class _CyclomaticComplexityVisitor(_NestedScopeSkippingVisitor):
     def __init__(self) -> None:
         self.decisions = 0
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        return
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
 
     def visit_If(self, node: ast.If) -> None:
         self.decisions += 1
@@ -2884,8 +3270,6 @@ class _CyclomaticComplexityVisitor(ast.NodeVisitor):
     def visit_Match(self, node: ast.Match) -> None:
         self.decisions += len(node.cases)
         self.generic_visit(node)
-
-
 def _npath_complexity_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
     if rule is None:
@@ -2931,22 +3315,34 @@ def _npath_statement(node: ast.stmt) -> int:
     if isinstance(node, ast.If):
         return _npath_expression(node.test) * (_npath_block(node.body) + _npath_block(node.orelse))
     if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-        condition = node.iter if isinstance(node, (ast.For, ast.AsyncFor)) else node.test
-        return _npath_expression(condition) * (_npath_block(node.body) + _npath_block(node.orelse))
+        return _npath_loop(node)
     if isinstance(node, (ast.Try, ast.TryStar)):
-        handlers = sum(_npath_block(handler.body) for handler in node.handlers)
-        return (_npath_block(node.body) + handlers) * _npath_block(node.orelse) * _npath_block(node.finalbody)
+        return _npath_try(node)
     if isinstance(node, ast.Match):
-        return sum(
-            _npath_block(case.body) + (_npath_expression(case.guard) if case.guard is not None else 0)
-            for case in node.cases
-        )
+        return _npath_match(node)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return 1
     if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise)):
         value = getattr(node, "value", None)
         return _npath_expression(value) if value is not None else 1
     return 1
+
+
+def _npath_loop(node: ast.For | ast.AsyncFor | ast.While) -> int:
+    condition = node.iter if isinstance(node, (ast.For, ast.AsyncFor)) else node.test
+    return _npath_expression(condition) * (_npath_block(node.body) + _npath_block(node.orelse))
+
+
+def _npath_try(node: ast.Try | ast.TryStar) -> int:
+    handlers = sum(_npath_block(handler.body) for handler in node.handlers)
+    return (_npath_block(node.body) + handlers) * _npath_block(node.orelse) * _npath_block(node.finalbody)
+
+
+def _npath_match(node: ast.Match) -> int:
+    return sum(
+        _npath_block(case.body) + (_npath_expression(case.guard) if case.guard is not None else 0)
+        for case in node.cases
+    )
 
 
 def _npath_expression(node: ast.AST) -> int:
@@ -3055,15 +3451,27 @@ class _CallableCollector:
 
 
 def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
-    collector = _NamingRoleCollector()
+    collector = _NamingRoleCollector(_ast_visitor_method_ids(tree))
     collector.visit(tree)
+    for target in _named_binding_targets(tree):
+        collector._add_target(target.name, target.line, target.role)
     targets = sorted(collector.targets, key=lambda target: (target.line, target.role, target.name))
     callables = sorted(collector.callables, key=lambda callable_info: callable_info.node.lineno)
     return targets, callables
 
 
+def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
+    targets: list[NamingTarget] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.name is not None:
+            targets.append(NamingTarget(node.name, node.lineno, "variable"))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
+            targets.append(NamingTarget(node.name, node.lineno, "variable"))
+    return targets
+
+
 class _NamingRoleCollector(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, visitor_method_ids: set[int]) -> None:
         self.targets: list[NamingTarget] = []
         self.callables: list[NamingCallable] = []
         self.contexts: list[str] = []
@@ -3071,6 +3479,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.receivers: list[str | None] = []
         self.constant_target_ids: set[int] = set()
         self.generic_target_ids: set[int] = set()
+        self.visitor_method_ids = frozenset(visitor_method_ids)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._add_target(node.name, node.lineno, "class")
@@ -3081,11 +3490,11 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.class_depth -= 1
         self.contexts.pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._visit_callable(node)
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        _collect_naming_callable(self, node, self.contexts)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_callable(node)
+    def visit_AsyncFunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        _collect_naming_callable(self, node, self.contexts)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         for argument in _arguments(node.args):
@@ -3102,7 +3511,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         if _is_type_parameter_factory(node.value):
             self.generic_target_ids.update(id(target) for name in node.targets for target in _target_names(name))
-        if self._is_module_or_class_scope():
+        if _is_module_or_class_scope(self.contexts):
             self.constant_target_ids.update(
                 id(target)
                 for name in node.targets
@@ -3113,25 +3522,10 @@ class _NamingRoleCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if _is_final_annotation(node.annotation) or (
-            self._is_module_or_class_scope()
+            _is_module_or_class_scope(self.contexts)
             and any(re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None for target in _target_names(node.target))
         ):
             self.constant_target_ids.update(id(target) for target in _target_names(node.target))
-        self.generic_visit(node)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -3139,7 +3533,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
             return
         if id(node) in self.generic_target_ids:
             return
-        role = "constant" if id(node) in self.constant_target_ids else self._variable_role()
+        role = "constant" if id(node) in self.constant_target_ids else _naming_variable_role(self.contexts)
         self._add_target(node.id, node.lineno, role)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -3154,38 +3548,58 @@ class _NamingRoleCollector(ast.NodeVisitor):
             self._add_target(node.attr, node.lineno, "property")
         self.generic_visit(node)
 
-    def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        direct_class_member = bool(self.contexts and self.contexts[-1] == "class")
-        role = "property" if direct_class_member and _has_property_decorator(node) else (
-            "method" if direct_class_member else "function"
-        )
-        self._add_target(node.name, node.lineno, role)
-        self.callables.append(NamingCallable(node, role))
-        for argument in _arguments(node.args):
-            self._add_target(argument.arg, argument.lineno, "parameter")
-        for decorator in node.decorator_list:
-            self.visit(decorator)
-        for default in [*node.args.defaults, *node.args.kw_defaults]:
-            if default is not None:
-                self.visit(default)
-        receiver = _instance_receiver(node) if direct_class_member else None
-        self.contexts.append("function")
-        self.receivers.append(receiver)
-        for statement in node.body:
-            self.visit(statement)
-        self.receivers.pop()
-        self.contexts.pop()
-
-    def _variable_role(self) -> str:
-        return "property" if self.contexts and self.contexts[-1] == "class" else "variable"
-
-    def _is_module_or_class_scope(self) -> bool:
-        return not self.contexts or self.contexts[-1] == "class"
-
-    def _add_target(self, name: str, line: int, role: str) -> None:
-        target = NamingTarget(name, line, role)
+    def _add_target(
+        self,
+        name: str,
+        line: int,
+        role: str,
+        contract: bool = False,
+    ) -> None:
+        target = NamingTarget(name, line, role, contract)
         if target not in self.targets:
             self.targets.append(target)
+
+
+def _naming_variable_role(contexts: list[str]) -> str:
+    return "property" if contexts and contexts[-1] == "class" else "variable"
+
+
+def _is_module_or_class_scope(contexts: list[str]) -> bool:
+    return not contexts or contexts[-1] == "class"
+
+
+def _collect_naming_callable(
+    collector: _NamingRoleCollector, node: ast.FunctionDef | ast.AsyncFunctionDef, contexts: list[str]
+) -> None:
+    direct_class_member = bool(contexts and contexts[-1] == "class")
+    role = _naming_callable_role(node, direct_class_member)
+    collector._add_target(
+        node.name,
+        node.lineno,
+        role,
+        id(node) in collector.visitor_method_ids,
+    )
+    collector.callables.append(NamingCallable(node, role))
+    for argument in _arguments(node.args):
+        collector._add_target(argument.arg, argument.lineno, "parameter")
+    for decorator in node.decorator_list:
+        collector.visit(decorator)
+    for default in [*node.args.defaults, *node.args.kw_defaults]:
+        if default is not None:
+            collector.visit(default)
+    receiver = _instance_receiver(node) if direct_class_member else None
+    contexts.append("function")
+    collector.receivers.append(receiver)
+    for statement in node.body:
+        collector.visit(statement)
+    collector.receivers.pop()
+    contexts.pop()
+
+
+def _naming_callable_role(node: ast.FunctionDef | ast.AsyncFunctionDef, direct_class_member: bool) -> str:
+    if not direct_class_member:
+        return "function"
+    return "property" if _has_property_decorator(node) else "method"
 
 
 def _arguments(arguments: ast.arguments) -> list[ast.arg]:
@@ -3297,7 +3711,9 @@ def _excessive_public_count_findings(
         return []
     threshold = _integer_property(rule, "minimum")
     count = sum(_is_public(name) for name in class_info.fields) + sum(
-        _is_public(method.name) for method in class_info.methods if not _is_contract_method(method)
+        _is_public(method.name)
+        for method in class_info.methods
+        if not _is_contract_method(method)
     )
     if count < threshold:
         return []
@@ -3352,17 +3768,21 @@ def _too_many_methods_findings(
     count = len(methods)
     if count <= threshold:
         return []
+    return [_class_finding(path, class_info, rule, _too_many_methods_message(class_info, count, threshold, public_only))]
+
+
+def _too_many_methods_message(
+    class_info: ClassInfo, count: int, threshold: int, public_only: bool
+) -> str:
     if public_only:
-        message = (
+        return (
             f"The class {class_info.name} has {count} public methods. Consider refactoring {class_info.name} "
             f"to keep number of public methods under {threshold}."
         )
-    else:
-        message = (
-            f"The class {class_info.name} has {count} non-getter- and setter-methods. "
-            f"Consider refactoring {class_info.name} to keep number of methods under {threshold}."
-        )
-    return [_class_finding(path, class_info, rule, message)]
+    return (
+        f"The class {class_info.name} has {count} non-getter- and setter-methods. "
+        f"Consider refactoring {class_info.name} to keep number of methods under {threshold}."
+    )
 
 
 def _excessive_class_complexity_findings(
@@ -3372,7 +3792,11 @@ def _excessive_class_complexity_findings(
     if rule is None:
         return []
     threshold = _integer_property(rule, "maximum")
-    complexity = sum(_cyclomatic_complexity(method) for method in class_info.methods if not _is_contract_method(method))
+    complexity = sum(
+        _cyclomatic_complexity(method)
+        for method in class_info.methods
+        if not _is_contract_method(method)
+    )
     if complexity < threshold:
         return []
     return [
@@ -3389,24 +3813,232 @@ def _excessive_class_complexity_findings(
 def _classes(tree: ast.Module) -> list[ClassInfo]:
     classes = []
     protocol_names = _protocol_base_names(tree)
+    visitor_ids = _ast_visitor_class_ids(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
-        methods = tuple(
-            statement
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        )
-        fields = tuple(
-            dict.fromkeys(
-                [
-                    *(name for statement in node.body for name in _field_names(statement)),
-                    *(name for method in methods for name in _instance_field_names(method)),
-                ]
-            )
-        )
-        classes.append(ClassInfo(node, node.name, fields, methods))
+        classes.append(_class_info(node, id(node) in visitor_ids))
     return sorted(classes, key=lambda class_info: class_info.node.lineno)
+
+
+def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
+    class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, _class_import_aliases(tree))
+    qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
+    inherited_ids = _inherited_ast_visitor_class_ids(
+        class_nodes,
+        qualified_names,
+        classes_by_qualified_name,
+        visitor_ids,
+    )
+    return visitor_ids | inherited_ids
+
+
+def _direct_ast_visitor_class_ids(
+    class_nodes: list[ast.ClassDef],
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
+) -> set[int]:
+    visitor_bases = {"ast.NodeVisitor", "ast.NodeTransformer"}
+    return {
+        id(node)
+        for node in class_nodes
+        if {
+            _resolved_import_name(base, aliases_by_class[id(node)])
+            for base in node.bases
+        }
+        & visitor_bases
+    }
+
+
+def _class_import_aliases(tree: ast.Module) -> dict[int, dict[str, tuple[str, bool]]]:
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]] = {}
+    _index_class_import_aliases(tree.body, {}, aliases_by_class)
+    return aliases_by_class
+
+
+def _index_class_import_aliases(
+    statements: list[ast.stmt],
+    inherited: dict[str, tuple[str, bool]],
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
+) -> None:
+    aliases = dict(inherited)
+    for statement in statements:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            aliases.update(_statement_import_aliases(statement))
+            continue
+        if isinstance(statement, ast.ClassDef):
+            aliases_by_class[id(statement)] = dict(aliases)
+            _index_class_import_aliases(statement.body, aliases, aliases_by_class)
+            aliases.pop(statement.name, None)
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _index_class_import_aliases(statement.body, aliases, aliases_by_class)
+            aliases.pop(statement.name, None)
+            continue
+        for name in _statement_assigned_names(statement):
+            aliases.pop(name, None)
+        child_statements = [
+            child
+            for child in ast.iter_child_nodes(statement)
+            if isinstance(child, ast.stmt)
+        ]
+        _index_class_import_aliases(child_statements, aliases, aliases_by_class)
+
+
+def _statement_import_aliases(
+    statement: ast.Import | ast.ImportFrom,
+) -> dict[str, tuple[str, bool]]:
+    if isinstance(statement, ast.Import):
+        return {
+            item.asname or item.name.split(".", 1)[0]: (
+                item.name if item.asname else item.name.split(".", 1)[0],
+                False,
+            )
+            for item in statement.names
+        }
+    module = _import_from_module(statement)
+    return {
+        item.asname or item.name: (_imported_name(module, item.name), True)
+        for item in statement.names
+    }
+
+
+def _statement_assigned_names(statement: ast.stmt) -> set[str]:
+    if isinstance(statement, ast.Assign):
+        return {name for target in statement.targets for name in _assigned_names(target)}
+    if isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        return set(_assigned_names(statement.target))
+    return set()
+
+
+def _inherited_ast_visitor_class_ids(
+    class_nodes: list[ast.ClassDef],
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
+    direct_ids: set[int],
+) -> set[int]:
+    visitor_ids = set(direct_ids)
+    changed = True
+    while changed:
+        changed = False
+        for node in class_nodes:
+            if id(node) in visitor_ids:
+                continue
+            if _has_known_visitor_base(
+                node,
+                qualified_names,
+                classes_by_qualified_name,
+                visitor_ids,
+            ):
+                visitor_ids.add(id(node))
+                changed = True
+    return visitor_ids - direct_ids
+
+
+def _has_known_visitor_base(
+    node: ast.ClassDef,
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
+    visitor_ids: set[int],
+) -> bool:
+    for base in node.bases:
+        base_node = _local_base_class(
+            node,
+            _dotted_name(base),
+            qualified_names,
+            classes_by_qualified_name,
+        )
+        if base_node is not None and id(base_node) in visitor_ids:
+            return True
+    return False
+
+
+def _qualified_class_index(
+    tree: ast.Module,
+) -> tuple[dict[int, str], defaultdict[str, list[ast.ClassDef]]]:
+    qualified_names: dict[int, str] = {}
+    classes_by_name: defaultdict[str, list[ast.ClassDef]] = defaultdict(list)
+    _index_qualified_classes(tree.body, "", qualified_names, classes_by_name)
+    return qualified_names, classes_by_name
+
+
+def _index_qualified_classes(
+    statements: list[ast.stmt],
+    prefix: str,
+    qualified_names: dict[int, str],
+    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+) -> None:
+    for statement in statements:
+        if isinstance(statement, ast.ClassDef):
+            qualified_name = f"{prefix}.{statement.name}" if prefix else statement.name
+            qualified_names[id(statement)] = qualified_name
+            classes_by_name[qualified_name].append(statement)
+            _index_qualified_classes(statement.body, qualified_name, qualified_names, classes_by_name)
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_prefix = f"{prefix}.{statement.name}" if prefix else statement.name
+            _index_qualified_classes(statement.body, function_prefix, qualified_names, classes_by_name)
+        else:
+            child_statements = [child for child in ast.iter_child_nodes(statement) if isinstance(child, ast.stmt)]
+            _index_qualified_classes(child_statements, prefix, qualified_names, classes_by_name)
+
+
+def _local_base_class(
+    node: ast.ClassDef,
+    base_name: str,
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
+) -> ast.ClassDef | None:
+    owner_parts = qualified_names[id(node)].split(".")[:-1]
+    candidate_names = [
+        ".".join([*owner_parts[:depth], base_name])
+        for depth in range(len(owner_parts), -1, -1)
+    ]
+    for candidate_name in candidate_names:
+        earlier = [candidate for candidate in classes_by_qualified_name[candidate_name] if candidate.lineno < node.lineno]
+        if earlier:
+            return earlier[-1]
+    return None
+
+
+def _resolved_import_name(
+    node: ast.expr,
+    aliases: dict[str, tuple[str, bool]],
+) -> str:
+    name = _dotted_name(node)
+    root, *tail = name.split(".")
+    if root not in aliases:
+        return ""
+    imported, _is_symbol = aliases[root]
+    return ".".join([imported, *tail])
+
+
+def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
+    visitor_ids = _ast_visitor_class_ids(tree)
+    return {
+        id(statement)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and id(node) in visitor_ids
+        for statement in node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _is_ast_visitor_handler(statement.name)
+    }
+
+
+def _class_info(node: ast.ClassDef, is_ast_visitor: bool) -> ClassInfo:
+    methods = tuple(
+        statement
+        for statement in node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    fields = tuple(
+        dict.fromkeys(
+            [
+                *(name for statement in node.body for name in _field_names(statement)),
+                *(name for method in methods for name in _instance_field_names(method)),
+            ]
+        )
+    )
+    return ClassInfo(node, node.name, fields, methods, is_ast_visitor)
 
 
 def _field_names(statement: ast.stmt) -> list[str]:
@@ -3452,16 +4084,16 @@ class _InstanceFieldCollector(ast.NodeVisitor):
         self.receiver = receiver
         self.names: list[str] = []
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -3500,8 +4132,14 @@ def _is_protocol(node: ast.ClassDef, protocol_names: set[str] | None = None) -> 
     )
 
 
-def _is_contract_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _is_contract_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
     return _has_decorator(method, "overload") or _is_stub_body(method.body)
+
+
+def _is_ast_visitor_handler(name: str) -> bool:
+    return re.fullmatch(r"visit_(?:[A-Z][A-Za-z0-9]*|arg|comprehension)", name) is not None
 
 
 def _has_property_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -3520,16 +4158,29 @@ def _has_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef, name: str) ->
 
 
 def _is_stub_body(statements: Sequence[ast.stmt]) -> bool:
-    body = list(statements)
-    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
-        body.pop(0)
+    body = _body_without_docstring(statements)
     if not body:
         return True
     if all(isinstance(statement, ast.Pass) for statement in body):
         return True
-    if len(body) == 1 and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
-        return body[0].value.value is Ellipsis
-    return len(body) == 1 and isinstance(body[0], ast.Raise) and _raises_not_implemented(body[0])
+    return len(body) == 1 and (_is_ellipsis_statement(body[0]) or (
+        isinstance(body[0], ast.Raise) and _raises_not_implemented(body[0])
+    ))
+
+
+def _body_without_docstring(statements: Sequence[ast.stmt]) -> list[ast.stmt]:
+    body = list(statements)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        return body[1:]
+    return body
+
+
+def _is_ellipsis_statement(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is Ellipsis
+    )
 
 
 def _raises_not_implemented(statement: ast.Raise) -> bool:
@@ -3587,21 +4238,13 @@ def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Findin
     active_counts: dict[str, int] = {}
     next_line_rules: dict[int, set[str]] = {}
     directive_index = 0
+    directive_count = len(directives)
     suppressed: list[Finding] = []
     for finding in sorted(findings, key=lambda candidate: candidate.line):
-        while directive_index < len(directives) and directives[directive_index][0] < finding.line:
-            line, action, rule_names = directives[directive_index]
-            if action == "disable-next-line":
-                next_line = next((candidate for candidate in source_lines if candidate > line), None)
-                if next_line is not None:
-                    next_line_rules.setdefault(next_line, set()).update(rule_names)
-            elif action == "disable":
-                for rule_name in rule_names:
-                    active_counts[rule_name] = active_counts.get(rule_name, 0) + 1
-            else:
-                for rule_name in rule_names:
-                    if active_counts.get(rule_name, 0) > 0:
-                        active_counts[rule_name] -= 1
+        while directive_index < directive_count and directives[directive_index][0] < finding.line:
+            _apply_suppression_directive(
+                directives[directive_index], source_lines, active_counts, next_line_rules
+            )
             directive_index += 1
         identity = _rule_identity(finding.rule_name)
         is_suppressed = active_counts.get(identity, 0) > 0 or identity in next_line_rules.get(
@@ -3609,6 +4252,23 @@ def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Findin
         )
         suppressed.append(replace(finding, suppressed=is_suppressed))
     return suppressed
+
+
+def _apply_suppression_directive(
+    directive: tuple[int, str, set[str]],
+    source_lines: list[int],
+    active_counts: dict[str, int],
+    next_line_rules: dict[int, set[str]],
+) -> None:
+    line, action, rule_names = directive
+    if action == "disable-next-line":
+        next_line = next((candidate for candidate in source_lines if candidate > line), None)
+        if next_line is not None:
+            next_line_rules.setdefault(next_line, set()).update(rule_names)
+        return
+    delta = 1 if action == "disable" else -1
+    for rule_name in rule_names:
+        active_counts[rule_name] = max(0, active_counts.get(rule_name, 0) + delta)
 
 
 def _suppression_directives(source: str) -> tuple[list[tuple[int, str, set[str]]], list[int]]:
@@ -3650,7 +4310,7 @@ def _rule_identity(name: str) -> str:
 
 
 def _source_files(
-    paths: Sequence[Path], suffixes: set[str], exclusions: Sequence[str], ignore_tests: bool
+    paths: Sequence[Path], suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
 ) -> list[Path]:
     source_files: set[Path] = set()
     for path in paths:
@@ -3659,7 +4319,7 @@ def _source_files(
 
 
 def _source_files_under(
-    path: Path, suffixes: set[str], exclusions: Sequence[str], ignore_tests: bool
+    path: Path, suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
 ) -> set[Path]:
     if _is_excluded(path, exclusions) or (ignore_tests and _is_test_path(path)):
         return set()
@@ -3670,18 +4330,25 @@ def _source_files_under(
 
     source_files: set[Path] = set()
     for candidate in sorted(path.iterdir(), key=lambda entry: entry.name):
-        if candidate.is_dir():
-            if candidate.is_symlink() or candidate.name.lower() in DEFAULT_IGNORED_DIRECTORY_NAMES:
-                continue
-            source_files.update(_source_files_under(candidate, suffixes, exclusions, ignore_tests))
-        elif (
-            candidate.is_file()
-            and candidate.suffix.lower() in suffixes
-            and not _is_excluded(candidate, exclusions)
-            and not (ignore_tests and _is_test_path(candidate))
-        ):
-            source_files.add(candidate.resolve())
+        source_files.update(_source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests))
     return source_files
+
+
+def _source_files_for_candidate(
+    candidate: Path,
+    suffixes: AbstractSet[str],
+    exclusions: Sequence[str],
+    ignore_tests: bool,
+) -> set[Path]:
+    if candidate.is_dir():
+        if candidate.is_symlink() or candidate.name.lower() in DEFAULT_IGNORED_DIRECTORY_NAMES:
+            return set()
+        return _source_files_under(candidate, suffixes, exclusions, ignore_tests)
+    if not candidate.is_file() or candidate.suffix.lower() not in suffixes:
+        return set()
+    if _is_excluded(candidate, exclusions) or (ignore_tests and _is_test_path(candidate)):
+        return set()
+    return {candidate.resolve()}
 
 
 def _split_nonempty(value: str) -> list[str]:

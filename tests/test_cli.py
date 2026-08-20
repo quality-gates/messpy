@@ -1973,6 +1973,293 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(2, stdout.getvalue().count("such as 'item'"))
 
+    def test_nested_comprehension_does_not_hide_unused_outer_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_comprehension.py"
+            source.write_text(
+                "def outer():\n"
+                "    unused = 1\n"
+                "    def inner():\n"
+                "        unused = 2\n"
+                "        return [unused for _ in range(1)]\n"
+                "    return inner()\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
+
+    def test_nested_lambda_in_comprehension_does_not_hide_unused_outer_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "comprehension_lambda.py"
+            source.write_text(
+                "def outer():\n"
+                "    unused = 1\n"
+                "    return [(lambda unused: unused)(2) for _ in range(1)]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
+
+    def test_nested_comprehension_does_not_hide_shadowed_outer_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_shadowing_comprehension.py"
+            source.write_text(
+                "def outer():\n"
+                "    unused = 1\n"
+                "    return [[unused for unused in range(1)] for _ in range(1)]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
+
+    def test_visitor_like_function_does_not_hide_unused_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "visitor_like_function.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "def visit_Name(node):\n"
+                "    return 1\n"
+                "\n"
+                "class Visitor(ast.NodeVisitor):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'node'"))
+
+    def test_ast_visitor_aliases_preserve_callback_parameter_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "visitor_aliases.py"
+            source.write_text(
+                "from ast import NodeVisitor\n"
+                "import ast as syntax\n"
+                "\n"
+                "class ImportedVisitor(NodeVisitor):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class AliasedVisitor(syntax.NodeVisitor):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_node_transformer_preserves_callback_parameter_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "transformer.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class Transformer(ast.NodeTransformer):\n"
+                "    def visit_Name(self, node):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_duplicate_class_names_do_not_change_visitor_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "duplicate_visitors.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class A:\n"
+                "    class Visitor(ast.NodeVisitor):\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n"
+                "\n"
+                "class B:\n"
+                "    class Visitor:\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'node'"))
+
+    def test_qualified_local_visitor_inheritance_preserves_callback_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "qualified_visitor.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class Namespace:\n"
+                "    class Base(ast.NodeVisitor):\n"
+                "        pass\n"
+                "\n"
+                "class Child(Namespace.Base):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class Base(ast.NodeVisitor):\n"
+                "    pass\n"
+                "\n"
+                "class Other:\n"
+                "    class Base:\n"
+                "        pass\n"
+                "\n"
+                "class TopChild(Base):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_function_local_visitor_import_and_shadowing_are_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "local_visitor_import.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "def make_visitor():\n"
+                "    from ast import NodeVisitor\n"
+                "    class Visitor(NodeVisitor):\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n"
+                "    return Visitor\n"
+                "\n"
+                "def make_ordinary():\n"
+                "    ast = object()\n"
+                "    class Ordinary(ast.NodeVisitor):\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n"
+                "    return Ordinary\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'node'"))
+
+    def test_ast_visitor_handlers_still_report_body_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "visitor_body.py"
+            ruleset = directory / "visitor-rules.xml"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class Visitor(ast.NodeVisitor):\n"
+                "    def visit_Name(self, node):\n"
+                "        unused = 1\n"
+                "        if node:\n"
+                "            return 1\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"UnusedLocalVariable\"/>"
+                "<rule ref=\"CyclomaticComplexity\"><properties>"
+                "<property name=\"reportlevel\" value=\"2\"/>"
+                "</properties></rule>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("UnusedLocalVariable", stdout.getvalue())
+        self.assertIn("CyclomaticComplexity", stdout.getvalue())
+
     def test_unusedcode_keeps_exported_private_members_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "exported_member.py"

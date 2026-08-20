@@ -55,8 +55,8 @@ jobs:
         run: |
           python -m venv .artifact-venv
           .artifact-venv/bin/python -m pip install --no-index --no-deps dist/*.whl
-      - name: Verify installed-command self-analysis against the strict debt baseline
-        run: python scripts/verify_self_analysis.py .artifact-venv/bin/messpy ci/self-analysis-baseline.txt
+      - name: Verify installed-command self-analysis is clean
+        run: python scripts/verify_self_analysis.py .artifact-venv/bin/messpy
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: messpy-distributions
