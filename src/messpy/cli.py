@@ -2135,8 +2135,34 @@ def _function_scopes(
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
         table = tables.get((name, node.lineno))
         if table is not None:
-            scopes.append((node, table, _scope_usage(table).used_names))
+            used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
+            scopes.append((node, table, used_names))
     return scopes
+
+
+def _comprehension_referenced_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    # CPython's symtable module does not mark an enclosing scope's variables as
+    # "referenced" when they are only used inside a comprehension (list/set/dict/
+    # generator) since comprehensions became inlined into their enclosing scope
+    # (PEP 709, Python 3.12). Compensate by treating any name loaded inside a
+    # comprehension, other than that comprehension's own loop targets, as used.
+    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
+    referenced: set[str] = set()
+    for root in roots:
+        for descendant in ast.walk(root):
+            if not isinstance(descendant, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                continue
+            own_targets = {
+                target.id for generator in descendant.generators for target in _target_names(generator.target)
+            }
+            referenced.update(
+                name.id
+                for name in ast.walk(descendant)
+                if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load) and name.id not in own_targets
+            )
+    return frozenset(referenced)
 
 
 def _comprehension_scopes(
