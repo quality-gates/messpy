@@ -3823,8 +3823,7 @@ def _classes(tree: ast.Module) -> list[ClassInfo]:
 
 def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
     class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
-    aliases = _module_import_aliases(tree)
-    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, aliases)
+    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, _class_import_aliases(tree))
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     inherited_ids = _inherited_ast_visitor_class_ids(
         class_nodes,
@@ -3837,14 +3836,79 @@ def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
 
 def _direct_ast_visitor_class_ids(
     class_nodes: list[ast.ClassDef],
-    aliases: dict[str, tuple[str, bool]],
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
 ) -> set[int]:
     visitor_bases = {"ast.NodeVisitor", "ast.NodeTransformer"}
     return {
         id(node)
         for node in class_nodes
-        if {_resolved_import_name(base, aliases) for base in node.bases} & visitor_bases
+        if {
+            _resolved_import_name(base, aliases_by_class[id(node)])
+            for base in node.bases
+        }
+        & visitor_bases
     }
+
+
+def _class_import_aliases(tree: ast.Module) -> dict[int, dict[str, tuple[str, bool]]]:
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]] = {}
+    _index_class_import_aliases(tree.body, {}, aliases_by_class)
+    return aliases_by_class
+
+
+def _index_class_import_aliases(
+    statements: list[ast.stmt],
+    inherited: dict[str, tuple[str, bool]],
+    aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
+) -> None:
+    aliases = dict(inherited)
+    for statement in statements:
+        if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            aliases.update(_statement_import_aliases(statement))
+            continue
+        if isinstance(statement, ast.ClassDef):
+            aliases_by_class[id(statement)] = dict(aliases)
+            _index_class_import_aliases(statement.body, aliases, aliases_by_class)
+            aliases.pop(statement.name, None)
+            continue
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _index_class_import_aliases(statement.body, aliases, aliases_by_class)
+            aliases.pop(statement.name, None)
+            continue
+        for name in _statement_assigned_names(statement):
+            aliases.pop(name, None)
+        child_statements = [
+            child
+            for child in ast.iter_child_nodes(statement)
+            if isinstance(child, ast.stmt)
+        ]
+        _index_class_import_aliases(child_statements, aliases, aliases_by_class)
+
+
+def _statement_import_aliases(
+    statement: ast.Import | ast.ImportFrom,
+) -> dict[str, tuple[str, bool]]:
+    if isinstance(statement, ast.Import):
+        return {
+            item.asname or item.name.split(".", 1)[0]: (
+                item.name if item.asname else item.name.split(".", 1)[0],
+                False,
+            )
+            for item in statement.names
+        }
+    module = _import_from_module(statement)
+    return {
+        item.asname or item.name: (_imported_name(module, item.name), True)
+        for item in statement.names
+    }
+
+
+def _statement_assigned_names(statement: ast.stmt) -> set[str]:
+    if isinstance(statement, ast.Assign):
+        return {name for target in statement.targets for name in _assigned_names(target)}
+    if isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
+        return set(_assigned_names(statement.target))
+    return set()
 
 
 def _inherited_ast_visitor_class_ids(
@@ -3943,7 +4007,7 @@ def _resolved_import_name(
     name = _dotted_name(node)
     root, *tail = name.split(".")
     if root not in aliases:
-        return name
+        return ""
     imported, _is_symbol = aliases[root]
     return ".".join([imported, *tail])
 
