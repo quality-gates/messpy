@@ -1973,6 +1973,31 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(2, stdout.getvalue().count("such as 'item'"))
 
+    def test_nested_comprehension_does_not_hide_unused_outer_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_comprehension.py"
+            source.write_text(
+                "def outer():\n"
+                "    unused = 1\n"
+                "    def inner():\n"
+                "        unused = 2\n"
+                "        return [unused for _ in range(1)]\n"
+                "    return inner()\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
+
     def test_unusedcode_keeps_exported_private_members_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "exported_member.py"
