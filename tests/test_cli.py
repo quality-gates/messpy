@@ -2098,6 +2098,60 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_node_transformer_preserves_callback_parameter_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "transformer.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class Transformer(ast.NodeTransformer):\n"
+                "    def visit_Name(self, node):\n"
+                "        return None\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_duplicate_class_names_do_not_change_visitor_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "duplicate_visitors.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class A:\n"
+                "    class Visitor(ast.NodeVisitor):\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n"
+                "\n"
+                "class B:\n"
+                "    class Visitor:\n"
+                "        def visit_Name(self, node):\n"
+                "            return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'node'"))
+
     def test_ast_visitor_handlers_still_report_body_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

@@ -3813,33 +3813,65 @@ def _excessive_class_complexity_findings(
 def _classes(tree: ast.Module) -> list[ClassInfo]:
     classes = []
     protocol_names = _protocol_base_names(tree)
-    visitor_names = _ast_visitor_class_names(tree)
+    visitor_ids = _ast_visitor_class_ids(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
-        classes.append(_class_info(node, node.name in visitor_names))
+        classes.append(_class_info(node, id(node) in visitor_ids))
     return sorted(classes, key=lambda class_info: class_info.node.lineno)
 
 
-def _ast_visitor_class_names(tree: ast.Module) -> set[str]:
-    class_nodes = {
-        node.name: node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef)
-    }
-    visitor_names: set[str] = set()
+def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
+    class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
     aliases = _module_import_aliases(tree)
+    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, aliases)
+    classes_by_name: defaultdict[str, list[ast.ClassDef]] = defaultdict(list)
+    for node in class_nodes:
+        classes_by_name[node.name].append(node)
+    inherited_ids = _inherited_ast_visitor_class_ids(class_nodes, classes_by_name, visitor_ids)
+    return visitor_ids | inherited_ids
+
+
+def _direct_ast_visitor_class_ids(
+    class_nodes: list[ast.ClassDef],
+    aliases: dict[str, tuple[str, bool]],
+) -> set[int]:
+    visitor_bases = {"ast.NodeVisitor", "ast.NodeTransformer"}
+    return {
+        id(node)
+        for node in class_nodes
+        if {_resolved_import_name(base, aliases) for base in node.bases} & visitor_bases
+    }
+
+
+def _inherited_ast_visitor_class_ids(
+    class_nodes: list[ast.ClassDef],
+    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+    direct_ids: set[int],
+) -> set[int]:
+    visitor_ids = set(direct_ids)
     changed = True
     while changed:
         changed = False
-        for name, node in class_nodes.items():
-            base_names = {_resolved_import_name(base, aliases) for base in node.bases}
-            if name not in visitor_names and (
-                "ast.NodeVisitor" in base_names or bool(base_names & visitor_names)
-            ):
-                visitor_names.add(name)
+        for node in class_nodes:
+            if id(node) in visitor_ids:
+                continue
+            if _has_known_visitor_base(node, classes_by_name, visitor_ids):
+                visitor_ids.add(id(node))
                 changed = True
-    return visitor_names
+    return visitor_ids - direct_ids
+
+
+def _has_known_visitor_base(
+    node: ast.ClassDef,
+    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+    visitor_ids: set[int],
+) -> bool:
+    for base in node.bases:
+        candidates = classes_by_name[_dotted_name(base)]
+        if len(candidates) == 1 and id(candidates[0]) in visitor_ids:
+            return True
+    return False
 
 
 def _resolved_import_name(
@@ -3855,11 +3887,11 @@ def _resolved_import_name(
 
 
 def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
-    visitor_names = _ast_visitor_class_names(tree)
+    visitor_ids = _ast_visitor_class_ids(tree)
     return {
         id(statement)
         for node in ast.walk(tree)
-        if isinstance(node, ast.ClassDef) and node.name in visitor_names
+        if isinstance(node, ast.ClassDef) and id(node) in visitor_ids
         for statement in node.body
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
         and _is_ast_visitor_handler(statement.name)
