@@ -232,51 +232,10 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     parsed_arguments: ParsedArguments | None = None
     try:
         parsed_arguments = _parse_arguments(arguments)
-        if parsed_arguments.show_help:
-            stdout.write(_help_text())
-            return 0
-        if parsed_arguments.show_version:
-            stdout.write(f"{_messpy_version()}\n")
-            return 0
-        if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
-            raise CliError(f"Unknown format: {parsed_arguments.report_format}")
-        selection = parsed_arguments.rule_selection
-        rules = filter_rules(
-            load_rulesets(selection.rulesets),
-            selection.only,
-            selection.enable,
-            selection.disable,
-            selection.minimum_priority,
-            selection.maximum_priority,
-        )
-        if parsed_arguments.verbose:
-            stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
-
-        input_paths = [Path(value).resolve() for value in parsed_arguments.paths]
-        source_files = _source_files(
-            input_paths,
-            parsed_arguments.suffixes,
-            parsed_arguments.exclusions,
-            parsed_arguments.ignore_tests,
-        )
-        findings, processing_errors = _analyze(source_files, rules)
-        reported_findings = findings if parsed_arguments.strict else _unsuppressed(findings)
-        report = _render_report(
-            parsed_arguments.report_format,
-            reported_findings,
-            processing_errors,
-            _use_color(parsed_arguments, stdout),
-        )
-        if parsed_arguments.report_file is None:
-            stdout.write(report)
-        else:
-            _write_report(parsed_arguments.report_file, report)
-        return _exit_status(
-            reported_findings,
-            processing_errors,
-            parsed_arguments.exit_policy.ignore_errors_on_exit,
-            parsed_arguments.exit_policy.ignore_violations_on_exit,
-        )
+        early_exit_status = _handle_help_or_version(parsed_arguments, stdout)
+        if early_exit_status is not None:
+            return early_exit_status
+        return _run_analysis(parsed_arguments, stdout, stderr)
     except (CliError, RulesetError) as error:
         stderr.write(f"Error: {error}\n")
         if (parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit) or getattr(
@@ -287,6 +246,58 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
     except OSError as error:
         stderr.write(f"Error: {error}\n")
         return 0 if parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit else 1
+
+
+def _handle_help_or_version(parsed_arguments: ParsedArguments, stdout: TextIO) -> int | None:
+    if parsed_arguments.show_help:
+        stdout.write(_help_text())
+        return 0
+    if parsed_arguments.show_version:
+        stdout.write(f"{_messpy_version()}\n")
+        return 0
+    return None
+
+
+def _run_analysis(parsed_arguments: ParsedArguments, stdout: TextIO, stderr: TextIO) -> int:
+    if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
+        raise CliError(f"Unknown format: {parsed_arguments.report_format}")
+    selection = parsed_arguments.rule_selection
+    rules = filter_rules(
+        load_rulesets(selection.rulesets),
+        selection.only,
+        selection.enable,
+        selection.disable,
+        selection.minimum_priority,
+        selection.maximum_priority,
+    )
+    if parsed_arguments.verbose:
+        stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
+
+    input_paths = [Path(value).resolve() for value in parsed_arguments.paths]
+    source_files = _source_files(
+        input_paths,
+        parsed_arguments.suffixes,
+        parsed_arguments.exclusions,
+        parsed_arguments.ignore_tests,
+    )
+    findings, processing_errors = _analyze(source_files, rules)
+    reported_findings = findings if parsed_arguments.strict else _unsuppressed(findings)
+    report = _render_report(
+        parsed_arguments.report_format,
+        reported_findings,
+        processing_errors,
+        _use_color(parsed_arguments, stdout),
+    )
+    if parsed_arguments.report_file is None:
+        stdout.write(report)
+    else:
+        _write_report(parsed_arguments.report_file, report)
+    return _exit_status(
+        reported_findings,
+        processing_errors,
+        parsed_arguments.exit_policy.ignore_errors_on_exit,
+        parsed_arguments.exit_policy.ignore_violations_on_exit,
+    )
 
 
 def main() -> None:
