@@ -3825,10 +3825,13 @@ def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
     class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
     aliases = _module_import_aliases(tree)
     visitor_ids = _direct_ast_visitor_class_ids(class_nodes, aliases)
-    classes_by_name: defaultdict[str, list[ast.ClassDef]] = defaultdict(list)
-    for node in class_nodes:
-        classes_by_name[node.name].append(node)
-    inherited_ids = _inherited_ast_visitor_class_ids(class_nodes, classes_by_name, visitor_ids)
+    qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
+    inherited_ids = _inherited_ast_visitor_class_ids(
+        class_nodes,
+        qualified_names,
+        classes_by_qualified_name,
+        visitor_ids,
+    )
     return visitor_ids | inherited_ids
 
 
@@ -3846,7 +3849,8 @@ def _direct_ast_visitor_class_ids(
 
 def _inherited_ast_visitor_class_ids(
     class_nodes: list[ast.ClassDef],
-    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
     direct_ids: set[int],
 ) -> set[int]:
     visitor_ids = set(direct_ids)
@@ -3856,7 +3860,12 @@ def _inherited_ast_visitor_class_ids(
         for node in class_nodes:
             if id(node) in visitor_ids:
                 continue
-            if _has_known_visitor_base(node, classes_by_name, visitor_ids):
+            if _has_known_visitor_base(
+                node,
+                qualified_names,
+                classes_by_qualified_name,
+                visitor_ids,
+            ):
                 visitor_ids.add(id(node))
                 changed = True
     return visitor_ids - direct_ids
@@ -3864,14 +3873,67 @@ def _inherited_ast_visitor_class_ids(
 
 def _has_known_visitor_base(
     node: ast.ClassDef,
-    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
     visitor_ids: set[int],
 ) -> bool:
     for base in node.bases:
-        candidates = classes_by_name[_dotted_name(base)]
-        if len(candidates) == 1 and id(candidates[0]) in visitor_ids:
+        base_node = _local_base_class(
+            node,
+            _dotted_name(base),
+            qualified_names,
+            classes_by_qualified_name,
+        )
+        if base_node is not None and id(base_node) in visitor_ids:
             return True
     return False
+
+
+def _qualified_class_index(
+    tree: ast.Module,
+) -> tuple[dict[int, str], defaultdict[str, list[ast.ClassDef]]]:
+    qualified_names: dict[int, str] = {}
+    classes_by_name: defaultdict[str, list[ast.ClassDef]] = defaultdict(list)
+    _index_qualified_classes(tree.body, "", qualified_names, classes_by_name)
+    return qualified_names, classes_by_name
+
+
+def _index_qualified_classes(
+    statements: list[ast.stmt],
+    prefix: str,
+    qualified_names: dict[int, str],
+    classes_by_name: defaultdict[str, list[ast.ClassDef]],
+) -> None:
+    for statement in statements:
+        if isinstance(statement, ast.ClassDef):
+            qualified_name = f"{prefix}.{statement.name}" if prefix else statement.name
+            qualified_names[id(statement)] = qualified_name
+            classes_by_name[qualified_name].append(statement)
+            _index_qualified_classes(statement.body, qualified_name, qualified_names, classes_by_name)
+        elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            function_prefix = f"{prefix}.{statement.name}" if prefix else statement.name
+            _index_qualified_classes(statement.body, function_prefix, qualified_names, classes_by_name)
+        else:
+            child_statements = [child for child in ast.iter_child_nodes(statement) if isinstance(child, ast.stmt)]
+            _index_qualified_classes(child_statements, prefix, qualified_names, classes_by_name)
+
+
+def _local_base_class(
+    node: ast.ClassDef,
+    base_name: str,
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
+) -> ast.ClassDef | None:
+    owner_parts = qualified_names[id(node)].split(".")[:-1]
+    candidate_names = [
+        ".".join([*owner_parts[:depth], base_name])
+        for depth in range(len(owner_parts), -1, -1)
+    ]
+    for candidate_name in candidate_names:
+        earlier = [candidate for candidate in classes_by_qualified_name[candidate_name] if candidate.lineno < node.lineno]
+        if earlier:
+            return earlier[-1]
+    return None
 
 
 def _resolved_import_name(

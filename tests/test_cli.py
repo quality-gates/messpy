@@ -2152,6 +2152,45 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(1, stdout.getvalue().count("such as 'node'"))
 
+    def test_qualified_local_visitor_inheritance_preserves_callback_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "qualified_visitor.py"
+            source.write_text(
+                "import ast\n"
+                "\n"
+                "class Namespace:\n"
+                "    class Base(ast.NodeVisitor):\n"
+                "        pass\n"
+                "\n"
+                "class Child(Namespace.Base):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class Base(ast.NodeVisitor):\n"
+                "    pass\n"
+                "\n"
+                "class Other:\n"
+                "    class Base:\n"
+                "        pass\n"
+                "\n"
+                "class TopChild(Base):\n"
+                "    def visit_Name(self, node):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_ast_visitor_handlers_still_report_body_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
