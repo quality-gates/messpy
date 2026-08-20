@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import builtins
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Sequence, Set as AbstractSet
 from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import json
@@ -141,10 +141,10 @@ class ExitPolicy:
 
 @dataclass(frozen=True)
 class ParsedArguments:
-    paths: list[str]
+    paths: tuple[str, ...]
     report_format: str
-    suffixes: set[str]
-    exclusions: list[str]
+    suffixes: frozenset[str]
+    exclusions: tuple[str, ...]
     ignore_tests: bool
     report_file: Path | None
     strict: bool
@@ -194,6 +194,7 @@ class ClassInfo:
     name: str
     fields: tuple[str, ...]
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
+    is_ast_visitor: bool
 
 
 @dataclass(frozen=True)
@@ -201,6 +202,7 @@ class NamingTarget:
     name: str
     line: int
     role: str
+    contract: bool = False
 
 
 @dataclass(frozen=True)
@@ -435,10 +437,10 @@ def _finish_help_or_version_parsing(state: _ArgumentParseState) -> ParsedArgumen
     if state.positionals:
         raise CliError(f"Unexpected positional argument: {state.positionals[0]}", state.ignore_errors_on_exit)
     return ParsedArguments(
-        paths=[],
+        paths=(),
         report_format="",
-        suffixes=state.suffixes,
-        exclusions=state.exclusions,
+        suffixes=frozenset(state.suffixes),
+        exclusions=tuple(state.exclusions),
         ignore_tests=state.ignore_tests,
         report_file=state.report_file,
         strict=state.strict,
@@ -466,10 +468,10 @@ def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
     if state.rules.minimum_priority > state.rules.maximum_priority:
         raise CliError("Minimum priority must not exceed maximum priority.", state.ignore_errors_on_exit)
     return ParsedArguments(
-        paths=paths,
+        paths=tuple(paths),
         report_format=state.positionals[1],
-        suffixes=state.suffixes,
-        exclusions=state.exclusions,
+        suffixes=frozenset(state.suffixes),
+        exclusions=tuple(state.exclusions),
         ignore_tests=state.ignore_tests,
         report_file=state.report_file,
         strict=state.strict,
@@ -1226,7 +1228,10 @@ def _class_dependencies(
     for statement in class_info.node.body:
         if not isinstance(statement, ast.ClassDef):
             collector.visit(statement)
-    return collector.dependencies
+    dependencies = collector.dependencies
+    if class_info.is_ast_visitor:
+        dependencies = {dependency for dependency in dependencies if not dependency.startswith("ast.")}
+    return dependencies
 
 
 def _module_import_aliases(tree: ast.Module) -> dict[str, tuple[str, bool]]:
@@ -1253,7 +1258,12 @@ def _imported_name(module: str, name: str) -> str:
     return f"{module}{separator}{name}"
 
 
-class _AnnotationVisitingVisitor(ast.NodeVisitor):
+class _DependencyCollector(ast.NodeVisitor):
+    def __init__(self, aliases: dict[str, tuple[str, bool]], local_names: set[str]) -> None:
+        self.aliases = dict(aliases)
+        self.local_names = local_names
+        self.dependencies: set[str] = set()
+
     def visit_arg(self, node: ast.arg) -> None:
         self._visit_annotation(node.annotation)
 
@@ -1266,14 +1276,6 @@ class _AnnotationVisitingVisitor(ast.NodeVisitor):
         expression = _annotation_expression(annotation)
         if expression is not None:
             self.visit(expression)
-
-
-class _DependencyCollector(_AnnotationVisitingVisitor):
-    def __init__(self, aliases: dict[str, tuple[str, bool]], local_names: set[str]) -> None:
-        self.aliases = dict(aliases)
-        self.local_names = local_names
-        self.dependencies: set[str] = set()
-
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
             self._add(node.id)
@@ -1540,7 +1542,7 @@ def _method_relationships(
 ) -> dict[str, _MethodRelationships]:
     methods: dict[str, _MethodRelationships] = {}
     for method in class_info.methods:
-        if _excluded_from_cohesion(method, accessor_fields):
+        if _excluded_from_cohesion(method, accessor_fields, class_info.is_ast_visitor):
             continue
         receiver = _instance_receiver(method)
         if receiver is None:
@@ -1552,13 +1554,17 @@ def _method_relationships(
     return methods
 
 
-def _excluded_from_cohesion(method: ast.FunctionDef | ast.AsyncFunctionDef, accessor_fields: dict[str, str]) -> bool:
+def _excluded_from_cohesion(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    accessor_fields: dict[str, str],
+    is_ast_visitor: bool,
+) -> bool:
     return (
         method.name.startswith("__")
         or _has_property_decorator(method)
         or _has_decorator(method, "staticmethod")
         or _has_decorator(method, "classmethod")
-        or _is_contract_method(method)
+        or _is_contract_method(method, is_ast_visitor)
         or _has_decorator(method, "abstractmethod")
         or method.name in accessor_fields
     )
@@ -2215,7 +2221,15 @@ def _unused_local_variable_findings(
     if rule is None:
         return []
     protocol_method_ids = _protocol_method_ids(tree)
-    findings = _unused_function_local_findings(path, source, tree, rule, protocol_method_ids)
+    visitor_method_ids = _ast_visitor_method_ids(tree)
+    findings = _unused_function_local_findings(
+        path,
+        source,
+        tree,
+        rule,
+        protocol_method_ids,
+        visitor_method_ids,
+    )
     findings.extend(_unused_comprehension_local_findings(path, source, tree, rule))
     return findings
 
@@ -2226,10 +2240,15 @@ def _unused_function_local_findings(
     tree: ast.Module,
     rule: LoadedRule,
     protocol_method_ids: set[int],
+    visitor_method_ids: set[int],
 ) -> list[Finding]:
     findings: list[Finding] = []
     for node, table, used_names in _function_scopes(source, tree):
-        if _is_conservative_callable(node, id(node) in protocol_method_ids):
+        if _is_conservative_callable(
+            node,
+            id(node) in protocol_method_ids,
+            id(node) in visitor_method_ids,
+        ):
             continue
         bindings = _FunctionLocalBindings()
         if isinstance(node, ast.Lambda):
@@ -2317,8 +2336,13 @@ def _unused_formal_parameter_findings(
         return []
     findings: list[Finding] = []
     protocol_method_ids = _protocol_method_ids(tree)
+    visitor_method_ids = _ast_visitor_method_ids(tree)
     for node, table, used_names in _function_scopes(source, tree):
-        if _is_conservative_callable(node, id(node) in protocol_method_ids):
+        if _is_conservative_callable(
+            node,
+            id(node) in protocol_method_ids,
+            id(node) in visitor_method_ids,
+        ):
             continue
         for parameter in _arguments(node.args):
             symbol = table.lookup(parameter.arg)
@@ -2343,10 +2367,14 @@ def _unused_formal_parameter_findings(
 
 
 def _is_conservative_callable(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, is_protocol_method: bool
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    is_protocol_method: bool,
+    is_ast_visitor_method: bool,
 ) -> bool:
     return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-        is_protocol_method or bool(node.decorator_list) or _is_contract_method(node)
+        is_protocol_method
+        or bool(node.decorator_list)
+        or _is_contract_method(node, is_ast_visitor_method)
     )
 
 
@@ -2396,9 +2424,11 @@ def _loaded_non_target_names(
     own_targets = {
         target.id for generator in node.generators for target in _target_names(generator.target)
     }
+    collector = _ExecutableNodeCollector()
+    collector.visit(node)
     return {
         name.id
-        for name in ast.walk(node)
+        for name in collector.nodes
         if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load) and name.id not in own_targets
     }
 
@@ -2593,7 +2623,7 @@ def _unused_private_method_findings(
     findings: list[Finding] = []
     for class_info in _classes(tree):
         for method in class_info.methods:
-            if not _is_unused_private_method(method, usage):
+            if not _is_unused_private_method(method, usage, class_info.is_ast_visitor):
                 continue
             findings.append(
                 Finding(
@@ -2608,13 +2638,17 @@ def _unused_private_method_findings(
     return findings
 
 
-def _is_unused_private_method(method: ast.FunctionDef | ast.AsyncFunctionDef, usage: PrivateMemberUsage) -> bool:
+def _is_unused_private_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    usage: PrivateMemberUsage,
+    is_ast_visitor: bool,
+) -> bool:
     return (
         _is_private_name(method.name)
         and method.name not in usage.accessed_names
         and method.name not in usage.exported_names
         and not method.decorator_list
-        and not _is_contract_method(method)
+        and not _is_contract_method(method, is_ast_visitor)
     )
 
 
@@ -3056,7 +3090,7 @@ def _naming_finding(path: Path, target: NamingTarget, rule: LoadedRule, message:
 def _is_exempt_target(target: NamingTarget) -> bool:
     if target.name.startswith("_"):
         return True
-    if target.role == "method" and re.fullmatch(r"visit_[A-Z][A-Za-z0-9]*", target.name):
+    if target.contract:
         return True
     if target.role == "property" and target.name in {"i", "j", "k", "n", "x", "y", "z"}:
         return True
@@ -3175,8 +3209,9 @@ def _cyclomatic_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.La
     return 1 + visitor.decisions
 
 
-class _DecisionCountingVisitor(ast.NodeVisitor):
-    decisions: int
+class _CyclomaticComplexityVisitor(_NestedScopeSkippingVisitor):
+    def __init__(self) -> None:
+        self.decisions = 0
 
     def visit_If(self, node: ast.If) -> None:
         self.decisions += 1
@@ -3217,13 +3252,6 @@ class _DecisionCountingVisitor(ast.NodeVisitor):
     def visit_Match(self, node: ast.Match) -> None:
         self.decisions += len(node.cases)
         self.generic_visit(node)
-
-
-class _CyclomaticComplexityVisitor(_DecisionCountingVisitor, _NestedScopeSkippingVisitor):
-    def __init__(self) -> None:
-        self.decisions = 0
-
-
 def _npath_complexity_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
     if rule is None:
@@ -3405,35 +3433,15 @@ class _CallableCollector:
 
 
 def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
-    collector = _NamingRoleCollector()
+    collector = _NamingRoleCollector(_ast_visitor_method_ids(tree))
     collector.visit(tree)
     targets = sorted(collector.targets, key=lambda target: (target.line, target.role, target.name))
     callables = sorted(collector.callables, key=lambda callable_info: callable_info.node.lineno)
     return targets, callables
 
 
-class _NamedBindingVisitor(ast.NodeVisitor):
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def _add_target(self, name: str, line: int, role: str) -> None:
-        raise NotImplementedError
-
-
-class _NamingRoleCollector(_NamedBindingVisitor):
-    def __init__(self) -> None:
+class _NamingRoleCollector(ast.NodeVisitor):
+    def __init__(self, visitor_method_ids: set[int]) -> None:
         self.targets: list[NamingTarget] = []
         self.callables: list[NamingCallable] = []
         self.contexts: list[str] = []
@@ -3441,6 +3449,7 @@ class _NamingRoleCollector(_NamedBindingVisitor):
         self.receivers: list[str | None] = []
         self.constant_target_ids: set[int] = set()
         self.generic_target_ids: set[int] = set()
+        self.visitor_method_ids = frozenset(visitor_method_ids)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._add_target(node.name, node.lineno, "class")
@@ -3509,8 +3518,29 @@ class _NamingRoleCollector(_NamedBindingVisitor):
             self._add_target(node.attr, node.lineno, "property")
         self.generic_visit(node)
 
-    def _add_target(self, name: str, line: int, role: str) -> None:
-        target = NamingTarget(name, line, role)
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self._add_target(node.name, node.lineno, "variable")
+        self.generic_visit(node)
+
+    def _add_target(
+        self,
+        name: str,
+        line: int,
+        role: str,
+        contract: bool = False,
+    ) -> None:
+        target = NamingTarget(name, line, role, contract)
         if target not in self.targets:
             self.targets.append(target)
 
@@ -3528,7 +3558,12 @@ def _collect_naming_callable(
 ) -> None:
     direct_class_member = bool(contexts and contexts[-1] == "class")
     role = _naming_callable_role(node, direct_class_member)
-    collector._add_target(node.name, node.lineno, role)
+    collector._add_target(
+        node.name,
+        node.lineno,
+        role,
+        id(node) in collector.visitor_method_ids,
+    )
     collector.callables.append(NamingCallable(node, role))
     for argument in _arguments(node.args):
         collector._add_target(argument.arg, argument.lineno, "parameter")
@@ -3661,7 +3696,9 @@ def _excessive_public_count_findings(
         return []
     threshold = _integer_property(rule, "minimum")
     count = sum(_is_public(name) for name in class_info.fields) + sum(
-        _is_public(method.name) for method in class_info.methods if not _is_contract_method(method)
+        _is_public(method.name)
+        for method in class_info.methods
+        if not _is_contract_method(method, class_info.is_ast_visitor)
     )
     if count < threshold:
         return []
@@ -3709,7 +3746,7 @@ def _too_many_methods_findings(
     methods = [
         method
         for method in class_info.methods
-        if not _is_contract_method(method)
+        if not _is_contract_method(method, class_info.is_ast_visitor)
         and not ignore.match(method.name)
         and (not public_only or _is_public(method.name))
     ]
@@ -3740,7 +3777,11 @@ def _excessive_class_complexity_findings(
     if rule is None:
         return []
     threshold = _integer_property(rule, "maximum")
-    complexity = sum(_cyclomatic_complexity(method) for method in class_info.methods if not _is_contract_method(method))
+    complexity = sum(
+        _cyclomatic_complexity(method)
+        for method in class_info.methods
+        if not _is_contract_method(method, class_info.is_ast_visitor)
+    )
     if complexity < threshold:
         return []
     return [
@@ -3757,14 +3798,47 @@ def _excessive_class_complexity_findings(
 def _classes(tree: ast.Module) -> list[ClassInfo]:
     classes = []
     protocol_names = _protocol_base_names(tree)
+    visitor_names = _ast_visitor_class_names(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
-        classes.append(_class_info(node))
+        classes.append(_class_info(node, node.name in visitor_names))
     return sorted(classes, key=lambda class_info: class_info.node.lineno)
 
 
-def _class_info(node: ast.ClassDef) -> ClassInfo:
+def _ast_visitor_class_names(tree: ast.Module) -> set[str]:
+    class_nodes = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef)
+    }
+    visitor_names: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, node in class_nodes.items():
+            base_names = {_dotted_name(base) for base in node.bases}
+            if name not in visitor_names and (
+                "ast.NodeVisitor" in base_names or bool(base_names & visitor_names)
+            ):
+                visitor_names.add(name)
+                changed = True
+    return visitor_names
+
+
+def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
+    visitor_names = _ast_visitor_class_names(tree)
+    return {
+        id(statement)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name in visitor_names
+        for statement in node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _is_ast_visitor_handler(statement.name)
+    }
+
+
+def _class_info(node: ast.ClassDef, is_ast_visitor: bool) -> ClassInfo:
     methods = tuple(
         statement
         for statement in node.body
@@ -3778,7 +3852,7 @@ def _class_info(node: ast.ClassDef) -> ClassInfo:
             ]
         )
     )
-    return ClassInfo(node, node.name, fields, methods)
+    return ClassInfo(node, node.name, fields, methods, is_ast_visitor)
 
 
 def _field_names(statement: ast.stmt) -> list[str]:
@@ -3872,11 +3946,14 @@ def _is_protocol(node: ast.ClassDef, protocol_names: set[str] | None = None) -> 
     )
 
 
-def _is_contract_method(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+def _is_contract_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    is_ast_visitor: bool = False,
+) -> bool:
     return (
         _has_decorator(method, "overload")
-        or _is_ast_visitor_handler(method.name)
         or _is_stub_body(method.body)
+        or (is_ast_visitor and _is_ast_visitor_handler(method.name))
     )
 
 
@@ -4052,7 +4129,7 @@ def _rule_identity(name: str) -> str:
 
 
 def _source_files(
-    paths: Sequence[Path], suffixes: set[str], exclusions: Sequence[str], ignore_tests: bool
+    paths: Sequence[Path], suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
 ) -> list[Path]:
     source_files: set[Path] = set()
     for path in paths:
@@ -4061,7 +4138,7 @@ def _source_files(
 
 
 def _source_files_under(
-    path: Path, suffixes: set[str], exclusions: Sequence[str], ignore_tests: bool
+    path: Path, suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
 ) -> set[Path]:
     if _is_excluded(path, exclusions) or (ignore_tests and _is_test_path(path)):
         return set()
@@ -4078,7 +4155,7 @@ def _source_files_under(
 
 def _source_files_for_candidate(
     candidate: Path,
-    suffixes: set[str],
+    suffixes: AbstractSet[str],
     exclusions: Sequence[str],
     ignore_tests: bool,
 ) -> set[Path]:
