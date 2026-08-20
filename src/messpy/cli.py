@@ -4,7 +4,7 @@ import ast
 import builtins
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import json
 import keyword
@@ -124,26 +124,36 @@ RULE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
-class ParsedArguments:
-    paths: list[str]
-    report_format: str
+class RuleSelection:
     rulesets: list[str]
-    suffixes: set[str]
-    exclusions: list[str]
-    ignore_tests: bool
-    ignore_errors_on_exit: bool
-    ignore_violations_on_exit: bool
-    report_file: Path | None
     only: list[str]
     enable: list[str]
     disable: list[str]
     minimum_priority: int
     maximum_priority: int
+
+
+@dataclass(frozen=True)
+class ExitPolicy:
+    ignore_errors_on_exit: bool
+    ignore_violations_on_exit: bool
+
+
+@dataclass(frozen=True)
+class ParsedArguments:
+    paths: list[str]
+    report_format: str
+    suffixes: set[str]
+    exclusions: list[str]
+    ignore_tests: bool
+    report_file: Path | None
     strict: bool
     verbose: bool
     color: str
     show_help: bool
     show_version: bool
+    rule_selection: RuleSelection
+    exit_policy: ExitPolicy
 
 
 class CliError(Exception):
@@ -230,13 +240,14 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
             return 0
         if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
             raise CliError(f"Unknown format: {parsed_arguments.report_format}")
+        selection = parsed_arguments.rule_selection
         rules = filter_rules(
-            load_rulesets(parsed_arguments.rulesets),
-            parsed_arguments.only,
-            parsed_arguments.enable,
-            parsed_arguments.disable,
-            parsed_arguments.minimum_priority,
-            parsed_arguments.maximum_priority,
+            load_rulesets(selection.rulesets),
+            selection.only,
+            selection.enable,
+            selection.disable,
+            selection.minimum_priority,
+            selection.maximum_priority,
         )
         if parsed_arguments.verbose:
             stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
@@ -263,19 +274,19 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
         return _exit_status(
             reported_findings,
             processing_errors,
-            parsed_arguments.ignore_errors_on_exit,
-            parsed_arguments.ignore_violations_on_exit,
+            parsed_arguments.exit_policy.ignore_errors_on_exit,
+            parsed_arguments.exit_policy.ignore_violations_on_exit,
         )
     except (CliError, RulesetError) as error:
         stderr.write(f"Error: {error}\n")
-        if (parsed_arguments and parsed_arguments.ignore_errors_on_exit) or getattr(
+        if (parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit) or getattr(
             error, "ignore_errors_on_exit", False
         ):
             return 0
         return 1
     except OSError as error:
         stderr.write(f"Error: {error}\n")
-        return 0 if parsed_arguments and parsed_arguments.ignore_errors_on_exit else 1
+        return 0 if parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit else 1
 
 
 def main() -> None:
@@ -286,147 +297,179 @@ def _messpy_version() -> str:
     return __version__
 
 
-def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
-    positionals: list[str] = []
-    suffixes = {".py", ".pyi"}
-    exclusions: list[str] = []
+@dataclass
+class _ArgumentParseState:
+    positionals: list[str] = dataclass_field(default_factory=list)
+    suffixes: set[str] = dataclass_field(default_factory=lambda: {".py", ".pyi"})
+    suffixes_provided: bool = False
+    exclusions: list[str] = dataclass_field(default_factory=list)
     report_file: Path | None = None
-    ignore_tests = False
-    ignore_errors_on_exit = False
-    ignore_violations_on_exit = False
-    strict = False
-    verbose = False
-    color = "auto"
-    only: list[str] = []
-    enable: list[str] = []
-    disable: list[str] = []
-    minimum_priority = 1
-    maximum_priority = 5
-    show_help = False
-    show_version = False
-    suffixes_provided = False
+    ignore_tests: bool = False
+    ignore_errors_on_exit: bool = False
+    ignore_violations_on_exit: bool = False
+    strict: bool = False
+    verbose: bool = False
+    color: str = "auto"
+    only: list[str] = dataclass_field(default_factory=list)
+    enable: list[str] = dataclass_field(default_factory=list)
+    disable: list[str] = dataclass_field(default_factory=list)
+    minimum_priority: int = 1
+    maximum_priority: int = 5
+    show_help: bool = False
+    show_version: bool = False
 
+
+def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
+    state = _ArgumentParseState()
     index = 0
     while index < len(arguments):
         argument = arguments[index]
         if argument in {"-h", "--help"}:
-            show_help = True
+            state.show_help = True
             index += 1
             continue
         if argument in {"-v", "--version"}:
-            show_version = True
+            state.show_version = True
             index += 1
             continue
         if not argument.startswith("-"):
-            positionals.append(argument)
+            state.positionals.append(argument)
             index += 1
             continue
 
         option_name, option_value = _split_option(argument)
         if option_name in VALUE_OPTIONS:
-            if option_value is None:
-                if index + 1 == len(arguments) or arguments[index + 1].startswith("-"):
-                    raise CliError(f"Missing value for option: {option_name}", ignore_errors_on_exit)
-                option_value = arguments[index + 1]
-                index += 1
-            if option_name in {"--report-file", "--reportfile"}:
-                report_file = Path(option_value)
-            elif option_name == "--suffixes":
-                normalized_suffixes = _normalized_suffixes(option_value)
-                suffixes = normalized_suffixes if not suffixes_provided else suffixes | normalized_suffixes
-                suffixes_provided = True
-            elif option_name == "--exclude":
-                exclusions.extend(_split_nonempty(option_value))
-            elif option_name == "--color":
-                color = _parse_color(option_value, ignore_errors_on_exit)
-            elif option_name in {"--only", "--enable", "--disable"}:
-                values = _split_nonempty(option_value)
-                if option_name == "--only":
-                    only.extend(values)
-                elif option_name == "--enable":
-                    enable.extend(values)
-                else:
-                    disable.extend(values)
-            elif option_name in {"--minimum-priority", "--minimumpriority"}:
-                minimum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
-            else:
-                maximum_priority = _parse_priority(option_name, option_value, ignore_errors_on_exit)
-            index += 1
+            index = _apply_value_option(state, arguments, index, option_name, option_value)
             continue
         if option_name in BOOLEAN_OPTIONS:
-            if option_value is not None:
-                raise CliError(f"Option does not accept a value: {option_name}", ignore_errors_on_exit)
-            if option_name == "--ignore-tests":
-                ignore_tests = True
-            elif option_name == "--ignore-errors-on-exit":
-                ignore_errors_on_exit = True
-            elif option_name == "--verbose":
-                verbose = True
-            elif option_name == "--strict":
-                strict = True
-            else:
-                ignore_violations_on_exit = True
+            _apply_boolean_option(state, option_name, option_value)
             index += 1
             continue
-        raise CliError(f"Unknown option: {option_name}", ignore_errors_on_exit)
+        raise CliError(f"Unknown option: {option_name}", state.ignore_errors_on_exit)
 
-    if show_help or show_version:
-        if positionals:
-            raise CliError(f"Unexpected positional argument: {positionals[0]}", ignore_errors_on_exit)
-        return ParsedArguments(
-            paths=[],
-            report_format="",
-            rulesets=[],
-            suffixes=suffixes,
-            exclusions=exclusions,
-            ignore_tests=ignore_tests,
-            ignore_errors_on_exit=ignore_errors_on_exit,
-            ignore_violations_on_exit=ignore_violations_on_exit,
-            report_file=report_file,
-            only=only,
-            enable=enable,
-            disable=disable,
-            minimum_priority=minimum_priority,
-            maximum_priority=maximum_priority,
-            strict=strict,
-            verbose=verbose,
-            color=color,
-            show_help=show_help,
-            show_version=show_version,
-        )
-    if len(positionals) < 3:
-        raise CliError(f"Missing required arguments: {REQUIRED_ARGUMENTS}", ignore_errors_on_exit)
-    if len(positionals) > 3:
-        raise CliError(f"Unexpected positional argument: {positionals[3]}", ignore_errors_on_exit)
+    if state.show_help or state.show_version:
+        return _finish_help_or_version_parsing(state)
+    return _finish_analysis_parsing(state)
 
-    paths = _split_nonempty(positionals[0])
+
+def _apply_value_option(
+    state: _ArgumentParseState, arguments: Sequence[str], index: int, option_name: str, option_value: str | None
+) -> int:
+    if option_value is None:
+        if index + 1 == len(arguments) or arguments[index + 1].startswith("-"):
+            raise CliError(f"Missing value for option: {option_name}", state.ignore_errors_on_exit)
+        option_value = arguments[index + 1]
+        index += 1
+    if option_name in {"--report-file", "--reportfile"}:
+        state.report_file = Path(option_value)
+    elif option_name == "--suffixes":
+        normalized_suffixes = _normalized_suffixes(option_value)
+        state.suffixes = normalized_suffixes if not state.suffixes_provided else state.suffixes | normalized_suffixes
+        state.suffixes_provided = True
+    elif option_name == "--exclude":
+        state.exclusions.extend(_split_nonempty(option_value))
+    elif option_name == "--color":
+        state.color = _parse_color(option_value, state.ignore_errors_on_exit)
+    elif option_name in {"--only", "--enable", "--disable"}:
+        _apply_rule_selection_option(state, option_name, option_value)
+    elif option_name in {"--minimum-priority", "--minimumpriority"}:
+        state.minimum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+    else:
+        state.maximum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+    return index + 1
+
+
+def _apply_rule_selection_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
+    values = _split_nonempty(option_value)
+    if option_name == "--only":
+        state.only.extend(values)
+    elif option_name == "--enable":
+        state.enable.extend(values)
+    else:
+        state.disable.extend(values)
+
+
+def _apply_boolean_option(state: _ArgumentParseState, option_name: str, option_value: str | None) -> None:
+    if option_value is not None:
+        raise CliError(f"Option does not accept a value: {option_name}", state.ignore_errors_on_exit)
+    if option_name == "--ignore-tests":
+        state.ignore_tests = True
+    elif option_name == "--ignore-errors-on-exit":
+        state.ignore_errors_on_exit = True
+    elif option_name == "--verbose":
+        state.verbose = True
+    elif option_name == "--strict":
+        state.strict = True
+    else:
+        state.ignore_violations_on_exit = True
+
+
+def _finish_help_or_version_parsing(state: _ArgumentParseState) -> ParsedArguments:
+    if state.positionals:
+        raise CliError(f"Unexpected positional argument: {state.positionals[0]}", state.ignore_errors_on_exit)
+    return ParsedArguments(
+        paths=[],
+        report_format="",
+        suffixes=state.suffixes,
+        exclusions=state.exclusions,
+        ignore_tests=state.ignore_tests,
+        report_file=state.report_file,
+        strict=state.strict,
+        verbose=state.verbose,
+        color=state.color,
+        show_help=state.show_help,
+        show_version=state.show_version,
+        rule_selection=_rule_selection(state, rulesets=[]),
+        exit_policy=_exit_policy(state),
+    )
+
+
+def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
+    if len(state.positionals) < 3:
+        raise CliError(f"Missing required arguments: {REQUIRED_ARGUMENTS}", state.ignore_errors_on_exit)
+    if len(state.positionals) > 3:
+        raise CliError(f"Unexpected positional argument: {state.positionals[3]}", state.ignore_errors_on_exit)
+
+    paths = _split_nonempty(state.positionals[0])
     if not paths:
-        raise CliError("At least one input path is required", ignore_errors_on_exit)
-    rulesets = _split_nonempty(positionals[2])
+        raise CliError("At least one input path is required", state.ignore_errors_on_exit)
+    rulesets = _split_nonempty(state.positionals[2])
     if not rulesets:
-        raise CliError("At least one ruleset is required", ignore_errors_on_exit)
-    if minimum_priority > maximum_priority:
-        raise CliError("Minimum priority must not exceed maximum priority.", ignore_errors_on_exit)
+        raise CliError("At least one ruleset is required", state.ignore_errors_on_exit)
+    if state.minimum_priority > state.maximum_priority:
+        raise CliError("Minimum priority must not exceed maximum priority.", state.ignore_errors_on_exit)
     return ParsedArguments(
         paths=paths,
-        report_format=positionals[1],
-        rulesets=rulesets,
-        suffixes=suffixes,
-        exclusions=exclusions,
-        ignore_tests=ignore_tests,
-        ignore_errors_on_exit=ignore_errors_on_exit,
-        ignore_violations_on_exit=ignore_violations_on_exit,
-        report_file=report_file,
-        only=only,
-        enable=enable,
-        disable=disable,
-        minimum_priority=minimum_priority,
-        maximum_priority=maximum_priority,
-        strict=strict,
-        verbose=verbose,
-        color=color,
+        report_format=state.positionals[1],
+        suffixes=state.suffixes,
+        exclusions=state.exclusions,
+        ignore_tests=state.ignore_tests,
+        report_file=state.report_file,
+        strict=state.strict,
+        verbose=state.verbose,
+        color=state.color,
         show_help=False,
         show_version=False,
+        rule_selection=_rule_selection(state, rulesets),
+        exit_policy=_exit_policy(state),
+    )
+
+
+def _rule_selection(state: _ArgumentParseState, rulesets: list[str]) -> RuleSelection:
+    return RuleSelection(
+        rulesets=rulesets,
+        only=state.only,
+        enable=state.enable,
+        disable=state.disable,
+        minimum_priority=state.minimum_priority,
+        maximum_priority=state.maximum_priority,
+    )
+
+
+def _exit_policy(state: _ArgumentParseState) -> ExitPolicy:
+    return ExitPolicy(
+        ignore_errors_on_exit=state.ignore_errors_on_exit,
+        ignore_violations_on_exit=state.ignore_violations_on_exit,
     )
 
 
