@@ -1134,24 +1134,47 @@ def _imported_name(module: str, name: str) -> str:
     return f"{module}{separator}{name}"
 
 
-class _DependencyCollector(ast.NodeVisitor):
+def _ast_node_snake_case(node_type_name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", node_type_name).lower()
+
+
+class _AstDispatchVisitor(ast.NodeVisitor):
+    """An ``ast.NodeVisitor`` whose handlers are named in snake_case.
+
+    ``ast.NodeVisitor`` dispatches to a method literally named
+    ``visit_<NodeType>``, which forces CamelCase method names (``visit_Name``,
+    ``visit_ClassDef``, ...) onto every subclass. This base class dispatches
+    to ``_visit_<node_type_in_snake_case>`` instead, so subclasses can use
+    this codebase's normal snake_case naming convention while still getting
+    per-node-type dispatch.
+    """
+
+    def visit(self, node: ast.AST) -> None:
+        handler = getattr(self, "_visit_" + _ast_node_snake_case(type(node).__name__), None)
+        if handler is not None:
+            handler(node)
+        else:
+            self.generic_visit(node)
+
+
+class _DependencyCollector(_AstDispatchVisitor):
     def __init__(self, aliases: dict[str, tuple[str, bool]], local_names: set[str]) -> None:
         self.aliases = dict(aliases)
         self.local_names = local_names
         self.dependencies: set[str] = set()
 
-    def visit_Name(self, node: ast.Name) -> None:
+    def _visit_name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load):
             self._add(node.id)
 
-    def visit_Import(self, node: ast.Import) -> None:
+    def _visit_import(self, node: ast.Import) -> None:
         for item in node.names:
             binding = item.asname or item.name.split(".", 1)[0]
             target = item.name if item.asname else binding
             self.aliases[binding] = (target, False)
             self.local_names.discard(binding)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+    def _visit_import_from(self, node: ast.ImportFrom) -> None:
         module = _import_from_module(node)
         for item in node.names:
             dependency = _imported_name(module, item.name)
@@ -1159,28 +1182,28 @@ class _DependencyCollector(ast.NodeVisitor):
             self.aliases[binding] = (dependency, True)
             self.local_names.discard(binding)
 
-    def visit_arg(self, node: ast.arg) -> None:
+    def _visit_arg(self, node: ast.arg) -> None:
         self._visit_annotation(node.annotation)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_ann_assign(self, node: ast.AnnAssign) -> None:
         self._visit_annotation(node.annotation)
         if node.value is not None:
             self.visit(node.value)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_function(node)
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:
+    def _visit_attribute(self, node: ast.Attribute) -> None:
         name = _dotted_name(node)
         if name:
             self._add(name)
         else:
             self.generic_visit(node)
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -1198,7 +1221,7 @@ class _DependencyCollector(ast.NodeVisitor):
             for decorator in node.decorator_list:
                 self.visit(decorator)
             for argument in _arguments(node.args):
-                self.visit_arg(argument)
+                self._visit_arg(argument)
             for default in [*node.args.defaults, *node.args.kw_defaults]:
                 if default is not None:
                     self.visit(default)
@@ -1293,33 +1316,33 @@ def _global_variable_findings(
     ]
 
 
-class _ModuleBindingCollector(ast.NodeVisitor):
+class _ModuleBindingCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.bindings: list[tuple[ast.AST, ast.expr | None]] = []
 
-    def visit_Assign(self, node: ast.Assign) -> None:
+    def _visit_assign(self, node: ast.Assign) -> None:
         self.bindings.extend((target, None) for target in node.targets)
         self.visit(node.value)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_ann_assign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             self.bindings.append((node.target, node.annotation))
             self.visit(node.value)
 
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+    def _visit_named_expr(self, node: ast.NamedExpr) -> None:
         self.bindings.append((node.target, None))
         self.visit(node.value)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
 
@@ -1426,14 +1449,14 @@ class _MethodRelationships:
     calls: frozenset[str]
 
 
-class _MethodRelationshipCollector(ast.NodeVisitor):
+class _MethodRelationshipCollector(_AstDispatchVisitor):
     def __init__(self, receiver: str, accessor_fields: dict[str, str]) -> None:
         self.receiver = receiver
         self.accessor_fields = accessor_fields
         self.fields: frozenset[str] = frozenset()
         self.calls: frozenset[str] = frozenset()
 
-    def visit_Call(self, node: ast.Call) -> None:
+    def _visit_call(self, node: ast.Call) -> None:
         if (
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
@@ -1448,19 +1471,19 @@ class _MethodRelationshipCollector(ast.NodeVisitor):
             return
         self.generic_visit(node)
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:
+    def _visit_attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.value, ast.Name) and node.value.id == self.receiver:
             self.fields = self.fields | {self.accessor_fields.get(node.attr, node.attr)}
             return
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
 
@@ -1525,15 +1548,15 @@ def _expression_calls(node: ast.expr) -> list[ast.Call]:
     return collector.calls
 
 
-class _ExpressionCallCollector(ast.NodeVisitor):
+class _ExpressionCallCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.calls: list[ast.Call] = []
 
-    def visit_Call(self, node: ast.Call) -> None:
+    def _visit_call(self, node: ast.Call) -> None:
         self.calls.append(node)
         self.generic_visit(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
 
@@ -1585,30 +1608,30 @@ def _direct_bindings(
     return collector.names
 
 
-class _ScopeBindingCollector(ast.NodeVisitor):
+class _ScopeBindingCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.names: set[str] = set()
 
-    def visit_Name(self, node: ast.Name) -> None:
+    def _visit_name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
             self.names.add(node.id)
 
-    def visit_Import(self, node: ast.Import) -> None:
+    def _visit_import(self, node: ast.Import) -> None:
         self.names.update(imported.asname or imported.name.split(".", 1)[0] for imported in node.names)
 
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+    def _visit_import_from(self, node: ast.ImportFrom) -> None:
         self.names.update(imported.asname or imported.name for imported in node.names)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         self.names.add(node.name)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         self.names.add(node.name)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         self.names.add(node.name)
 
 
@@ -1829,15 +1852,15 @@ def _character_column(source: str, node: ast.AST) -> int:
     return len(prefix) + 1
 
 
-class _NamedExpressionCollector(ast.NodeVisitor):
+class _NamedExpressionCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.assignments: list[ast.NamedExpr] = []
 
-    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+    def _visit_named_expr(self, node: ast.NamedExpr) -> None:
         self.assignments.append(node)
         self.generic_visit(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
 
@@ -1910,22 +1933,22 @@ def _clean_code_callables(tree: ast.Module) -> list[CleanCodeCallable]:
     )
 
 
-class _CallableOwnerCollector(ast.NodeVisitor):
+class _CallableOwnerCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.owners: dict[int, str] = {}
         self.owner_name: str | None = None
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         previous_owner = self.owner_name
         self.owner_name = node.name
         for statement in node.body:
             self.visit(statement)
         self.owner_name = previous_owner
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         self._visit_callable(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_callable(node)
 
     def _visit_callable(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -1957,7 +1980,7 @@ def _executable_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
     return collector.nodes
 
 
-class _ExecutableNodeCollector(ast.NodeVisitor):
+class _ExecutableNodeCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.nodes: list[ast.AST] = []
 
@@ -1965,16 +1988,16 @@ class _ExecutableNodeCollector(ast.NodeVisitor):
         self.nodes.append(node)
         super().generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
 
@@ -2169,32 +2192,32 @@ def _comprehension_used_names(
     return frozenset(used)
 
 
-class _ScopedNameUseVisitor(ast.NodeVisitor):
+class _ScopedNameUseVisitor(_AstDispatchVisitor):
     def __init__(self, name: str) -> None:
         self.name = name
         self.used = False
 
-    def visit_Name(self, node: ast.Name) -> None:
+    def _visit_name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Load) and node.id == self.name:
             self.used = True
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         for default in [*node.args.defaults, *node.args.kw_defaults]:
             if default is not None:
                 self.visit(default)
         if self.name not in {argument.arg for argument in _arguments(node.args)}:
             self.visit(node.body)
 
-    def visit_ListComp(self, node: ast.ListComp) -> None:
+    def _visit_list_comp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node)
 
-    def visit_SetComp(self, node: ast.SetComp) -> None:
+    def _visit_set_comp(self, node: ast.SetComp) -> None:
         self._visit_comprehension(node)
 
-    def visit_DictComp(self, node: ast.DictComp) -> None:
+    def _visit_dict_comp(self, node: ast.DictComp) -> None:
         self._visit_comprehension(node)
 
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+    def _visit_generator_exp(self, node: ast.GeneratorExp) -> None:
         self._visit_comprehension(node)
 
     def _visit_comprehension(
@@ -2309,7 +2332,7 @@ def _unused_private_method_findings(
     return findings
 
 
-class _PrivateFieldCollector(ast.NodeVisitor):
+class _PrivateFieldCollector(_AstDispatchVisitor):
     def __init__(self, node: ast.ClassDef) -> None:
         self.node = node
         self.fields: dict[str, int] = {}
@@ -2332,13 +2355,13 @@ class _PrivateFieldCollector(ast.NodeVisitor):
             return {}
         return {name: line for name, line in self.fields.items() if name not in self.loads}
 
-    def visit_Call(self, node: ast.Call) -> None:
+    def _visit_call(self, node: ast.Call) -> None:
         names, has_unknown_access = _dynamic_attribute_accesses(node)
         self.loads.update(names)
         self.has_unknown_dynamic_access = self.has_unknown_dynamic_access or has_unknown_access
         self.generic_visit(node)
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:
+    def _visit_attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.ctx, ast.Load):
             self.loads.add(node.attr)
         elif (
@@ -2350,16 +2373,16 @@ class _PrivateFieldCollector(ast.NodeVisitor):
             self._add_field(node.attr, node.lineno)
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
     def _add_field(self, name: str, line: int) -> None:
@@ -2465,51 +2488,51 @@ def _dynamic_attribute_accesses(node: ast.AST, aliases: set[str] | None = None) 
     return names, has_unknown_access
 
 
-class _FunctionLocalBindings(ast.NodeVisitor):
+class _FunctionLocalBindings(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.targets: list[ast.Name] = []
 
-    def visit_Name(self, node: ast.Name) -> None:
+    def _visit_name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
             self.targets.append(node)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+    def _visit_except_handler(self, node: ast.ExceptHandler) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, node.col_offset)
         self.generic_visit(node)
 
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+    def _visit_match_as(self, node: ast.MatchAs) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, node.col_offset)
         self.generic_visit(node)
 
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+    def _visit_match_star(self, node: ast.MatchStar) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, node.col_offset)
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
-    def visit_ListComp(self, node: ast.ListComp) -> None:
+    def _visit_list_comp(self, node: ast.ListComp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_SetComp(self, node: ast.SetComp) -> None:
+    def _visit_set_comp(self, node: ast.SetComp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_DictComp(self, node: ast.DictComp) -> None:
+    def _visit_dict_comp(self, node: ast.DictComp) -> None:
         self._add_named_expression_targets(node)
 
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+    def _visit_generator_exp(self, node: ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
     def _add_named_expression_targets(self, node: ast.AST) -> None:
@@ -2832,56 +2855,56 @@ def _cyclomatic_complexity(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.La
     return 1 + visitor.decisions
 
 
-class _CyclomaticComplexityVisitor(ast.NodeVisitor):
+class _CyclomaticComplexityVisitor(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.decisions = 0
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_If(self, node: ast.If) -> None:
+    def _visit_if(self, node: ast.If) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_IfExp(self, node: ast.IfExp) -> None:
+    def _visit_if_exp(self, node: ast.IfExp) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_For(self, node: ast.For) -> None:
+    def _visit_for(self, node: ast.For) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_AsyncFor(self, node: ast.AsyncFor) -> None:
+    def _visit_async_for(self, node: ast.AsyncFor) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_While(self, node: ast.While) -> None:
+    def _visit_while(self, node: ast.While) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+    def _visit_except_handler(self, node: ast.ExceptHandler) -> None:
         self.decisions += 1
         self.generic_visit(node)
 
-    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+    def _visit_bool_op(self, node: ast.BoolOp) -> None:
         self.decisions += len(node.values) - 1
         self.generic_visit(node)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_ann_assign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             self.visit(node.value)
 
-    def visit_comprehension(self, node: ast.comprehension) -> None:
+    def _visit_comprehension(self, node: ast.comprehension) -> None:
         self.decisions += 1 + len(node.ifs)
         self.generic_visit(node)
 
-    def visit_Match(self, node: ast.Match) -> None:
+    def _visit_match(self, node: ast.Match) -> None:
         self.decisions += len(node.cases)
         self.generic_visit(node)
 
@@ -3062,7 +3085,7 @@ def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCall
     return targets, callables
 
 
-class _NamingRoleCollector(ast.NodeVisitor):
+class _NamingRoleCollector(_AstDispatchVisitor):
     def __init__(self) -> None:
         self.targets: list[NamingTarget] = []
         self.callables: list[NamingCallable] = []
@@ -3072,7 +3095,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.constant_target_ids: set[int] = set()
         self.generic_target_ids: set[int] = set()
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         self._add_target(node.name, node.lineno, "class")
         self.contexts.append("class")
         self.class_depth += 1
@@ -3081,13 +3104,13 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.class_depth -= 1
         self.contexts.pop()
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         self._visit_callable(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         self._visit_callable(node)
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         for argument in _arguments(node.args):
             self._add_target(argument.arg, argument.lineno, "parameter")
         for default in [*node.args.defaults, *node.args.kw_defaults]:
@@ -3099,7 +3122,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.receivers.pop()
         self.contexts.pop()
 
-    def visit_Assign(self, node: ast.Assign) -> None:
+    def _visit_assign(self, node: ast.Assign) -> None:
         if _is_type_parameter_factory(node.value):
             self.generic_target_ids.update(id(target) for name in node.targets for target in _target_names(name))
         if self._is_module_or_class_scope():
@@ -3111,7 +3134,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
             )
         self.generic_visit(node)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_ann_assign(self, node: ast.AnnAssign) -> None:
         if _is_final_annotation(node.annotation) or (
             self._is_module_or_class_scope()
             and any(re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None for target in _target_names(node.target))
@@ -3119,22 +3142,22 @@ class _NamingRoleCollector(ast.NodeVisitor):
             self.constant_target_ids.update(id(target) for target in _target_names(node.target))
         self.generic_visit(node)
 
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+    def _visit_except_handler(self, node: ast.ExceptHandler) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, "variable")
         self.generic_visit(node)
 
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+    def _visit_match_as(self, node: ast.MatchAs) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, "variable")
         self.generic_visit(node)
 
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+    def _visit_match_star(self, node: ast.MatchStar) -> None:
         if node.name is not None:
             self._add_target(node.name, node.lineno, "variable")
         self.generic_visit(node)
 
-    def visit_Name(self, node: ast.Name) -> None:
+    def _visit_name(self, node: ast.Name) -> None:
         if not isinstance(node.ctx, ast.Store):
             return
         if id(node) in self.generic_target_ids:
@@ -3142,7 +3165,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
         role = "constant" if id(node) in self.constant_target_ids else self._variable_role()
         self._add_target(node.id, node.lineno, role)
 
-    def visit_Attribute(self, node: ast.Attribute) -> None:
+    def _visit_attribute(self, node: ast.Attribute) -> None:
         receiver = self.receivers[-1] if self.receivers else None
         if (
             isinstance(node.ctx, ast.Store)
@@ -3447,33 +3470,33 @@ def _instance_receiver(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | 
     return None
 
 
-class _InstanceFieldCollector(ast.NodeVisitor):
+class _InstanceFieldCollector(_AstDispatchVisitor):
     def __init__(self, receiver: str) -> None:
         self.receiver = receiver
         self.names: list[str] = []
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+    def _visit_function_def(self, node: ast.FunctionDef) -> None:
         return
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+    def _visit_async_function_def(self, node: ast.AsyncFunctionDef) -> None:
         return
 
-    def visit_Lambda(self, node: ast.Lambda) -> None:
+    def _visit_lambda(self, node: ast.Lambda) -> None:
         return
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+    def _visit_class_def(self, node: ast.ClassDef) -> None:
         return
 
-    def visit_Assign(self, node: ast.Assign) -> None:
+    def _visit_assign(self, node: ast.Assign) -> None:
         for target in node.targets:
             self._add_target(target)
         self.generic_visit(node)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+    def _visit_ann_assign(self, node: ast.AnnAssign) -> None:
         self._add_target(node.target)
         self.generic_visit(node)
 
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+    def _visit_aug_assign(self, node: ast.AugAssign) -> None:
         self._add_target(node.target)
         self.generic_visit(node)
 
