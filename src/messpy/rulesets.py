@@ -299,20 +299,36 @@ def filter_rules(
 ) -> list[LoadedRule]:
     loaded = list(rules)
     names = {_identity(rule.name): rule.name for rule in loaded}
-    requested = [*only, *enable, *disable]
-    for name in requested:
-        if _identity(name) not in names:
-            raise RulesetError(f"Unknown loaded rule '{name}'.")
+    _validate_rule_names([*only, *enable, *disable], names)
 
     selected = {_identity(name) for name in [*only, *enable]}
     disabled = {_identity(name) for name in disable}
     return [
         rule
         for rule in loaded
-        if (not selected or _identity(rule.name) in selected)
-        and _identity(rule.name) not in disabled
-        and minimum_priority <= rule.priority <= maximum_priority
+        if _rule_is_selected(rule, selected, disabled, minimum_priority, maximum_priority)
     ]
+
+
+def _validate_rule_names(requested: Iterable[str], loaded_names: dict[str, str]) -> None:
+    for name in requested:
+        if _identity(name) not in loaded_names:
+            raise RulesetError(f"Unknown loaded rule '{name}'.")
+
+
+def _rule_is_selected(
+    rule: LoadedRule,
+    selected: set[str],
+    disabled: set[str],
+    minimum_priority: int,
+    maximum_priority: int,
+) -> bool:
+    identity = _identity(rule.name)
+    return (
+        (not selected or identity in selected)
+        and identity not in disabled
+        and minimum_priority <= rule.priority <= maximum_priority
+    )
 
 
 def _load_reference(
@@ -345,25 +361,39 @@ def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[LoadedRule]:
 
     loaded: dict[str, LoadedRule] = {}
     for element in root:
-        if _tag(element) == "exclude":
-            _exclude(loaded, _required_name(element, path))
-            continue
-        if _tag(element) != "rule":
-            continue
-        reference = element.get("ref")
-        if not reference:
-            raise RulesetError(f"Rule reference in '{path}' is missing ref.")
-        referenced = _load_reference(reference, path.parent, ancestry)
-        excluded = [_required_name(item, path) for item in element if _tag(item) == "exclude"]
-        referenced_names = {_identity(rule.name) for rule in referenced}
-        for name in excluded:
-            if _identity(name) not in referenced_names:
-                raise RulesetError(f"Unknown rule exclusion '{name}'.")
-        referenced = [
-            rule for rule in referenced if _identity(rule.name) not in {_identity(name) for name in excluded}
-        ]
-        _merge_reference(loaded, referenced, element, path)
+        _merge_ruleset_element(loaded, element, path, ancestry)
     return list(loaded.values())
+
+
+def _merge_ruleset_element(
+    loaded: dict[str, LoadedRule],
+    element: ElementTree.Element,
+    path: Path,
+    ancestry: tuple[Path, ...],
+) -> None:
+    if _tag(element) == "exclude":
+        _exclude(loaded, _required_name(element, path))
+        return
+    if _tag(element) != "rule":
+        return
+    reference = element.get("ref")
+    if not reference:
+        raise RulesetError(f"Rule reference in '{path}' is missing ref.")
+    referenced = _load_reference(reference, path.parent, ancestry)
+    referenced = _without_rule_exclusions(referenced, element, path)
+    _merge_reference(loaded, referenced, element, path)
+
+
+def _without_rule_exclusions(
+    referenced: list[LoadedRule], element: ElementTree.Element, path: Path
+) -> list[LoadedRule]:
+    excluded = [_required_name(item, path) for item in element if _tag(item) == "exclude"]
+    referenced_names = {_identity(rule.name) for rule in referenced}
+    for name in excluded:
+        if _identity(name) not in referenced_names:
+            raise RulesetError(f"Unknown rule exclusion '{name}'.")
+    excluded_names = {_identity(name) for name in excluded}
+    return [rule for rule in referenced if _identity(rule.name) not in excluded_names]
 
 
 def _overrides(rules: Iterable[LoadedRule], element: ElementTree.Element, path: Path) -> list[LoadedRule]:

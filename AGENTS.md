@@ -28,11 +28,11 @@ This repository uses the single-context domain-doc layout. See `docs/agents/doma
 ### Test / lint / build
 
 - Tests (same as CI, see `.github/workflows/ci.yml`): `.venv/bin/python -m unittest discover -s tests`. The fuzz-target test skips unless Atheris is installed — that skip is expected.
-- There is no separate linter. The quality gate is `messpy` analyzing itself against a frozen debt baseline: `.venv/bin/python scripts/verify_self_analysis.py .venv/bin/messpy ci/self-analysis-baseline.txt`.
-- GOTCHA: `ci/self-analysis-baseline.txt` is Python-version-sensitive. `UnusedLocalVariable` detection differs on Python 3.11, so the dev venv must stay on Python 3.12+ or the baseline check fails with spurious diffs. CI generates/verifies the baseline on newer Python.
+- There is no separate linter. The quality gate requires clean self-analysis: `.venv/bin/python scripts/verify_self_analysis.py .venv/bin/messpy`.
+- GOTCHA: `UnusedLocalVariable` detection differs on Python 3.11, so the dev venv must stay on Python 3.12+ to match the self-analysis result verified in CI.
 - Distribution build (from the CI `distribution` job): `python -m build` then `twine check dist/*`; not needed for normal dev.
 
 ### Optional: source-analysis fuzzing (`docs/fuzzing.md`)
 
 - Requires Python 3.11 + Atheris. The Atheris wheel builds from source and needs the system packages `libclang-rt-18-dev` and `g++` (already present in the snapshot), plus `CLANG_BIN=/usr/bin/clang-18` and `CFLAGS`/`CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13` so Clang can find the GCC libstdc++ toolchain.
-- GOTCHA: the documented `uv run --python 3.11 --extra fuzz ...` command recreates the project `.venv` as Python 3.11 (which then breaks the self-analysis baseline check above). Run fuzzing in an isolated environment instead, e.g. prefix with `UV_PROJECT_ENVIRONMENT=.venv-fuzz`, and keep `.venv` on 3.12.
+- GOTCHA: the documented `uv run --python 3.11 --extra fuzz ...` command recreates the project `.venv` as Python 3.11 (which then breaks the self-analysis check above). Run fuzzing in an isolated environment instead, e.g. prefix with `UV_PROJECT_ENVIRONMENT=.venv-fuzz`, and keep `.venv` on 3.12.
