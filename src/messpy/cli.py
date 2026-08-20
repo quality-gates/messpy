@@ -1542,7 +1542,7 @@ def _method_relationships(
 ) -> dict[str, _MethodRelationships]:
     methods: dict[str, _MethodRelationships] = {}
     for method in class_info.methods:
-        if _excluded_from_cohesion(method, accessor_fields, class_info.is_ast_visitor):
+        if _excluded_from_cohesion(method, accessor_fields):
             continue
         receiver = _instance_receiver(method)
         if receiver is None:
@@ -1557,14 +1557,13 @@ def _method_relationships(
 def _excluded_from_cohesion(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     accessor_fields: dict[str, str],
-    is_ast_visitor: bool,
 ) -> bool:
     return (
         method.name.startswith("__")
         or _has_property_decorator(method)
         or _has_decorator(method, "staticmethod")
         or _has_decorator(method, "classmethod")
-        or _is_contract_method(method, is_ast_visitor)
+        or _is_contract_method(method)
         or _has_decorator(method, "abstractmethod")
         or method.name in accessor_fields
     )
@@ -2221,15 +2220,7 @@ def _unused_local_variable_findings(
     if rule is None:
         return []
     protocol_method_ids = _protocol_method_ids(tree)
-    visitor_method_ids = _ast_visitor_method_ids(tree)
-    findings = _unused_function_local_findings(
-        path,
-        source,
-        tree,
-        rule,
-        protocol_method_ids,
-        visitor_method_ids,
-    )
+    findings = _unused_function_local_findings(path, source, tree, rule, protocol_method_ids)
     findings.extend(_unused_comprehension_local_findings(path, source, tree, rule))
     return findings
 
@@ -2240,15 +2231,10 @@ def _unused_function_local_findings(
     tree: ast.Module,
     rule: LoadedRule,
     protocol_method_ids: set[int],
-    visitor_method_ids: set[int],
 ) -> list[Finding]:
     findings: list[Finding] = []
     for node, table, used_names in _function_scopes(source, tree):
-        if _is_conservative_callable(
-            node,
-            id(node) in protocol_method_ids,
-            id(node) in visitor_method_ids,
-        ):
+        if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
         bindings = _FunctionLocalBindings()
         if isinstance(node, ast.Lambda):
@@ -2338,21 +2324,9 @@ def _unused_formal_parameter_findings(
     protocol_method_ids = _protocol_method_ids(tree)
     visitor_method_ids = _ast_visitor_method_ids(tree)
     for node, table, used_names in _function_scopes(source, tree):
-        if _is_conservative_callable(
-            node,
-            id(node) in protocol_method_ids,
-            id(node) in visitor_method_ids,
-        ):
+        if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
-        for parameter in _arguments(node.args):
-            symbol = table.lookup(parameter.arg)
-            if (
-                parameter.arg in {"self", "cls"}
-                or parameter.arg.startswith("_")
-                or parameter.arg in used_names
-                or not symbol.is_parameter()
-            ):
-                continue
+        for parameter in _unused_parameters(node, table, used_names, visitor_method_ids):
             findings.append(
                 Finding(
                     path,
@@ -2366,16 +2340,44 @@ def _unused_formal_parameter_findings(
     return findings
 
 
+def _unused_parameters(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    table: symtable.SymbolTable,
+    used_names: frozenset[str],
+    visitor_method_ids: set[int],
+) -> list[ast.arg]:
+    parameters = _arguments(node.args)
+    visitor_parameter = _visitor_parameter(node, parameters, visitor_method_ids)
+    return [
+        parameter
+        for parameter in parameters
+        if parameter.arg not in {"self", "cls"}
+        and not parameter.arg.startswith("_")
+        and parameter is not visitor_parameter
+        and parameter.arg not in used_names
+        and table.lookup(parameter.arg).is_parameter()
+    ]
+
+
 def _is_conservative_callable(
     node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
     is_protocol_method: bool,
-    is_ast_visitor_method: bool,
 ) -> bool:
     return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
         is_protocol_method
         or bool(node.decorator_list)
-        or _is_contract_method(node, is_ast_visitor_method)
+        or _is_contract_method(node)
     )
+
+
+def _visitor_parameter(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    parameters: list[ast.arg],
+    visitor_method_ids: set[int],
+) -> ast.arg | None:
+    if id(node) not in visitor_method_ids:
+        return None
+    return next((parameter for parameter in parameters if parameter.arg not in {"self", "cls"}), None)
 
 
 def _protocol_method_ids(tree: ast.Module) -> set[int]:
@@ -2424,13 +2426,30 @@ def _loaded_non_target_names(
     own_targets = {
         target.id for generator in node.generators for target in _target_names(generator.target)
     }
-    collector = _ExecutableNodeCollector()
-    collector.visit(node)
-    return {
-        name.id
-        for name in collector.nodes
-        if isinstance(name, ast.Name) and isinstance(name.ctx, ast.Load) and name.id not in own_targets
-    }
+    pending = list(ast.iter_child_nodes(node))
+    loaded_names: set[str] = set()
+    while pending:
+        descendant = pending.pop()
+        if isinstance(descendant, ast.Name) and isinstance(descendant.ctx, ast.Load):
+            if descendant.id not in own_targets:
+                loaded_names.add(descendant.id)
+            continue
+        if isinstance(
+            descendant,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.Lambda,
+                ast.ClassDef,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.GeneratorExp,
+            ),
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(descendant))
+    return loaded_names
 
 
 def _comprehension_scopes(
@@ -2623,7 +2642,7 @@ def _unused_private_method_findings(
     findings: list[Finding] = []
     for class_info in _classes(tree):
         for method in class_info.methods:
-            if not _is_unused_private_method(method, usage, class_info.is_ast_visitor):
+            if not _is_unused_private_method(method, usage):
                 continue
             findings.append(
                 Finding(
@@ -2641,14 +2660,13 @@ def _unused_private_method_findings(
 def _is_unused_private_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     usage: PrivateMemberUsage,
-    is_ast_visitor: bool,
 ) -> bool:
     return (
         _is_private_name(method.name)
         and method.name not in usage.accessed_names
         and method.name not in usage.exported_names
         and not method.decorator_list
-        and not _is_contract_method(method, is_ast_visitor)
+        and not _is_contract_method(method)
     )
 
 
@@ -3435,9 +3453,21 @@ class _CallableCollector:
 def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
     collector = _NamingRoleCollector(_ast_visitor_method_ids(tree))
     collector.visit(tree)
+    for target in _named_binding_targets(tree):
+        collector._add_target(target.name, target.line, target.role)
     targets = sorted(collector.targets, key=lambda target: (target.line, target.role, target.name))
     callables = sorted(collector.callables, key=lambda callable_info: callable_info.node.lineno)
     return targets, callables
+
+
+def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
+    targets: list[NamingTarget] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler) and node.name is not None:
+            targets.append(NamingTarget(node.name, node.lineno, "variable"))
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
+            targets.append(NamingTarget(node.name, node.lineno, "variable"))
+    return targets
 
 
 class _NamingRoleCollector(ast.NodeVisitor):
@@ -3516,21 +3546,6 @@ class _NamingRoleCollector(ast.NodeVisitor):
             and node.value.id == receiver
         ):
             self._add_target(node.attr, node.lineno, "property")
-        self.generic_visit(node)
-
-    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
-        self.generic_visit(node)
-
-    def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        if node.name is not None:
-            self._add_target(node.name, node.lineno, "variable")
         self.generic_visit(node)
 
     def _add_target(
@@ -3698,7 +3713,7 @@ def _excessive_public_count_findings(
     count = sum(_is_public(name) for name in class_info.fields) + sum(
         _is_public(method.name)
         for method in class_info.methods
-        if not _is_contract_method(method, class_info.is_ast_visitor)
+        if not _is_contract_method(method)
     )
     if count < threshold:
         return []
@@ -3746,7 +3761,7 @@ def _too_many_methods_findings(
     methods = [
         method
         for method in class_info.methods
-        if not _is_contract_method(method, class_info.is_ast_visitor)
+        if not _is_contract_method(method)
         and not ignore.match(method.name)
         and (not public_only or _is_public(method.name))
     ]
@@ -3780,7 +3795,7 @@ def _excessive_class_complexity_findings(
     complexity = sum(
         _cyclomatic_complexity(method)
         for method in class_info.methods
-        if not _is_contract_method(method, class_info.is_ast_visitor)
+        if not _is_contract_method(method)
     )
     if complexity < threshold:
         return []
@@ -3813,17 +3828,30 @@ def _ast_visitor_class_names(tree: ast.Module) -> set[str]:
         if isinstance(node, ast.ClassDef)
     }
     visitor_names: set[str] = set()
+    aliases = _module_import_aliases(tree)
     changed = True
     while changed:
         changed = False
         for name, node in class_nodes.items():
-            base_names = {_dotted_name(base) for base in node.bases}
+            base_names = {_resolved_import_name(base, aliases) for base in node.bases}
             if name not in visitor_names and (
                 "ast.NodeVisitor" in base_names or bool(base_names & visitor_names)
             ):
                 visitor_names.add(name)
                 changed = True
     return visitor_names
+
+
+def _resolved_import_name(
+    node: ast.expr,
+    aliases: dict[str, tuple[str, bool]],
+) -> str:
+    name = _dotted_name(node)
+    root, *tail = name.split(".")
+    if root not in aliases:
+        return name
+    imported, _is_symbol = aliases[root]
+    return ".".join([imported, *tail])
 
 
 def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
@@ -3948,13 +3976,8 @@ def _is_protocol(node: ast.ClassDef, protocol_names: set[str] | None = None) -> 
 
 def _is_contract_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
-    is_ast_visitor: bool = False,
 ) -> bool:
-    return (
-        _has_decorator(method, "overload")
-        or _is_stub_body(method.body)
-        or (is_ast_visitor and _is_ast_visitor_handler(method.name))
-    )
+    return _has_decorator(method, "overload") or _is_stub_body(method.body)
 
 
 def _is_ast_visitor_handler(name: str) -> bool:
