@@ -309,6 +309,15 @@ def _messpy_version() -> str:
 
 
 @dataclass
+class _RuleSelectionState:
+    only: list[str] = dataclass_field(default_factory=list)
+    enable: list[str] = dataclass_field(default_factory=list)
+    disable: list[str] = dataclass_field(default_factory=list)
+    minimum_priority: int = 1
+    maximum_priority: int = 5
+
+
+@dataclass
 class _ArgumentParseState:
     positionals: list[str] = dataclass_field(default_factory=list)
     suffixes: set[str] = dataclass_field(default_factory=lambda: {".py", ".pyi"})
@@ -321,11 +330,7 @@ class _ArgumentParseState:
     strict: bool = False
     verbose: bool = False
     color: str = "auto"
-    only: list[str] = dataclass_field(default_factory=list)
-    enable: list[str] = dataclass_field(default_factory=list)
-    disable: list[str] = dataclass_field(default_factory=list)
-    minimum_priority: int = 1
-    maximum_priority: int = 5
+    rules: _RuleSelectionState = dataclass_field(default_factory=_RuleSelectionState)
     show_help: bool = False
     show_version: bool = False
 
@@ -371,11 +376,15 @@ def _apply_value_option(
             raise CliError(f"Missing value for option: {option_name}", state.ignore_errors_on_exit)
         option_value = arguments[index + 1]
         index += 1
+    _dispatch_value_option(state, option_name, option_value)
+    return index + 1
+
+
+def _dispatch_value_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
     if option_name in {"--report-file", "--reportfile"}:
         state.report_file = Path(option_value)
     elif option_name == "--suffixes":
-        normalized_suffixes = _normalized_suffixes(option_value)
-        state.suffixes = normalized_suffixes if not state.suffixes_provided else state.suffixes | normalized_suffixes
+        state.suffixes = _merged_suffixes(state, option_value)
         state.suffixes_provided = True
     elif option_name == "--exclude":
         state.exclusions.extend(_split_nonempty(option_value))
@@ -384,20 +393,26 @@ def _apply_value_option(
     elif option_name in {"--only", "--enable", "--disable"}:
         _apply_rule_selection_option(state, option_name, option_value)
     elif option_name in {"--minimum-priority", "--minimumpriority"}:
-        state.minimum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+        state.rules.minimum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
     else:
-        state.maximum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
-    return index + 1
+        state.rules.maximum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+
+
+def _merged_suffixes(state: _ArgumentParseState, option_value: str) -> set[str]:
+    normalized_suffixes = _normalized_suffixes(option_value)
+    if not state.suffixes_provided:
+        return normalized_suffixes
+    return state.suffixes | normalized_suffixes
 
 
 def _apply_rule_selection_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
     values = _split_nonempty(option_value)
     if option_name == "--only":
-        state.only.extend(values)
+        state.rules.only.extend(values)
     elif option_name == "--enable":
-        state.enable.extend(values)
+        state.rules.enable.extend(values)
     else:
-        state.disable.extend(values)
+        state.rules.disable.extend(values)
 
 
 def _apply_boolean_option(state: _ArgumentParseState, option_name: str, option_value: str | None) -> None:
@@ -447,7 +462,7 @@ def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
     rulesets = _split_nonempty(state.positionals[2])
     if not rulesets:
         raise CliError("At least one ruleset is required", state.ignore_errors_on_exit)
-    if state.minimum_priority > state.maximum_priority:
+    if state.rules.minimum_priority > state.rules.maximum_priority:
         raise CliError("Minimum priority must not exceed maximum priority.", state.ignore_errors_on_exit)
     return ParsedArguments(
         paths=paths,
@@ -469,11 +484,11 @@ def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
 def _rule_selection(state: _ArgumentParseState, rulesets: list[str]) -> RuleSelection:
     return RuleSelection(
         rulesets=rulesets,
-        only=state.only,
-        enable=state.enable,
-        disable=state.disable,
-        minimum_priority=state.minimum_priority,
-        maximum_priority=state.maximum_priority,
+        only=state.rules.only,
+        enable=state.rules.enable,
+        disable=state.rules.disable,
+        minimum_priority=state.rules.minimum_priority,
+        maximum_priority=state.rules.maximum_priority,
     )
 
 
