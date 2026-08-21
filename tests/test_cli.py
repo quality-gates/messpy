@@ -584,6 +584,33 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_duplicate_function_arguments_reports_processing_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            duplicate_args = project / "duplicate_args.py"
+            duplicate_args.write_text("def function(x, x):\n    pass\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(duplicate_args), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(f"{duplicate_args.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertIn("duplicate argument 'x' in function definition", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        status = run(["invalid\x00path.py", "text", "codesize"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertTrue(stderr.getvalue().startswith("Error: "))
+        self.assertIn("embedded null", stderr.getvalue())
+
+
+
     def test_exit_ignore_flags_change_status_without_changing_the_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
