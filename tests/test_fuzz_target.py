@@ -64,6 +64,23 @@ class SourceAnalysisReplayAcceptanceTests(unittest.TestCase):
             result.stdout,
         )
 
+    def test_stored_regression_inputs_replay_without_atheris(self) -> None:
+        regressions_dir = ROOT / "fuzz" / "regressions" / "source-analysis"
+        environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+
+        result = subprocess.run(
+            [sys.executable, "fuzz/replay_source_file.py", str(regressions_dir)],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("duplicate_function_arguments.py", result.stdout)
+
+
 
 @unittest.skipUnless(importlib.util.find_spec("atheris"), "Atheris is not installed")
 class SourceAnalysisFuzzTargetAcceptanceTests(unittest.TestCase):

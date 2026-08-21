@@ -245,7 +245,7 @@ def run(arguments: Sequence[str], stdout: TextIO, stderr: TextIO) -> int:
         ):
             return 0
         return 1
-    except OSError as error:
+    except (OSError, ValueError) as error:
         stderr.write(f"Error: {error}\n")
         return 0 if parsed_arguments and parsed_arguments.exit_policy.ignore_errors_on_exit else 1
 
@@ -559,6 +559,10 @@ def _analyze(
             line = error.lineno or 1
             processing_errors.append(
                 ProcessingError(source_file, line, f"Could not analyze {source_file}: {error.msg}")
+            )
+        except (tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
+            processing_errors.append(
+                ProcessingError(source_file, 1, f"Could not process {source_file}: {error}")
             )
     return findings, processing_errors
 
