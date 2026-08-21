@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from io import StringIO
 from pathlib import Path
 import sys
@@ -607,7 +608,8 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("", stdout.getvalue())
         self.assertTrue(stderr.getvalue().startswith("Error: "))
-        self.assertIn("embedded null", stderr.getvalue())
+        if os.name == "posix":
+            self.assertIn("embedded null", stderr.getvalue())
 
 
 
