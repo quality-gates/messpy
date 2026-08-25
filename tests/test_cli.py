@@ -354,6 +354,56 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("ExcessiveMethodLength", run_record["results"][0]["ruleId"])
         self.assertFalse(run_record["invocations"][0]["executionSuccessful"])
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows rejects control characters in file names, so this file cannot exist there.",
+    )
+    def test_xml_and_checkstyle_reports_stay_well_formed_for_control_characters_in_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            source = project / ("bad" + chr(1) + "name.py")
+            source.write_text("def f():\n    return 1\n", encoding="utf-8")
+
+            for report_format in ["xml", "checkstyle"]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(project), report_format, "python"], stdout, stderr)
+
+                self.assertEqual(2, status, report_format)
+                self.assertEqual("", stderr.getvalue(), report_format)
+                ElementTree.fromstring(stdout.getvalue())  # raises ParseError if not well-formed
+                self.assertIn("\\x01", stdout.getvalue(), report_format)
+                self.assertNotIn("\x01", stdout.getvalue(), report_format)
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows rejects control characters in file names, so this file cannot exist there.",
+    )
+    def test_xml_and_checkstyle_reports_stay_well_formed_for_control_characters_in_error_messages(
+        self,
+    ) -> None:
+        # A processing error carries the offending path into its message (see
+        # "Could not process {source_file}: ..." in _analyze), so a control
+        # character in the path also reaches the message field, not only the
+        # path field. Pair it with invalid UTF-8 bytes so the file raises a
+        # ProcessingError instead of parsing cleanly.
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            source = project / ("bad" + chr(1) + "name.py")
+            source.write_bytes(b"\xff\xfe not valid utf-8")
+
+            for report_format in ["xml", "checkstyle"]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(project), report_format, "python"], stdout, stderr)
+
+                self.assertEqual(1, status, report_format)
+                self.assertEqual("", stderr.getvalue(), report_format)
+                report = ElementTree.fromstring(stdout.getvalue())  # raises ParseError if not well-formed
+                message = report.find(".//error").get("message")
+                self.assertIn("\\x01", message, report_format)
+                self.assertNotIn("\x01", stdout.getvalue(), report_format)
+
     def test_text_color_controls_do_not_color_redirected_output_by_default(self) -> None:
         source = str((FIXTURES / "long_function.py").resolve())
         reports: dict[str, str] = {}

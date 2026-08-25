@@ -650,8 +650,21 @@ def _json_report(findings: Sequence[Finding], processing_errors: Sequence[Proces
     ) + "\n"
 
 
+XML_ILLEGAL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _xml_safe_text(value: str) -> str:
+    # XML does not allow most control characters, even when escaped.
+    # Replace each one with a printable "\xHH" form.
+    return XML_ILLEGAL_CHARACTERS.sub(lambda match: f"\\x{ord(match.group()):02x}", value)
+
+
+def _xml_attribute_value(value: str | int | bool) -> str:
+    return html_escape(_xml_safe_text(str(value)), quote=True)
+
+
 def _xml_attributes(values: dict[str, str | int | bool]) -> str:
-    return "".join(f' {name}="{html_escape(str(value), quote=True)}"' for name, value in values.items())
+    return "".join(f' {name}="{_xml_attribute_value(value)}"' for name, value in values.items())
 
 
 def _xml_report(findings: Sequence[Finding], processing_errors: Sequence[ProcessingError]) -> str:
@@ -793,16 +806,16 @@ def _checkstyle_report(findings: Sequence[Finding], processing_errors: Sequence[
         by_path[str(record["path"])].append(record)
     lines = [f'<checkstyle tool="messpy" version="{_messpy_version()}">']
     for path in sorted(by_path):
-        lines.append(f'  <file name="{html_escape(path, quote=True)}">')
+        lines.append(f'  <file name="{_xml_attribute_value(path)}">')
         for record in by_path[path]:
             severity = "error" if int(record["priority"]) <= 2 else "warning"
             source = f"messpy.{record['ruleName']}"
             lines.append(
                 "    <error"
                 f' line="{record["line"]}" column="1" severity="{severity}"'
-                f' message="{html_escape(str(record["message"]), quote=True)}"'
-                f' source="{html_escape(source, quote=True)}"'
-                f' context="{html_escape(str(record["context"]), quote=True)}"'
+                f' message="{_xml_attribute_value(record["message"])}"'
+                f' source="{_xml_attribute_value(source)}"'
+                f' context="{_xml_attribute_value(record["context"])}"'
                 f' priority="{record["priority"]}" suppressed="{str(record["suppressed"]).lower()}" />'
             )
         lines.append("  </file>")
