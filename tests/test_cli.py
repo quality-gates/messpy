@@ -354,6 +354,10 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("ExcessiveMethodLength", run_record["results"][0]["ruleId"])
         self.assertFalse(run_record["invocations"][0]["executionSuccessful"])
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows rejects control characters in file names, so this file cannot exist there.",
+    )
     def test_xml_and_checkstyle_reports_stay_well_formed_for_control_characters_in_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
@@ -371,6 +375,10 @@ class CommandAcceptanceTests(unittest.TestCase):
                 self.assertIn("\\x01", stdout.getvalue(), report_format)
                 self.assertNotIn("\x01", stdout.getvalue(), report_format)
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows rejects control characters in file names, so this file cannot exist there.",
+    )
     def test_xml_and_checkstyle_reports_stay_well_formed_for_control_characters_in_error_messages(
         self,
     ) -> None:
