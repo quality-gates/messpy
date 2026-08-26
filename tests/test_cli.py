@@ -2409,6 +2409,65 @@ class CommandAcceptanceTests(unittest.TestCase):
         report = stdout.getvalue()
         self.assertIn("UnusedFormalParameter [priority 3] Avoid unused parameters such as 'unused'.", report)
 
+    def test_unusedcode_reports_each_same_line_lambda_parameter(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "same_line_lambdas.py"
+            source.write_text("lambda a: 0, lambda b: 1\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("Avoid unused parameters such as 'a'.", report)
+        self.assertIn("Avoid unused parameters such as 'b'.", report)
+
+    def test_unusedcode_reports_nested_same_line_lambda_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_lambdas.py"
+            source.write_text("lambda a: (lambda b: 1)\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("Avoid unused parameters such as 'a'.", report)
+        self.assertIn("Avoid unused parameters such as 'b'.", report)
+
+    def test_unusedcode_keeps_map_filter_lambdas_from_raising(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "map_filter.py"
+            source.write_text(
+                "xs = map(lambda x: x, filter(lambda y: y, [1]))\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_python_reports_same_line_lambda_walrus_locals(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "walrus_lambdas.py"
+            source.write_text("lambda a: (b := 1), lambda c: 2\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "python"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn("Avoid unused local variables such as 'b'.", stdout.getvalue())
+
     def test_cleancode_finds_each_honest_python_hazard_through_the_command_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "hazards.py"

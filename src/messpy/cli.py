@@ -2411,17 +2411,19 @@ def _protocol_method_ids(tree: ast.Module) -> set[int]:
 def _function_scopes(
     source: str, tree: ast.Module
 ) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]]:
-    tables: dict[tuple[str, int], symtable.SymbolTable] = {}
+    tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]] = defaultdict(list)
     _collect_function_tables(symtable.symtable(source, "<source>", "exec"), tables)
     scopes = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
-        table = tables.get((name, node.lineno))
-        if table is not None:
-            used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
-            scopes.append((node, table, used_names))
+        candidates = tables[(name, node.lineno)]
+        if not candidates:
+            continue
+        table = candidates.pop(0)
+        used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
+        scopes.append((node, table, used_names))
     return scopes
 
 
@@ -2596,10 +2598,10 @@ def _collect_comprehension_tables(
 
 
 def _collect_function_tables(
-    table: symtable.SymbolTable, tables: dict[tuple[str, int], symtable.SymbolTable]
+    table: symtable.SymbolTable, tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]]
 ) -> None:
     if table.get_type() == "function":
-        tables[(table.get_name(), table.get_lineno())] = table
+        tables[(table.get_name(), table.get_lineno())].append(table)
     for child in table.get_children():
         _collect_function_tables(child, tables)
 
