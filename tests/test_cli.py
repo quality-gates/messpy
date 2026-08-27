@@ -521,6 +521,31 @@ class CommandAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual("", strict_stderr.getvalue())
 
+    def test_disable_next_line_skips_comments_and_blank_lines_when_many_directives_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "many_suppressions.py"
+            source.write_text(
+                "# messpy-disable-next-line ShortVariable\n"
+                "# ordinary comment\n"
+                "\n"
+                "ab = 1\n"
+                "# messpy-disable-next-line ShortVariable\n"
+                "cd = 2\n"
+                "ef = 3\n",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "naming"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertNotIn("Avoid variables with short names like ab.", report)
+        self.assertNotIn("Avoid variables with short names like cd.", report)
+        self.assertIn("Avoid variables with short names like ef.", report)
+
     def test_regions_nest_and_malformed_or_other_tool_comments_do_not_hide_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
@@ -1624,6 +1649,29 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("ShortVariable [priority 3] Avoid variables with short names like four. Configured minimum length is 5.", report)
         self.assertIn("LongVariable [priority 3] Avoid excessively long variable names like longer. Configured maximum length is 5.", report)
         self.assertIn("ShortMethodName [priority 3] Avoid using short method names like four(). Configured minimum length is 5.", report)
+
+    def test_naming_rules_keep_repeated_store_targets_on_distinct_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "duplicate_targets.py"
+            source.write_text(
+                "class Holder:\n"
+                "    def assign(self):\n"
+                "        ab = 1\n"
+                "        ab = 2\n"
+                "        self.cd = ab\n"
+                "        self.cd = 3\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "naming", "--only", "ShortVariable"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertEqual(2, report.count("Avoid variables with short names like ab."))
+        self.assertEqual(2, report.count("Avoid variables with short names like cd."))
 
     def test_naming_rules_keep_python_idioms_and_default_boundaries_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
