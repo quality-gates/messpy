@@ -937,24 +937,29 @@ def _exit_status(
 
 
 def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    classes = _classes(tree)
     return [
         *_cyclomatic_complexity_findings(path, tree, rules),
         *_npath_complexity_findings(path, tree, rules),
         *_excessive_method_length_findings(path, tree, rules),
         *_excessive_parameter_list_findings(path, tree, rules),
-        *_class_findings(path, source, tree, rules),
+        *_class_findings(path, source, classes, rules),
         *_naming_findings(path, tree, rules),
         *_unused_local_variable_findings(path, source, tree, rules),
         *_unused_formal_parameter_findings(path, source, tree, rules),
-        *_unused_private_field_findings(path, tree, rules),
-        *_unused_private_method_findings(path, tree, rules),
+        *_unused_private_field_findings(path, tree, classes, rules),
+        *_unused_private_method_findings(path, tree, classes, rules),
         *_clean_code_findings(path, source, tree, rules),
-        *_design_findings(path, source, tree, rules),
+        *_design_findings(path, source, tree, classes, rules),
     ]
 
 
 def _design_findings(
-    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
 ) -> list[Finding]:
     parents = {
         id(child): parent
@@ -971,9 +976,9 @@ def _design_findings(
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
         *_development_fragment_findings(path, source, tree, rules, parents, contexts, bindings),
         *_empty_catch_findings(path, tree, rules, parents, contexts),
-        *_coupling_findings(path, tree, rules),
+        *_coupling_findings(path, tree, classes, rules),
         *_global_variable_findings(path, tree, rules, parents, bindings),
-        *_cohesion_findings(path, tree, rules),
+        *_cohesion_findings(path, classes, rules),
     ]
 
 
@@ -1200,7 +1205,12 @@ def _is_empty_handler(handler: ast.ExceptHandler) -> bool:
     )
 
 
-def _coupling_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _coupling_findings(
+    path: Path,
+    tree: ast.Module,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
+) -> list[Finding]:
     rule = _rule(rules, COUPLING_BETWEEN_OBJECTS_RULE_NAME)
     if rule is None:
         return []
@@ -1212,7 +1222,7 @@ def _coupling_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     findings: list[Finding] = []
-    for class_info in _classes(tree):
+    for class_info in classes:
         count = len(_class_dependencies(class_info, aliases, module_names))
         if count < maximum:
             continue
@@ -1523,13 +1533,15 @@ def _root_name(node: ast.AST) -> str:
     return current.id if isinstance(current, ast.Name) else ""
 
 
-def _cohesion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _cohesion_findings(
+    path: Path, classes: Sequence[ClassInfo], rules: Sequence[LoadedRule]
+) -> list[Finding]:
     rule = _rule(rules, LACK_OF_COHESION_RULE_NAME)
     if rule is None:
         return []
     maximum = _integer_property(rule, "maximum")
     findings: list[Finding] = []
-    for class_info in _classes(tree):
+    for class_info in classes:
         lcom = _lcom4(class_info)
         if lcom <= maximum:
             continue
@@ -2619,7 +2631,10 @@ def _scope_usage(table: symtable.SymbolTable) -> ScopeUsage:
 
 
 def _unused_private_field_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    tree: ast.Module,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_PRIVATE_FIELD_RULE_NAME)
     if rule is None:
@@ -2629,7 +2644,7 @@ def _unused_private_field_findings(
         return []
     findings: list[Finding] = []
     dataclass_names = _dataclass_decorator_names(tree)
-    for class_info in _classes(tree):
+    for class_info in classes:
         if _is_dataclass(class_info.node, dataclass_names):
             continue
         fields = _PrivateFieldCollector(class_info.node).collect()
@@ -2650,7 +2665,10 @@ def _unused_private_field_findings(
 
 
 def _unused_private_method_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    tree: ast.Module,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_PRIVATE_METHOD_RULE_NAME)
     if rule is None:
@@ -2659,7 +2677,7 @@ def _unused_private_method_findings(
     if usage.requires_conservative_handling:
         return []
     findings: list[Finding] = []
-    for class_info in _classes(tree):
+    for class_info in classes:
         for method in class_info.methods:
             if not _is_unused_private_method(method, usage):
                 continue
@@ -3684,10 +3702,13 @@ def _excessive_method_length_findings(
 
 
 def _class_findings(
-    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    source: str,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
 ) -> list[Finding]:
     findings: list[Finding] = []
-    for class_info in _classes(tree):
+    for class_info in classes:
         findings.extend(_excessive_class_length_findings(path, source, class_info, rules))
         findings.extend(_excessive_public_count_findings(path, class_info, rules))
         findings.extend(_too_many_fields_findings(path, class_info, rules))
