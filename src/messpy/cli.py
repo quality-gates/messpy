@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from bisect import bisect_right
 import builtins
 from collections import defaultdict
 from collections.abc import Sequence, Set as AbstractSet
@@ -121,6 +122,74 @@ DIRECTIVE_PATTERN = re.compile(
     r"^messpy-(disable-next-line|disable|enable)(?:\s+(.+?))?$", re.IGNORECASE
 )
 RULE_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CODE_SIZE_RULE_NAMES = frozenset(
+    {
+        CYCLOMATIC_COMPLEXITY_RULE_NAME,
+        NPATH_COMPLEXITY_RULE_NAME,
+        METHOD_LENGTH_RULE_NAME,
+        EXCESSIVE_PARAMETER_LIST_RULE_NAME,
+        EXCESSIVE_CLASS_LENGTH_RULE_NAME,
+        EXCESSIVE_PUBLIC_COUNT_RULE_NAME,
+        TOO_MANY_FIELDS_RULE_NAME,
+        TOO_MANY_METHODS_RULE_NAME,
+        TOO_MANY_PUBLIC_METHODS_RULE_NAME,
+        EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME,
+    }
+)
+CLASS_CODE_SIZE_RULE_NAMES = frozenset(
+    {
+        EXCESSIVE_CLASS_LENGTH_RULE_NAME,
+        EXCESSIVE_PUBLIC_COUNT_RULE_NAME,
+        TOO_MANY_FIELDS_RULE_NAME,
+        TOO_MANY_METHODS_RULE_NAME,
+        TOO_MANY_PUBLIC_METHODS_RULE_NAME,
+        EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME,
+    }
+)
+NAMING_RULE_NAMES = frozenset(
+    {
+        SHORT_CLASS_NAME_RULE_NAME,
+        LONG_CLASS_NAME_RULE_NAME,
+        SHORT_VARIABLE_RULE_NAME,
+        LONG_VARIABLE_RULE_NAME,
+        SHORT_METHOD_NAME_RULE_NAME,
+        CONSTANT_NAMING_CONVENTIONS_RULE_NAME,
+        BOOLEAN_GET_METHOD_NAME_RULE_NAME,
+        CAMEL_CASE_CLASS_RULE_NAME,
+        CAMEL_CASE_METHOD_RULE_NAME,
+        CAMEL_CASE_PROPERTY_RULE_NAME,
+        CAMEL_CASE_PARAMETER_RULE_NAME,
+        CAMEL_CASE_VARIABLE_RULE_NAME,
+    }
+)
+UNUSED_CODE_RULE_NAMES = frozenset(
+    {
+        UNUSED_LOCAL_VARIABLE_RULE_NAME,
+        UNUSED_FORMAL_PARAMETER_RULE_NAME,
+        UNUSED_PRIVATE_FIELD_RULE_NAME,
+        UNUSED_PRIVATE_METHOD_RULE_NAME,
+    }
+)
+CLEAN_CODE_RULE_NAMES = frozenset(
+    {
+        BOOLEAN_ARGUMENT_FLAG_RULE_NAME,
+        ELSE_EXPRESSION_RULE_NAME,
+        STATIC_ACCESS_RULE_NAME,
+        IF_STATEMENT_ASSIGNMENT_RULE_NAME,
+        DUPLICATED_ARRAY_KEY_RULE_NAME,
+    }
+)
+DESIGN_RULE_NAMES = frozenset(
+    {
+        EXIT_EXPRESSION_RULE_NAME,
+        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        EMPTY_CATCH_BLOCK_RULE_NAME,
+        COUPLING_BETWEEN_OBJECTS_RULE_NAME,
+        GLOBAL_VARIABLE_RULE_NAME,
+        LACK_OF_COHESION_RULE_NAME,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -937,21 +1006,155 @@ def _exit_status(
 
 
 def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
-    classes = _classes(tree)
+    rule_names = frozenset(rule.name for rule in rules)
+    classes = _selected_classes(tree, rule_names)
+    callables = _selected_callables(tree, rule_names)
+    function_scopes = _selected_function_scopes(source, tree, rule_names)
+    protocol_method_ids = _selected_protocol_method_ids(tree, rule_names)
+    comprehension_scopes = _selected_comprehension_scopes(source, tree, rule_names)
+    private_member_usage = _selected_private_member_usage(tree, rule_names)
+    clean_code_callables = _selected_clean_code_callables(tree, rule_names)
     return [
-        *_cyclomatic_complexity_findings(path, tree, rules),
-        *_npath_complexity_findings(path, tree, rules),
-        *_excessive_method_length_findings(path, tree, rules),
-        *_excessive_parameter_list_findings(path, tree, rules),
-        *_class_findings(path, source, classes, rules),
-        *_naming_findings(path, tree, rules),
-        *_unused_local_variable_findings(path, source, tree, rules),
-        *_unused_formal_parameter_findings(path, source, tree, rules),
-        *_unused_private_field_findings(path, tree, classes, rules),
-        *_unused_private_method_findings(path, tree, classes, rules),
-        *_clean_code_findings(path, source, tree, rules),
-        *_design_findings(path, source, tree, classes, rules),
+        *_cyclomatic_complexity_findings(path, callables, rules),
+        *_npath_complexity_findings(path, callables, rules),
+        *_excessive_method_length_findings(path, callables, rules),
+        *_excessive_parameter_list_findings(path, callables, rules),
+        *_selected_class_findings(path, source, classes, rules, rule_names),
+        *_selected_naming_findings(path, tree, rules, rule_names),
+        *_unused_local_variable_findings(path, rules, function_scopes, comprehension_scopes, protocol_method_ids),
+        *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids),
+        *_unused_private_field_findings(path, tree, classes, rules, private_member_usage),
+        *_unused_private_method_findings(path, classes, rules, private_member_usage),
+        *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
+        *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables),
     ]
+
+
+def _selected_classes(tree: ast.Module, rule_names: AbstractSet[str]) -> list[ClassInfo]:
+    class_rules = CLASS_CODE_SIZE_RULE_NAMES | {
+        UNUSED_PRIVATE_FIELD_RULE_NAME,
+        UNUSED_PRIVATE_METHOD_RULE_NAME,
+        COUPLING_BETWEEN_OBJECTS_RULE_NAME,
+        LACK_OF_COHESION_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, class_rules):
+        return []
+    return _classes(tree)
+
+
+def _selected_callables(tree: ast.Module, rule_names: AbstractSet[str]) -> list[CallableInfo]:
+    callable_rules = {
+        CYCLOMATIC_COMPLEXITY_RULE_NAME,
+        NPATH_COMPLEXITY_RULE_NAME,
+        METHOD_LENGTH_RULE_NAME,
+        EXCESSIVE_PARAMETER_LIST_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, callable_rules):
+        return []
+    return _callables(tree)
+
+
+def _selected_function_scopes(
+    source: str, tree: ast.Module, rule_names: AbstractSet[str]
+) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]]:
+    if not _has_any_rule(rule_names, {UNUSED_LOCAL_VARIABLE_RULE_NAME, UNUSED_FORMAL_PARAMETER_RULE_NAME}):
+        return []
+    return _function_scopes(source, tree)
+
+
+def _selected_protocol_method_ids(tree: ast.Module, rule_names: AbstractSet[str]) -> set[int]:
+    if not _has_any_rule(rule_names, {UNUSED_LOCAL_VARIABLE_RULE_NAME, UNUSED_FORMAL_PARAMETER_RULE_NAME}):
+        return set()
+    return _protocol_method_ids(tree)
+
+
+def _selected_comprehension_scopes(
+    source: str, tree: ast.Module, rule_names: AbstractSet[str]
+) -> list[
+    tuple[
+        ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        symtable.SymbolTable | None,
+    ]
+]:
+    if UNUSED_LOCAL_VARIABLE_RULE_NAME not in rule_names:
+        return []
+    return _comprehension_scopes(source, tree)
+
+
+def _selected_private_member_usage(
+    tree: ast.Module, rule_names: AbstractSet[str]
+) -> PrivateMemberUsage | None:
+    private_member_rules = {UNUSED_PRIVATE_FIELD_RULE_NAME, UNUSED_PRIVATE_METHOD_RULE_NAME}
+    if not _has_any_rule(rule_names, private_member_rules):
+        return None
+    return _private_member_usage(tree)
+
+
+def _selected_clean_code_callables(
+    tree: ast.Module, rule_names: AbstractSet[str]
+) -> list[CleanCodeCallable]:
+    callable_rules = {
+        BOOLEAN_ARGUMENT_FLAG_RULE_NAME,
+        ELSE_EXPRESSION_RULE_NAME,
+        STATIC_ACCESS_RULE_NAME,
+        EXIT_EXPRESSION_RULE_NAME,
+        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        EMPTY_CATCH_BLOCK_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, callable_rules):
+        return []
+    return _clean_code_callables(tree)
+
+
+def _selected_class_findings(
+    path: Path,
+    source: str,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
+    rule_names: AbstractSet[str],
+) -> list[Finding]:
+    if not _has_any_rule(rule_names, CLASS_CODE_SIZE_RULE_NAMES):
+        return []
+    return _class_findings(path, source.splitlines(), classes, rules)
+
+
+def _selected_naming_findings(
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    rule_names: AbstractSet[str],
+) -> list[Finding]:
+    if not _has_any_rule(rule_names, NAMING_RULE_NAMES):
+        return []
+    return _naming_findings(path, tree, rules)
+
+
+def _selected_clean_code_findings(
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    rule_names: AbstractSet[str],
+    clean_code_callables: Sequence[CleanCodeCallable],
+) -> list[Finding]:
+    if not _has_any_rule(rule_names, CLEAN_CODE_RULE_NAMES):
+        return []
+    return _clean_code_findings(path, source, tree, rules, clean_code_callables)
+
+
+def _selected_design_findings(
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    classes: Sequence[ClassInfo],
+    rules: Sequence[LoadedRule],
+    rule_names: AbstractSet[str],
+    clean_code_callables: Sequence[CleanCodeCallable],
+) -> list[Finding]:
+    if not _has_any_rule(rule_names, DESIGN_RULE_NAMES):
+        return []
+    return _design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables)
 
 
 def _design_findings(
@@ -960,17 +1163,12 @@ def _design_findings(
     tree: ast.Module,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
+    rule_names: AbstractSet[str],
+    clean_code_callables: Sequence[CleanCodeCallable],
 ) -> list[Finding]:
-    parents = {
-        id(child): parent
-        for parent in ast.walk(tree)
-        for child in ast.iter_child_nodes(parent)
-    }
-    contexts = {
-        id(callable_info.node): _clean_code_context(callable_info)
-        for callable_info in _clean_code_callables(tree)
-    }
-    bindings = _scope_bindings(tree)
+    parents = _selected_design_parents(tree, rule_names)
+    contexts = _selected_design_contexts(clean_code_callables, rule_names)
+    bindings = _selected_design_bindings(tree, rule_names)
     return [
         *_exit_expression_findings(path, tree, rules, parents, contexts, bindings),
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
@@ -980,6 +1178,48 @@ def _design_findings(
         *_global_variable_findings(path, tree, rules, parents, bindings),
         *_cohesion_findings(path, classes, rules),
     ]
+
+
+def _selected_design_parents(tree: ast.Module, rule_names: AbstractSet[str]) -> dict[int, ast.AST]:
+    parent_rules = {
+        EXIT_EXPRESSION_RULE_NAME,
+        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        EMPTY_CATCH_BLOCK_RULE_NAME,
+        GLOBAL_VARIABLE_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, parent_rules):
+        return {}
+    return {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+
+
+def _selected_design_contexts(
+    clean_code_callables: Sequence[CleanCodeCallable], rule_names: AbstractSet[str]
+) -> dict[int, str]:
+    context_rules = {
+        EXIT_EXPRESSION_RULE_NAME,
+        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        EMPTY_CATCH_BLOCK_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, context_rules):
+        return {}
+    return {
+        id(callable_info.node): _clean_code_context(callable_info)
+        for callable_info in clean_code_callables
+    }
+
+
+def _selected_design_bindings(tree: ast.Module, rule_names: AbstractSet[str]) -> dict[int, set[str]]:
+    binding_rules = {
+        EXIT_EXPRESSION_RULE_NAME,
+        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        GLOBAL_VARIABLE_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, binding_rules):
+        return {}
+    return _scope_bindings(tree)
 
 
 def _exit_expression_findings(
@@ -1617,11 +1857,15 @@ def _relationship_component_count(
     methods: dict[str, _MethodRelationships], active: set[str]
 ) -> int:
     connected = {name: name for name in active}
+    methods_by_field: defaultdict[str, list[str]] = defaultdict(list)
+    for name in active:
+        for field in methods[name].fields:
+            methods_by_field[field].append(name)
+    for names in methods_by_field.values():
+        first, *connected_names = names
+        for name in connected_names:
+            _union_components(connected, first, name)
     names = sorted(active)
-    for index, left in enumerate(names):
-        for right in names[index + 1 :]:
-            if methods[left].fields & methods[right].fields:
-                _union_components(connected, left, right)
     for name in names:
         for called in methods[name].calls & active:
             _union_components(connected, name, called)
@@ -1872,19 +2116,23 @@ def _is_shadowed(
 
 
 def _clean_code_findings(
-    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    source: str,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    clean_code_callables: Sequence[CleanCodeCallable],
 ) -> list[Finding]:
     return [
-        *_boolean_argument_flag_findings(path, tree, rules),
-        *_else_expression_findings(path, tree, rules),
-        *_static_access_findings(path, tree, rules),
+        *_boolean_argument_flag_findings(path, clean_code_callables, rules),
+        *_else_expression_findings(path, clean_code_callables, rules),
+        *_static_access_findings(path, clean_code_callables, rules),
         *_if_statement_assignment_findings(path, source, tree, rules),
         *_duplicated_array_key_findings(path, tree, rules),
     ]
 
 
 def _boolean_argument_flag_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = _rule(rules, BOOLEAN_ARGUMENT_FLAG_RULE_NAME)
     if rule is None:
@@ -1892,7 +2140,7 @@ def _boolean_argument_flag_findings(
     exceptions = _exception_names(rule)
     ignored = _ignore_pattern(rule)
     findings: list[Finding] = []
-    for callable_info in _clean_code_callables(tree):
+    for callable_info in callables:
         if _ignore_boolean_flag_callable(callable_info, exceptions, ignored):
             continue
         node = callable_info.node
@@ -1972,12 +2220,14 @@ def _is_boolean_literal(node: ast.expr | None) -> bool:
     return isinstance(node, ast.Constant) and isinstance(node.value, bool)
 
 
-def _else_expression_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _else_expression_findings(
+    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
+) -> list[Finding]:
     rule = _rule(rules, ELSE_EXPRESSION_RULE_NAME)
     if rule is None:
         return []
     findings: list[Finding] = []
-    for callable_info in _clean_code_callables(tree):
+    for callable_info in callables:
         for node in _executable_nodes(callable_info.node):
             if not isinstance(node, ast.If) or not node.orelse:
                 continue
@@ -1998,14 +2248,16 @@ def _else_expression_findings(path: Path, tree: ast.Module, rules: Sequence[Load
     return findings
 
 
-def _static_access_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _static_access_findings(
+    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
+) -> list[Finding]:
     rule = _rule(rules, STATIC_ACCESS_RULE_NAME)
     if rule is None:
         return []
     exceptions = _exception_names(rule)
     ignored = _ignore_pattern(rule)
     findings: list[Finding] = []
-    for callable_info in _clean_code_callables(tree):
+    for callable_info in callables:
         name = _clean_code_callable_name(callable_info.node)
         if ignored.pattern and ignored.search(name):
             continue
@@ -2243,26 +2495,37 @@ def _exception_names(rule: LoadedRule) -> set[str]:
 
 
 def _unused_local_variable_findings(
-    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    rules: Sequence[LoadedRule],
+    function_scopes: Sequence[
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]
+    ],
+    comprehension_scopes: Sequence[
+        tuple[
+            ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+            symtable.SymbolTable | None,
+        ]
+    ],
+    protocol_method_ids: set[int],
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_LOCAL_VARIABLE_RULE_NAME)
     if rule is None:
         return []
-    protocol_method_ids = _protocol_method_ids(tree)
-    findings = _unused_function_local_findings(path, source, tree, rule, protocol_method_ids)
-    findings.extend(_unused_comprehension_local_findings(path, source, tree, rule))
+    findings = _unused_function_local_findings(path, function_scopes, rule, protocol_method_ids)
+    findings.extend(_unused_comprehension_local_findings(path, comprehension_scopes, rule))
     return findings
 
 
 def _unused_function_local_findings(
     path: Path,
-    source: str,
-    tree: ast.Module,
+    function_scopes: Sequence[
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]
+    ],
     rule: LoadedRule,
     protocol_method_ids: set[int],
 ) -> list[Finding]:
     findings: list[Finding] = []
-    for node, table, used_names in _function_scopes(source, tree):
+    for node, table, used_names in function_scopes:
         if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
         bindings = _FunctionLocalBindings()
@@ -2306,10 +2569,17 @@ def _ignore_function_local(
 
 
 def _unused_comprehension_local_findings(
-    path: Path, source: str, tree: ast.Module, rule: LoadedRule
+    path: Path,
+    comprehension_scopes: Sequence[
+        tuple[
+            ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+            symtable.SymbolTable | None,
+        ]
+    ],
+    rule: LoadedRule,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    for node, table in _comprehension_scopes(source, tree):
+    for node, table in comprehension_scopes:
         reported: set[str] = set()
         used_names = _comprehension_used_names(node) if table is None else frozenset()
         for generator in node.generators:
@@ -2344,15 +2614,20 @@ def _ignore_comprehension_local(
 
 
 def _unused_formal_parameter_findings(
-    path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    function_scopes: Sequence[
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]
+    ],
+    protocol_method_ids: set[int],
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_FORMAL_PARAMETER_RULE_NAME)
     if rule is None:
         return []
     findings: list[Finding] = []
-    protocol_method_ids = _protocol_method_ids(tree)
     visitor_method_ids = _ast_visitor_method_ids(tree)
-    for node, table, used_names in _function_scopes(source, tree):
+    for node, table, used_names in function_scopes:
         if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
         for parameter in _unused_parameters(node, table, used_names, visitor_method_ids):
@@ -2635,11 +2910,11 @@ def _unused_private_field_findings(
     tree: ast.Module,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
+    usage: PrivateMemberUsage | None,
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_PRIVATE_FIELD_RULE_NAME)
-    if rule is None:
+    if rule is None or usage is None:
         return []
-    usage = _private_member_usage(tree)
     if usage.requires_conservative_handling:
         return []
     findings: list[Finding] = []
@@ -2666,14 +2941,13 @@ def _unused_private_field_findings(
 
 def _unused_private_method_findings(
     path: Path,
-    tree: ast.Module,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
+    usage: PrivateMemberUsage | None,
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_PRIVATE_METHOD_RULE_NAME)
-    if rule is None:
+    if rule is None or usage is None:
         return []
-    usage = _private_member_usage(tree)
     if usage.requires_conservative_handling:
         return []
     findings: list[Finding] = []
@@ -3223,7 +3497,7 @@ def _called_name(node: ast.expr) -> str:
 
 
 def _cyclomatic_complexity_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == CYCLOMATIC_COMPLEXITY_RULE_NAME), None)
     if rule is None:
@@ -3233,7 +3507,7 @@ def _cyclomatic_complexity_findings(
     except (KeyError, ValueError) as error:
         raise RulesetError("CyclomaticComplexity property 'reportLevel' must be an integer.") from error
     findings: list[Finding] = []
-    for callable_info in _callables(tree):
+    for callable_info in callables:
         complexity = _cyclomatic_complexity(callable_info.node)
         if complexity < threshold:
             continue
@@ -3307,7 +3581,11 @@ class _CyclomaticComplexityVisitor(_NestedScopeSkippingVisitor):
     def visit_Match(self, node: ast.Match) -> None:
         self.decisions += len(node.cases)
         self.generic_visit(node)
-def _npath_complexity_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+
+
+def _npath_complexity_findings(
+    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
+) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
     if rule is None:
         return []
@@ -3316,7 +3594,7 @@ def _npath_complexity_findings(path: Path, tree: ast.Module, rules: Sequence[Loa
     except (KeyError, ValueError) as error:
         raise RulesetError("NPathComplexity property 'minimum' must be an integer.") from error
     findings: list[Finding] = []
-    for callable_info in _callables(tree):
+    for callable_info in callables:
         complexity = _npath_complexity(callable_info.node)
         if complexity < threshold:
             continue
@@ -3412,7 +3690,7 @@ def _npath_comprehension(
 
 
 def _excessive_parameter_list_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == EXCESSIVE_PARAMETER_LIST_RULE_NAME), None)
     if rule is None:
@@ -3422,7 +3700,7 @@ def _excessive_parameter_list_findings(
     except (KeyError, ValueError) as error:
         raise RulesetError("ExcessiveParameterList property 'minimum' must be an integer.") from error
     findings: list[Finding] = []
-    for callable_info in _callables(tree):
+    for callable_info in callables:
         if callable_info.parameter_count < threshold:
             continue
         message = (
@@ -3510,6 +3788,7 @@ def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
 class _NamingRoleCollector(ast.NodeVisitor):
     def __init__(self, visitor_method_ids: set[int]) -> None:
         self.targets: list[NamingTarget] = []
+        self.target_names: set[NamingTarget] = set()
         self.callables: list[NamingCallable] = []
         self.contexts: list[str] = []
         self.class_depth = 0
@@ -3593,7 +3872,8 @@ class _NamingRoleCollector(ast.NodeVisitor):
         contract: bool = False,
     ) -> None:
         target = NamingTarget(name, line, role, contract)
-        if target not in self.targets:
+        if target not in self.target_names:
+            self.target_names.add(target)
             self.targets.append(target)
 
 
@@ -3669,7 +3949,7 @@ def _is_type_parameter_factory(node: ast.expr) -> bool:
 
 
 def _excessive_method_length_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == METHOD_LENGTH_RULE_NAME), None)
     if rule is None:
@@ -3679,7 +3959,7 @@ def _excessive_method_length_findings(
     except (KeyError, ValueError) as error:
         raise RulesetError("ExcessiveMethodLength property 'minimum' must be an integer.") from error
     findings: list[Finding] = []
-    for callable_info in _callables(tree):
+    for callable_info in callables:
         node = callable_info.node
         line_count = (node.end_lineno or node.lineno) - node.lineno + 1
         if line_count < method_length_limit:
@@ -3703,13 +3983,13 @@ def _excessive_method_length_findings(
 
 def _class_findings(
     path: Path,
-    source: str,
+    source_lines: Sequence[str],
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
 ) -> list[Finding]:
     findings: list[Finding] = []
     for class_info in classes:
-        findings.extend(_excessive_class_length_findings(path, source, class_info, rules))
+        findings.extend(_excessive_class_length_findings(path, source_lines, class_info, rules))
         findings.extend(_excessive_public_count_findings(path, class_info, rules))
         findings.extend(_too_many_fields_findings(path, class_info, rules))
         findings.extend(_too_many_methods_findings(path, class_info, rules, public_only=False))
@@ -3719,7 +3999,7 @@ def _class_findings(
 
 
 def _excessive_class_length_findings(
-    path: Path, source: str, class_info: ClassInfo, rules: Sequence[LoadedRule]
+    path: Path, source_lines: Sequence[str], class_info: ClassInfo, rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = _rule(rules, EXCESSIVE_CLASS_LENGTH_RULE_NAME)
     if rule is None:
@@ -3728,7 +4008,7 @@ def _excessive_class_length_findings(
     ignore_whitespace = _boolean_property(rule, "ignore-whitespace")
     start = class_info.node.lineno
     end = class_info.node.end_lineno or start
-    lines = source.splitlines()[start - 1 : end]
+    lines = source_lines[start - 1 : end]
     line_count = sum(bool(line.strip()) for line in lines) if ignore_whitespace else len(lines)
     if line_count < threshold:
         return []
@@ -4238,6 +4518,10 @@ def _rule(rules: Sequence[LoadedRule], name: str) -> LoadedRule | None:
     return next((candidate for candidate in rules if candidate.name == name), None)
 
 
+def _has_any_rule(rule_names: AbstractSet[str], names: AbstractSet[str]) -> bool:
+    return bool(rule_names & names)
+
+
 def _integer_property(rule: LoadedRule, property_name: str) -> int:
     try:
         return int(rule.properties[property_name])
@@ -4302,9 +4586,9 @@ def _apply_suppression_directive(
 ) -> None:
     line, action, rule_names = directive
     if action == "disable-next-line":
-        next_line = next((candidate for candidate in source_lines if candidate > line), None)
-        if next_line is not None:
-            next_line_rules.setdefault(next_line, set()).update(rule_names)
+        next_line_index = bisect_right(source_lines, line)
+        if next_line_index < len(source_lines):
+            next_line_rules.setdefault(source_lines[next_line_index], set()).update(rule_names)
         return
     delta = 1 if action == "disable" else -1
     for rule_name in rule_names:
