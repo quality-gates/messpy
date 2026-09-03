@@ -2057,31 +2057,40 @@ def _direct_bindings(
     return collector.names
 
 
+def _record_scope_binding(names: set[str], node: ast.AST) -> None:
+    if isinstance(node, ast.Name):
+        if isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        return
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        names.update(_import_binding_names(node))
+        return
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        names.add(node.name)
+        return
+    _record_pattern_binding(names, node)
+
+
+def _import_binding_names(node: ast.Import | ast.ImportFrom) -> list[str]:
+    return [imported.asname or imported.name.split(".", 1)[0] for imported in node.names]
+
+
+def _record_pattern_binding(names: set[str], node: ast.AST) -> None:
+    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)):
+        if node.name is not None:
+            names.add(node.name)
+    elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+        names.add(node.rest)
+
+
 class _ScopeBindingCollector(ast.NodeVisitor):
     def __init__(self) -> None:
         self.names: set[str] = set()
 
-    def visit_Name(self, node: ast.Name) -> None:
-        if isinstance(node.ctx, ast.Store):
-            self.names.add(node.id)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        self.names.update(imported.asname or imported.name.split(".", 1)[0] for imported in node.names)
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.names.update(imported.asname or imported.name for imported in node.names)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self.names.add(node.name)
-
-    def visit_Lambda(self, _node: ast.Lambda) -> None:
-        return
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.names.add(node.name)
+    def generic_visit(self, node: ast.AST) -> None:
+        _record_scope_binding(self.names, node)
+        if not isinstance(node, ast.Lambda):
+            super().generic_visit(node)
 
 
 def _is_function_shadowed(
@@ -2516,6 +2525,13 @@ def _unused_local_variable_findings(
     return findings
 
 
+def _lookup_symbol(table: symtable.SymbolTable, name: str) -> symtable.Symbol | None:
+    try:
+        return table.lookup(name)
+    except KeyError:
+        return None
+
+
 def _unused_function_local_findings(
     path: Path,
     function_scopes: Sequence[
@@ -2536,8 +2552,8 @@ def _unused_function_local_findings(
                 bindings.visit(statement)
         reported: set[str] = set()
         for target in bindings.targets:
-            symbol = table.lookup(target.id)
-            if _ignore_function_local(target.id, symbol, used_names, reported):
+            symbol = _lookup_symbol(table, target.id)
+            if symbol is None or _ignore_function_local(target.id, symbol, used_names, reported):
                 continue
             reported.add(target.id)
             findings.append(
@@ -2580,21 +2596,34 @@ def _unused_comprehension_local_findings(
 ) -> list[Finding]:
     findings: list[Finding] = []
     for node, table in comprehension_scopes:
-        reported: set[str] = set()
-        used_names = _comprehension_used_names(node) if table is None else frozenset()
-        for generator in node.generators:
-            for target in _target_names(generator.target):
-                symbol = table.lookup(target.id) if table is not None else None
-                if _ignore_comprehension_local(target.id, symbol, used_names, reported):
-                    continue
-                reported.add(target.id)
-                findings.append(
-                    Finding(
-                        path,
-                        target.lineno,
-                        rule.name,
-                        rule.priority,
-                        f"Avoid unused local variables such as '{target.id}'.",
+        findings.extend(_scope_comprehension_findings(path, node, table, rule))
+    return findings
+
+
+def _scope_comprehension_findings(
+    path: Path,
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    table: symtable.SymbolTable | None,
+    rule: LoadedRule,
+) -> list[Finding]:
+    findings: list[Finding] = []
+    reported: set[str] = set()
+    used_names = _comprehension_used_names(node) if table is None else frozenset()
+    for generator in node.generators:
+        for target in _target_names(generator.target):
+            symbol = _lookup_symbol(table, target.id) if table is not None else None
+            if symbol is None and table is not None and not used_names:
+                used_names = _comprehension_used_names(node)
+            if _ignore_comprehension_local(target.id, symbol, used_names, reported):
+                continue
+            reported.add(target.id)
+            findings.append(
+                Finding(
+                    path,
+                    target.lineno,
+                    rule.name,
+                    rule.priority,
+                    f"Avoid unused local variables such as '{target.id}'.",
                     context=target.id,
                 )
             )
@@ -2659,7 +2688,8 @@ def _unused_parameters(
         and not parameter.arg.startswith("_")
         and parameter is not visitor_parameter
         and parameter.arg not in used_names
-        and table.lookup(parameter.arg).is_parameter()
+        and (symbol := _lookup_symbol(table, parameter.arg)) is not None
+        and symbol.is_parameter()
     ]
 
 
@@ -2701,17 +2731,56 @@ def _function_scopes(
     tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]] = defaultdict(list)
     _collect_function_tables(symtable.symtable(source, "<source>", "exec"), tables)
     scopes = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            continue
+    callable_nodes = _collect_callable_nodes(tree)
+    for node in callable_nodes:
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
         candidates = tables[(name, node.lineno)]
         if not candidates:
             continue
-        table = candidates.pop(0)
+        table = _match_function_table(node, candidates)
+        if table is None:
+            continue
         used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
         scopes.append((node, table, used_names))
     return scopes
+
+
+def _collect_callable_nodes(
+    tree: ast.Module,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda]:
+    collector = _CallableNodeCollector()
+    collector.visit(tree)
+    return collector.nodes
+
+
+class _CallableNodeCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.nodes: list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+
+def _match_function_table(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    candidates: list[symtable.SymbolTable],
+) -> symtable.SymbolTable | None:
+    if not candidates:
+        return None
+    node_params = tuple(arg.arg for arg in _arguments(node.args))
+    for index, candidate in enumerate(candidates):
+        if getattr(candidate, "get_parameters", lambda: ())() == node_params:
+            return candidates.pop(index)
+    return candidates.pop(0)
 
 
 def _comprehension_referenced_names(
@@ -2775,12 +2844,56 @@ def _comprehension_scopes(
         ast.GeneratorExp: "genexpr",
     }
     scopes = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            continue
-        candidates = tables[(names[type(node)], node.lineno)]
-        scopes.append((node, candidates.pop(0) if candidates else None))
+    comprehension_nodes = _collect_comprehension_nodes(tree)
+    for node in comprehension_nodes:
+        kind = names[type(node)]
+        candidates = tables[(kind, node.lineno)]
+        table = _match_comprehension_table(node, candidates)
+        scopes.append((node, table))
     return scopes
+
+
+def _collect_comprehension_nodes(
+    tree: ast.Module,
+) -> list[ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp]:
+    collector = _ComprehensionNodeCollector()
+    collector.visit(tree)
+    return collector.nodes
+
+
+class _ComprehensionNodeCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.nodes: list[ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp] = []
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self.nodes.append(node)
+        self.generic_visit(node)
+
+
+def _match_comprehension_table(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    candidates: list[symtable.SymbolTable],
+) -> symtable.SymbolTable | None:
+    if not candidates:
+        return None
+    target_names = {name.id for generator in node.generators for name in _target_names(generator.target)}
+    for index, candidate in enumerate(candidates):
+        candidate_identifiers = set(candidate.get_identifiers())
+        if target_names.issubset(candidate_identifiers):
+            return candidates.pop(index)
+    return candidates.pop(0)
 
 
 def _comprehension_used_names(
@@ -3204,6 +3317,11 @@ class _FunctionLocalBindings(_NestedScopeSkippingVisitor):
             self._add_target(node.name, node.lineno, node.col_offset)
         self.generic_visit(node)
 
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        if node.rest is not None:
+            self._add_target(node.rest, node.lineno, node.col_offset)
+        self.generic_visit(node)
+
     def visit_ListComp(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
         self._add_named_expression_targets(node)
 
@@ -3217,9 +3335,14 @@ class _FunctionLocalBindings(_NestedScopeSkippingVisitor):
         self._add_named_expression_targets(node)
 
     def _add_named_expression_targets(self, node: ast.AST) -> None:
-        for child in ast.walk(node):
+        pending = list(ast.iter_child_nodes(node))
+        while pending:
+            child = pending.pop()
             if isinstance(child, ast.NamedExpr):
                 self.targets.extend(_target_names(child.target))
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+                continue
+            pending.extend(ast.iter_child_nodes(child))
 
     def _add_target(self, name: str, line: int, column: int) -> None:
         self.targets.append(ast.Name(id=name, ctx=ast.Store(), lineno=line, col_offset=column))
@@ -3753,9 +3876,8 @@ class _CallableCollector:
             for statement in node.body:
                 self.visit_statement(statement, in_class_body=False)
             return
-        for child in ast.iter_child_nodes(node):
-            if isinstance(child, ast.stmt):
-                self.visit_statement(child, in_class_body=in_class_body)
+        for child in _child_statements(node):
+            self.visit_statement(child, in_class_body=in_class_body)
 
     def add_lambdas(self, tree: ast.Module) -> None:
         self.callables.extend(
@@ -3782,6 +3904,8 @@ def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
             targets.append(NamingTarget(node.name, node.lineno, "variable"))
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
             targets.append(NamingTarget(node.name, node.lineno, "variable"))
+        elif isinstance(node, ast.MatchMapping) and node.rest is not None:
+            targets.append(NamingTarget(node.rest, node.lineno, "variable"))
     return targets
 
 
@@ -3796,6 +3920,11 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.constant_target_ids: set[int] = set()
         self.generic_target_ids: set[int] = set()
         self.visitor_method_ids = frozenset(visitor_method_ids)
+
+    def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
+        self.generic_target_ids.add(id(node.name))
+        self._add_target(node.name.id, node.name.lineno, "class")
+        self.visit(node.value)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self._add_target(node.name, node.lineno, "class")
@@ -3931,6 +4060,8 @@ def _arguments(arguments: ast.arguments) -> list[ast.arg]:
 def _target_names(node: ast.AST) -> list[ast.Name]:
     if isinstance(node, ast.Name):
         return [node]
+    if isinstance(node, ast.Starred):
+        return _target_names(node.value)
     if isinstance(node, (ast.Tuple, ast.List)):
         return [name for element in node.elts for name in _target_names(element)]
     return []
@@ -4154,6 +4285,16 @@ def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
     return visitor_ids | inherited_ids
 
 
+def _child_statements(node: ast.AST) -> list[ast.stmt]:
+    statements: list[ast.stmt] = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, ast.stmt):
+            statements.append(child)
+        elif isinstance(child, (ast.match_case, ast.ExceptHandler)):
+            statements.extend(child.body)
+    return statements
+
+
 def _direct_ast_visitor_class_ids(
     class_nodes: list[ast.ClassDef],
     aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
@@ -4163,7 +4304,7 @@ def _direct_ast_visitor_class_ids(
         id(node)
         for node in class_nodes
         if {
-            _resolved_import_name(base, aliases_by_class[id(node)])
+            _resolved_import_name(base, aliases_by_class.get(id(node), {}))
             for base in node.bases
         }
         & visitor_bases
@@ -4197,11 +4338,7 @@ def _index_class_import_aliases(
             continue
         for name in _statement_assigned_names(statement):
             aliases.pop(name, None)
-        child_statements = [
-            child
-            for child in ast.iter_child_nodes(statement)
-            if isinstance(child, ast.stmt)
-        ]
+        child_statements = _child_statements(statement)
         _index_class_import_aliases(child_statements, aliases, aliases_by_class)
 
 
@@ -4298,7 +4435,7 @@ def _index_qualified_classes(
             function_prefix = f"{prefix}.{statement.name}" if prefix else statement.name
             _index_qualified_classes(statement.body, function_prefix, qualified_names, classes_by_name)
         else:
-            child_statements = [child for child in ast.iter_child_nodes(statement) if isinstance(child, ast.stmt)]
+            child_statements = _child_statements(statement)
             _index_qualified_classes(child_statements, prefix, qualified_names, classes_by_name)
 
 
@@ -4308,7 +4445,10 @@ def _local_base_class(
     qualified_names: dict[int, str],
     classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
 ) -> ast.ClassDef | None:
-    owner_parts = qualified_names[id(node)].split(".")[:-1]
+    owner_name = qualified_names.get(id(node))
+    if owner_name is None:
+        return None
+    owner_parts = owner_name.split(".")[:-1]
     candidate_names = [
         ".".join([*owner_parts[:depth], base_name])
         for depth in range(len(owner_parts), -1, -1)
@@ -4372,6 +4512,8 @@ def _field_names(statement: ast.stmt) -> list[str]:
 def _assigned_names(target: ast.AST) -> list[str]:
     if isinstance(target, ast.Name):
         return [target.id]
+    if isinstance(target, ast.Starred):
+        return _assigned_names(target.value)
     if isinstance(target, (ast.Tuple, ast.List)):
         return [name for element in target.elts for name in _assigned_names(element)]
     return []

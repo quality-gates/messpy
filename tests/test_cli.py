@@ -3328,6 +3328,139 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("2 findings", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_multiple_generator_expressions_on_same_line_do_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "genexps.py"
+            source.write_text(
+                "def g():\n"
+                "    return f((a for a in (x for x in y)), (c for c in d))\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_walrus_in_nested_scope_within_comprehension_does_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "walrus_nested.py"
+            source.write_text(
+                "def outer():\n"
+                "    return [(lambda: (inner_var := 1))() for _ in range(5)]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'inner_var'.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    def test_multiple_lambdas_on_same_line_with_differing_depths_do_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "same_line_lambdas.py"
+            source.write_text(
+                "def test_fn():\n"
+                "    g(lambda a: (lambda b: 1)(), lambda c: 2)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("Avoid unused parameters such as 'a'.", stdout.getvalue())
+            self.assertIn("Avoid unused parameters such as 'b'.", stdout.getvalue())
+            self.assertIn("Avoid unused parameters such as 'c'.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    def test_class_with_base_inside_match_case_and_except_does_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_classes.py"
+            source.write_text(
+                "match x:\n"
+                "    case 1:\n"
+                "        class InnerMatch(Base):\n"
+                "            pass\n"
+                "try:\n"
+                "    pass\n"
+                "except Exception:\n"
+                "    class InnerExcept(Base):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "codesize"], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_functions_inside_except_and_match_case_analyzed_for_codesize(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_callables.py"
+            source.write_text(
+                "try:\n"
+                "    pass\n"
+                "except Exception:\n"
+                "    def handler_func(a, b, c, d, e, f, g, h, i, j, k):\n"
+                "        pass\n"
+                "match x:\n"
+                "    case 1:\n"
+                "        def match_func(a, b, c, d, e, f, g, h, i, j, k):\n"
+                "            pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "codesize", "--only", "ExcessiveParameterList"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("The function handler_func has 11 parameters.", stdout.getvalue())
+            self.assertIn("The function match_func has 11 parameters.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    def test_match_mapping_rest_pattern_analyzed_for_unused_and_naming(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "match_mapping.py"
+            source.write_text(
+                "def parse_payload(payload):\n"
+                "    match payload:\n"
+                "        case {'type': 'event', **unused_rest}:\n"
+                "            pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'unused_rest'.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    def test_starred_unpacking_targets_analyzed_for_unused_variables(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "starred_unpacking.py"
+            source.write_text(
+                "def f(items):\n"
+                "    return [a for a, *unused_b in items]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'unused_b'.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 type aliases require Python 3.12+")
+    def test_pep695_type_alias_not_flagged_as_snake_case_variable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "pep695_type.py"
+            source.write_text(
+                "type Point = tuple[float, float]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
 
 def _long_function(name: str) -> str:
     return f"def {name}():\n" + "    pass\n" * 100
