@@ -3448,6 +3448,7 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'unused_b'.", stdout.getvalue())
             self.assertEqual("", stderr.getvalue())
 
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 type aliases require Python 3.12+")
     def test_pep695_type_alias_not_flagged_as_snake_case_variable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "pep695_type.py"
