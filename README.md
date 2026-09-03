@@ -21,9 +21,9 @@ messpy src sarif python --ignore-tests --reportfile reports/messpy.sarif
 messpy src github python --ignore-tests
 ```
 
-Full command syntax, options, and discovery: [docs/usage.md](docs/usage.md).
-What each rule checks: [docs/rules.md](docs/rules.md).
-Machine-readable report shapes: [docs/reports.md](docs/reports.md).
+Full command syntax, options, and discovery: [docs/usage.md](https://github.com/quality-gates/messpy/blob/main/docs/usage.md).
+What each rule checks: [docs/rules.md](https://github.com/quality-gates/messpy/blob/main/docs/rules.md).
+Machine-readable report shapes: [docs/reports.md](https://github.com/quality-gates/messpy/blob/main/docs/reports.md).
 
 ## Install
 
@@ -92,4 +92,4 @@ artifacts:
 
 ## Maintainers
 
-Release process: [docs/releasing.md](docs/releasing.md). Fuzzing: [docs/fuzzing.md](docs/fuzzing.md).
+Release process: [docs/releasing.md](https://github.com/quality-gates/messpy/blob/main/docs/releasing.md). Fuzzing: [docs/fuzzing.md](https://github.com/quality-gates/messpy/blob/main/docs/fuzzing.md).
