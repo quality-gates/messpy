@@ -2319,6 +2319,78 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_subscripted_ast_visitor_bases_preserve_contract_exemptions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "generic_visitors.py"
+            source.write_text(
+                "import ast\n"
+                "from ast import NodeVisitor, NodeTransformer\n"
+                "from typing import Generic, TypeVar, Sequence\n"
+                "\n"
+                "T = TypeVar('T')\n"
+                "\n"
+                "class DirectModuleVisitor(ast.NodeVisitor[T]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class DirectImportedVisitor(NodeVisitor[int]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class DirectTransformer(NodeTransformer[str]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return None\n"
+                "\n"
+                "class BaseVisitor(ast.NodeVisitor[int]):\n"
+                "    pass\n"
+                "\n"
+                "class SubVisitor(BaseVisitor[str]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class Namespace:\n"
+                "    class InnerBase(NodeVisitor[T]):\n"
+                "        pass\n"
+                "\n"
+                "class QualifiedSubVisitor(Namespace.InnerBase[int]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return 1\n"
+                "\n"
+                "class NonVisitorGeneric(Sequence[int]):\n"
+                "    def visit_AsyncFunctionDef(self, node):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "controversial", "--only", "CamelCaseMethodName"],
+                stdout,
+                stderr,
+            )
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            output = stdout.getvalue()
+            self.assertIn("The method visit_AsyncFunctionDef is not named in snake_case.", output)
+            self.assertEqual(1, output.count("CamelCaseMethodName"))
+            self.assertIn(":35: CamelCaseMethodName", output)  # line 35 is NonVisitorGeneric.visit_AsyncFunctionDef
+
+            # Also verify UnusedFormalParameter exempts valid visitors but flags NonVisitorGeneric
+            stdout_unused = StringIO()
+            stderr_unused = StringIO()
+            status_unused = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout_unused,
+                stderr_unused,
+            )
+            self.assertEqual(2, status_unused)
+            self.assertEqual("", stderr_unused.getvalue())
+            output_unused = stdout_unused.getvalue()
+            self.assertEqual(1, output_unused.count("such as 'node'"))
+
+
     def test_function_local_visitor_import_and_shadowing_are_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "local_visitor_import.py"

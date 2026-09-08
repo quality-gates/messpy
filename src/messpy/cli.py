@@ -4298,6 +4298,12 @@ def _child_statements(node: ast.AST) -> list[ast.stmt]:
     return statements
 
 
+def _base_dotted_name(node: ast.expr) -> str:
+    while isinstance(node, ast.Subscript):
+        node = node.value
+    return _dotted_name(node)
+
+
 def _direct_ast_visitor_class_ids(
     class_nodes: list[ast.ClassDef],
     aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
@@ -4404,7 +4410,7 @@ def _has_known_visitor_base(
     for base in node.bases:
         base_node = _local_base_class(
             node,
-            _dotted_name(base),
+            _base_dotted_name(base),
             qualified_names,
             classes_by_qualified_name,
         )
@@ -4467,7 +4473,7 @@ def _resolved_import_name(
     node: ast.expr,
     aliases: dict[str, tuple[str, bool]],
 ) -> str:
-    name = _dotted_name(node)
+    name = _base_dotted_name(node)
     root, *tail = name.split(".")
     if root not in aliases:
         return ""
