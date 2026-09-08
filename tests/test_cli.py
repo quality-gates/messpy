@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 from io import StringIO
@@ -12,7 +13,7 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run
+from messpy.cli import run, _direct_bindings
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -3460,6 +3461,103 @@ class CommandAcceptanceTests(unittest.TestCase):
             stderr = StringIO()
             status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
             self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_nested_scopes_do_not_leak_bindings_into_outer_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "nested_scope_leak.py"
+            source.write_text(
+                "shared = [1]\n"
+                "\n"
+                "def check_count_in_loop(items):\n"
+                "    def helper():\n"
+                "        len = 1\n"
+                "    while len(items):\n"
+                "        pass\n"
+                "\n"
+                "def check_exit_expression():\n"
+                "    class Helper:\n"
+                "        sys = 1\n"
+                "    sys.exit()\n"
+                "\n"
+                "def check_development_fragment():\n"
+                "    async def async_helper():\n"
+                "        breakpoint = 1\n"
+                "    breakpoint()\n"
+                "\n"
+                "def check_global_variable():\n"
+                "    def inner():\n"
+                "        shared = 2\n"
+                "    shared.append(3)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [
+                    str(source),
+                    "text",
+                    "design",
+                    "--only",
+                    "CountInLoopExpression,ExitExpression,DevelopmentCodeFragment,GlobalVariable",
+                ],
+                stdout,
+                stderr,
+            )
+            self.assertEqual(2, status)
+            report = stdout.getvalue()
+            self.assertIn("CountInLoopExpression", report)
+            self.assertIn("ExitExpression", report)
+            self.assertIn("DevelopmentCodeFragment", report)
+            self.assertIn("GlobalVariable", report)
+            self.assertEqual("", stderr.getvalue())
+
+    def test_nested_function_or_class_name_itself_binds_in_outer_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "nested_name_binds.py"
+            source.write_text(
+                "def check_exit_shadowed_by_nested_func():\n"
+                "    def exit():\n"
+                "        pass\n"
+                "    exit()\n"
+                "\n"
+                "def check_exit_shadowed_by_nested_class():\n"
+                "    class exit:\n"
+                "        pass\n"
+                "    exit()\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "design", "--only", "ExitExpression"],
+                stdout,
+                stderr,
+            )
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_direct_bindings_isolates_nested_scopes(self) -> None:
+        module = ast.parse(
+            "def outer(param):\n"
+            "    outer_var = 1\n"
+            "    def inner_func(inner_param):\n"
+            "        inner_var = 2\n"
+            "        import inner_mod\n"
+            "    async def inner_async(async_param):\n"
+            "        async_var = 3\n"
+            "        from async_pkg import async_mod\n"
+            "    class InnerClass:\n"
+            "        class_attr = 4\n"
+            "        def method(self):\n"
+            "            method_var = 5\n"
+        )
+        outer_scope = module.body[0]
+        outer_bindings = _direct_bindings(outer_scope)
+        self.assertEqual(
+            {"param", "outer_var", "inner_func", "inner_async", "InnerClass"},
+            outer_bindings,
+        )
 
 
 def _long_function(name: str) -> str:
