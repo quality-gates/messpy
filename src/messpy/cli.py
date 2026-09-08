@@ -4596,11 +4596,15 @@ def _protocol_base_names(tree: ast.Module) -> set[str]:
 
 
 def _is_protocol(node: ast.ClassDef, protocol_names: set[str] | None = None) -> bool:
-    return any(
-        (isinstance(base, ast.Name) and base.id in (protocol_names or {"Protocol"}))
-        or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
-        for base in node.bases
-    )
+    names = protocol_names or {"Protocol"}
+    return any(_is_protocol_base(base, names) for base in node.bases)
+
+
+def _is_protocol_base(base: ast.AST, protocol_names: set[str]) -> bool:
+    target = base.value if isinstance(base, ast.Subscript) else base
+    return (
+        isinstance(target, ast.Name) and target.id in protocol_names
+    ) or (isinstance(target, ast.Attribute) and target.attr == "Protocol")
 
 
 def _is_contract_method(
