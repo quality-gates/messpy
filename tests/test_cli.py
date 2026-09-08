@@ -269,7 +269,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(
             {
-                "tool": {"name": "messpy", "version": "0.1.8"},
+                "tool": {"name": "messpy", "version": "0.1.9"},
                 "findings": [
                     {
                         "path": "tests/fixtures/long_function.py",
@@ -325,7 +325,7 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         xml = ElementTree.fromstring(reports["xml"])
         self.assertEqual("messpy", xml.tag)
-        self.assertEqual("0.1.8", xml.get("version"))
+        self.assertEqual("0.1.9", xml.get("version"))
         self.assertEqual("too_long", xml.find("./findings/finding").get("context"))
         self.assertEqual("ProcessingError", xml.find("./errors/error").get("ruleName"))
 
@@ -339,7 +339,7 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         gitlab = json.loads(reports["gitlab"])
         self.assertEqual(["ExcessiveMethodLength", "ProcessingError"], [entry["check_name"] for entry in gitlab])
-        self.assertEqual({"name": "messpy", "version": "0.1.8"}, gitlab[0]["tool"])
+        self.assertEqual({"name": "messpy", "version": "0.1.9"}, gitlab[0]["tool"])
         self.assertEqual(
             (
                 f"{finding_source.resolve().as_posix()}:1:1:ExcessiveMethodLength:"
