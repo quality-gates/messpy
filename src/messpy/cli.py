@@ -3755,15 +3755,17 @@ def _npath_block(statements: Sequence[ast.stmt]) -> int:
 def _npath_statement(node: ast.stmt) -> int:
     if isinstance(node, ast.If):
         return _npath_expression(node.test) * (_npath_block(node.body) + _npath_block(node.orelse))
-    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+    elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
         return _npath_loop(node)
-    if isinstance(node, (ast.Try, ast.TryStar)):
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        return _npath_with(node)
+    elif isinstance(node, (ast.Try, ast.TryStar)):
         return _npath_try(node)
-    if isinstance(node, ast.Match):
+    elif isinstance(node, ast.Match):
         return _npath_match(node)
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return 1
-    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise)):
+    elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise)):
         value = getattr(node, "value", None)
         return _npath_expression(value) if value is not None else 1
     return 1
@@ -3772,6 +3774,13 @@ def _npath_statement(node: ast.stmt) -> int:
 def _npath_loop(node: ast.For | ast.AsyncFor | ast.While) -> int:
     condition = node.iter if isinstance(node, (ast.For, ast.AsyncFor)) else node.test
     return _npath_expression(condition) * (_npath_block(node.body) + _npath_block(node.orelse))
+
+
+def _npath_with(node: ast.With | ast.AsyncWith) -> int:
+    complexity = 1
+    for item in node.items:
+        complexity *= _npath_expression(item.context_expr)
+    return complexity * _npath_block(node.body)
 
 
 def _npath_try(node: ast.Try | ast.TryStar) -> int:
@@ -3786,7 +3795,9 @@ def _npath_match(node: ast.Match) -> int:
     )
 
 
-def _npath_expression(node: ast.AST) -> int:
+def _npath_expression(node: ast.AST | None) -> int:
+    if node is None:
+        return 1
     if isinstance(node, ast.BoolOp):
         return sum(_npath_expression(value) for value in node.values)
     if isinstance(node, ast.IfExp):
