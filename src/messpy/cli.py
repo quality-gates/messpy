@@ -2089,7 +2089,10 @@ class _ScopeBindingCollector(ast.NodeVisitor):
 
     def generic_visit(self, node: ast.AST) -> None:
         _record_scope_binding(self.names, node)
-        if not isinstance(node, ast.Lambda):
+        if not isinstance(
+            node,
+            (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ):
             super().generic_visit(node)
 
 
