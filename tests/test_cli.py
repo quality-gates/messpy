@@ -1247,6 +1247,168 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_npath_counts_with_statement_body_branches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "with_sample.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def process(x):\n"
+                "    with open('test.txt') as f:\n"
+                "        if x:\n"
+                "            return 1\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="2" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function process() has an NPath complexity of 2. The configured NPath complexity threshold is 2.",
+            stdout.getvalue(),
+        )
+
+    def test_npath_counts_async_with_statement_body_branches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "async_with_sample.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "async def process(lock, x):\n"
+                "    async with lock:\n"
+                "        if x:\n"
+                "            return 1\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="2" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function process() has an NPath complexity of 2. The configured NPath complexity threshold is 2.",
+            stdout.getvalue(),
+        )
+
+    def test_npath_counts_multiple_context_managers_and_expressions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "multi_context.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def process(a, b, flag):\n"
+                "    with (x if flag else y) as first, z as second:\n"
+                "        if a:\n"
+                "            return 1\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="6" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function process() has an NPath complexity of 6. The configured NPath complexity threshold is 6.",
+            stdout.getvalue(),
+        )
+
+    def test_npath_simple_with_statement_does_not_inflate_complexity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "simple_with.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def process():\n"
+                "    with open('test.txt') as f:\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="2" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual("", stdout.getvalue())
+
+    def test_npath_counts_nested_control_flow_in_with_statement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "nested_control_flow.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def process(items, value):\n"
+                "    with open('test.txt') as f:\n"
+                "        for item in items:\n"
+                "            if item:\n"
+                "                pass\n"
+                "        match value:\n"
+                "            case 1:\n"
+                "                return 10\n"
+                "            case 2:\n"
+                "                return 20\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="6" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function process() has an NPath complexity of 6. The configured NPath complexity threshold is 6.",
+            stdout.getvalue(),
+        )
+
+
+
     def test_class_metrics_scan_real_python_classes_with_configured_boundaries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
