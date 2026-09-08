@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run, _direct_bindings
+from messpy.cli import run, _direct_bindings, _is_protocol, _protocol_base_names
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -3630,6 +3630,81 @@ class CommandAcceptanceTests(unittest.TestCase):
             {"param", "outer_var", "inner_func", "inner_async", "InnerClass"},
             outer_bindings,
         )
+
+    def test_is_protocol_recognizes_generic_and_subscripted_protocols(self) -> None:
+        module = ast.parse(
+            "from typing import Protocol, TypeVar, Generic\n"
+            "import typing\n"
+            "import typing as t\n"
+            "T = TypeVar('T')\n"
+            "U = TypeVar('U')\n"
+            "class PlainProtocol(Protocol):\n"
+            "    pass\n"
+            "class GenericProtocolDirect(Protocol[T]):\n"
+            "    pass\n"
+            "class GenericProtocolMulti(Protocol[T, U]):\n"
+            "    pass\n"
+            "class GenericProtocolTyping(typing.Protocol[T]):\n"
+            "    pass\n"
+            "class GenericProtocolAlias(t.Protocol[T]):\n"
+            "    pass\n"
+            "class RegularGeneric(Generic[T]):\n"
+            "    pass\n"
+            "class SubscriptList(list[int]):\n"
+            "    pass\n"
+        )
+        protocol_names = _protocol_base_names(module)
+        classes = {node.name: node for node in module.body if isinstance(node, ast.ClassDef)}
+
+        self.assertTrue(_is_protocol(classes["PlainProtocol"], protocol_names))
+        self.assertTrue(_is_protocol(classes["GenericProtocolDirect"], protocol_names))
+        self.assertTrue(_is_protocol(classes["GenericProtocolMulti"], protocol_names))
+        self.assertTrue(_is_protocol(classes["GenericProtocolTyping"], protocol_names))
+        self.assertTrue(_is_protocol(classes["GenericProtocolAlias"], protocol_names))
+        self.assertFalse(_is_protocol(classes["RegularGeneric"], protocol_names))
+        self.assertFalse(_is_protocol(classes["SubscriptList"], protocol_names))
+
+    def test_generic_protocols_recognized_and_exempt_from_class_and_parameter_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "generic_proto.py"
+            ruleset = Path(temporary_directory) / "ruleset.xml"
+            source.write_text(
+                "from typing import Protocol, TypeVar\n"
+                "import typing\n"
+                "import typing as t\n"
+                "T = TypeVar('T')\n"
+                "class DirectGenericProto(Protocol[T]):\n"
+                "    def default_method(self, unused_param: int) -> int:\n"
+                "        return 1\n"
+                "    def m2(self): self.a = 1; return self.a\n"
+                "    def m3(self): self.b = 2; return self.b\n"
+                "class TypingGenericProto(typing.Protocol[T]):\n"
+                "    def method(self, arg: str) -> str:\n"
+                "        return arg\n"
+                "    def extra(self, unused_extra: int) -> int:\n"
+                "        return 2\n"
+                "class AliasedGenericProto(t.Protocol[T]):\n"
+                "    def transform(self, value: int) -> int:\n"
+                "        return 0\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="test_generic_protocols">
+    <rule ref="TooManyMethods"><properties><property name="maxmethods" value="1" /></properties></rule>
+    <rule ref="TooManyPublicMethods"><properties><property name="maxmethods" value="1" /></properties></rule>
+    <rule ref="LackOfCohesionOfMethods"><properties><property name="maximum" value="1" /></properties></rule>
+    <rule ref="UnusedFormalParameter" />
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
 
 
 def _long_function(name: str) -> str:
