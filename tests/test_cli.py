@@ -3921,6 +3921,73 @@ class CommandAcceptanceTests(unittest.TestCase):
             status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
             self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
 
+    def test_type_alias_annotation_not_flagged_as_snake_case_variable(self) -> None:
+        sources = [
+            "from typing import TypeAlias\nPoint: TypeAlias = tuple[int, int]\n",
+            "import typing\nPoint: typing.TypeAlias = tuple[int, int]\n",
+        ]
+        for source_text in sources:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source = Path(temporary_directory) / "typealias.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
+                self.assertEqual(
+                    (0, "", ""),
+                    (status, stdout.getvalue(), stderr.getvalue()),
+                    f"wrong result for {source_text!r}",
+                )
+
+    def test_snake_case_type_alias_annotation_matches_pep695_class_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "typealias_snake.py"
+            source.write_text(
+                "from typing import TypeAlias\npoint: TypeAlias = tuple[int, int]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python", "--only", "CamelCaseClassName"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("The class point is not named in CapWords.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+        if sys.version_info < (3, 12):
+            return
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "pep695_snake.py"
+            source.write_text("type point = tuple[int, int]\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python", "--only", "CamelCaseClassName"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn("The class point is not named in CapWords.", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
+    def test_plain_annotated_assignment_still_flagged_as_camel_case_variable(self) -> None:
+        still_variable = [
+            "Point: int = 1\n",
+            "Point: TypeAliasType = tuple[int, int]\n",
+            "Point: foo.TypeAlias = tuple[int, int]\n",
+        ]
+        for source_text in still_variable:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source = Path(temporary_directory) / "plain_ann.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
+                self.assertEqual(2, status, f"wrong status for {source_text!r}: {stdout.getvalue()!r}")
+                self.assertIn("The variable Point is not named in snake_case.", stdout.getvalue())
+                self.assertEqual("", stderr.getvalue())
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "plain_snake.py"
+            source.write_text("point: int = 1\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python", "--only", "CamelCaseClassName"], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
     def test_nested_scopes_do_not_leak_bindings_into_outer_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

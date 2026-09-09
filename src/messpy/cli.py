@@ -3983,11 +3983,16 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if _is_final_annotation(node.annotation) or (
+        targets = _target_names(node.target)
+        if _is_type_alias_annotation(node.annotation):
+            self.generic_target_ids.update(id(target) for target in targets)
+            for target in targets:
+                self._add_target(target.id, target.lineno, "class")
+        elif _is_final_annotation(node.annotation) or (
             _is_module_or_class_scope(self.contexts)
-            and any(re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None for target in _target_names(node.target))
+            and any(re.fullmatch(r"[A-Z][A-Z0-9_]*", target.id) is not None for target in targets)
         ):
-            self.constant_target_ids.update(id(target) for target in _target_names(node.target))
+            self.constant_target_ids.update(id(target) for target in targets)
         self.generic_visit(node)
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -4082,6 +4087,17 @@ def _target_names(node: ast.AST) -> list[ast.Name]:
     if isinstance(node, (ast.Tuple, ast.List)):
         return [name for element in node.elts for name in _target_names(element)]
     return []
+
+
+def _is_type_alias_annotation(node: ast.expr) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "TypeAlias"
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "typing"
+        and node.attr == "TypeAlias"
+    )
 
 
 def _is_final_annotation(node: ast.expr) -> bool:
