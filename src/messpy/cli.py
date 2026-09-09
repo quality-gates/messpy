@@ -1391,6 +1391,10 @@ def _development_marker_findings(path: Path, source: str, rule: LoadedRule) -> l
     ]
     if not markers:
         return []
+    marker_pattern = re.compile(
+        "|".join(rf"\b{re.escape(marker)}\b" for marker in markers),
+        re.IGNORECASE,
+    )
     return [
         Finding(
             path,
@@ -1401,8 +1405,7 @@ def _development_marker_findings(path: Path, source: str, rule: LoadedRule) -> l
             context="module",
         )
         for item in tokenize.generate_tokens(StringIO(source).readline)
-        if item.type == token.COMMENT
-        and any(marker in item.string.casefold() for marker in markers)
+        if item.type == token.COMMENT and marker_pattern.search(item.string)
     ]
 
 
