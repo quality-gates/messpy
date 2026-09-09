@@ -608,7 +608,8 @@ def _analyze(
     processing_errors: list[ProcessingError] = []
     for source_file in source_files:
         try:
-            source = source_file.read_text(encoding="utf-8")
+            with tokenize.open(source_file) as source_handle:
+                source = source_handle.read()
             tree = ast.parse(source, filename=str(source_file))
         except SyntaxError as error:
             line = error.lineno or 1

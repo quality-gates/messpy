@@ -713,6 +713,41 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_coding_cookie_decodes_source_before_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "latin1.py"
+            source.write_bytes(b"# coding: latin-1\nvalue = '\xe9'\n")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python"], stdout, stderr)
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_utf8_bom_is_removed_before_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "bom.py"
+            source.write_bytes(b"\xef\xbb\xbfdef walk():\n    return 1\n")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python"], stdout, stderr)
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_unknown_coding_cookie_reports_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unknown_encoding.py"
+            source.write_bytes(b"# coding: nonsense\nx = 1\n")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "python"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(f"{source.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_duplicate_function_arguments_reports_processing_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
