@@ -4705,12 +4705,15 @@ def _boolean_property(rule: LoadedRule, property_name: str) -> bool:
 
 
 def _ignore_pattern(rule: LoadedRule) -> re.Pattern[str]:
-    pattern = rule.properties.get("ignorepattern", "")
-    flags = re.IGNORECASE if pattern.endswith(")i") else 0
-    if flags:
-        pattern = pattern[:-1]
+    value = rule.properties.get("ignorepattern", "").strip()
+    ignore_case = value.endswith(")i")
+    pattern = value[:-1].strip() if ignore_case else value
+    if not pattern:
+        # An empty (or whitespace-only) pattern would match every name, so it
+        # excludes nothing: fall back to a pattern that never matches.
+        return re.compile(r"(?!)")
     try:
-        return re.compile(pattern, flags)
+        return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
     except re.error as error:
         raise RulesetError(f"{rule.name} property 'ignorepattern' must be a valid regular expression.") from error
 

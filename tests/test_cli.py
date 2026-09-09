@@ -2991,6 +2991,103 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("Gateway", report)
         self.assertNotIn("ignored_choice", report)
 
+    def test_method_count_rules_treat_empty_ignorepattern_as_no_exclusions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "five_methods.py"
+            source.write_text(
+                "class Service:\n"
+                "    def alpha(self):\n"
+                "        return 1\n"
+                "\n"
+                "    def beta(self):\n"
+                "        return 2\n"
+                "\n"
+                "    def gamma(self):\n"
+                "        return 3\n"
+                "\n"
+                "    def delta(self):\n"
+                "        return 4\n"
+                "\n"
+                "    def epsilon(self):\n"
+                "        return 5\n",
+                encoding="utf-8",
+            )
+            for pattern in ("", "   "):
+                with self.subTest(pattern=pattern):
+                    ruleset = directory / "five_methods.xml"
+                    ruleset.write_text(
+                        "<ruleset>"
+                        "<rule ref=\"TooManyMethods\"><properties>"
+                        "<property name=\"maxmethods\" value=\"1\"/>"
+                        f"<property name=\"ignorepattern\" value=\"{pattern}\"/>"
+                        "</properties></rule>"
+                        "<rule ref=\"TooManyPublicMethods\"><properties>"
+                        "<property name=\"maxmethods\" value=\"1\"/>"
+                        f"<property name=\"ignorepattern\" value=\"{pattern}\"/>"
+                        "</properties></rule>"
+                        "</ruleset>",
+                        encoding="utf-8",
+                    )
+                    stdout = StringIO()
+                    stderr = StringIO()
+
+                    status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+                self.assertEqual(2, status)
+                self.assertEqual("", stderr.getvalue())
+                report = stdout.getvalue()
+                self.assertIn(
+                    "TooManyMethods [priority 3] The class Service has 5 non-getter- and setter-methods. "
+                    "Consider refactoring Service to keep number of methods under 1.",
+                    report,
+                )
+                self.assertIn(
+                    "TooManyPublicMethods [priority 3] The class Service has 5 public methods. "
+                    "Consider refactoring Service to keep number of public methods under 1.",
+                    report,
+                )
+
+    def test_method_count_rules_honor_nonempty_ignorepattern(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "five_methods.py"
+            ruleset = directory / "five_methods.xml"
+            source.write_text(
+                "class Service:\n"
+                "    def alpha(self):\n"
+                "        return 1\n"
+                "\n"
+                "    def beta(self):\n"
+                "        return 2\n"
+                "\n"
+                "    def gamma(self):\n"
+                "        return 3\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"TooManyMethods\"><properties>"
+                "<property name=\"maxmethods\" value=\"1\"/>"
+                "<property name=\"ignorepattern\" value=\"^gamma$\"/>"
+                "</properties></rule>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn(
+            "TooManyMethods [priority 3] The class Service has 2 non-getter- and setter-methods. "
+            "Consider refactoring Service to keep number of methods under 1.",
+            report,
+        )
+
     def test_python_policy_permits_ordinary_idioms_and_opinionated_selects_every_strict_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
