@@ -4853,8 +4853,7 @@ def _normalized_suffixes(value: str) -> set[str]:
 
 
 def _is_excluded(path: Path, exclusions: Sequence[str]) -> bool:
-    normalized_path = path.as_posix()
-    return any(exclusion in normalized_path for exclusion in exclusions)
+    return any(exclusion in path.parts for exclusion in exclusions)
 
 
 def _is_test_path(path: Path) -> bool:

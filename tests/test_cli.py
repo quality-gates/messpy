@@ -161,6 +161,58 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(f"{_finding_for(included, 'application')}\n", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_exclude_matches_whole_path_components_without_absolute_substrings(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="src-messpy-exclude-") as temporary_directory:
+            project = Path(temporary_directory)
+            sources = {
+                "app.py": project / "app.py",
+                "host.py": project / "host.py",
+                "most.py": project / "most.py",
+                "nested.py": project / "src" / "nested.py",
+            }
+            for source in sources.values():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(_long_function(source.stem), encoding="utf-8")
+
+            def run_with_exclusion(exclusion: str) -> tuple[int, str, str]:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(project), "text", "codesize", "--exclude", exclusion], stdout, stderr
+                )
+                return status, stdout.getvalue(), stderr.getvalue()
+
+            expected_all = "\n".join(
+                _finding_for(source, source.stem) for source in sources.values()
+            ) + "\n"
+            expected_without_nested = "\n".join(
+                _finding_for(sources[name], sources[name].stem)
+                for name in ("app.py", "host.py", "most.py")
+            ) + "\n"
+            expected_without_host = "\n".join(
+                _finding_for(sources[name], sources[name].stem)
+                for name in ("app.py", "most.py", "nested.py")
+            ) + "\n"
+
+            for exclusion in ["os", ".", "py"]:
+                with self.subTest(exclusion=exclusion):
+                    status, report, errors = run_with_exclusion(exclusion)
+                    self.assertEqual(2, status)
+                    self.assertEqual(expected_all, report)
+                    self.assertEqual("", errors)
+
+            with self.subTest(exclusion="src"):
+                status, report, errors = run_with_exclusion("src")
+                self.assertEqual(2, status)
+                self.assertEqual(expected_without_nested, report)
+                self.assertEqual("", errors)
+
+            with self.subTest(exclusion="host.py"):
+                status, report, errors = run_with_exclusion("host.py")
+                self.assertEqual(2, status)
+                self.assertEqual(expected_without_host, report)
+                self.assertEqual("", errors)
+
     def test_ignore_tests_omits_conventional_test_files_and_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
