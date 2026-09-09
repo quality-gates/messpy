@@ -3265,6 +3265,82 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, report.count("DevelopmentCodeFragment"))
         self.assertNotIn("TODO", report)
 
+    def test_development_code_fragment_matches_markers_as_whole_words_only(self) -> None:
+        flagged = [
+            "# TODO: later\n",
+            "# FIXME now\n",
+            "# fixme!\n",
+            "# hack above the fold\n",
+            "# TODO/FIXME\n",
+            "# Todo: later\n",
+        ]
+        quiet = [
+            "# The hacker was here\n",
+            "# todolist\n",
+            "# fixment\n",
+            "# todone with this\n",
+        ]
+        for source in flagged + quiet:
+            expected_status = 2 if source in flagged else 0
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = Path(temporary_directory) / "markers.py"
+                source_path.write_text(f"def walk():\n    {source}    return 1\n", encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source_path), "text", "python", "--only", "DevelopmentCodeFragment"],
+                    stdout,
+                    stderr,
+                )
+
+            self.assertEqual(
+                expected_status,
+                status,
+                f"wrong status for comment {source!r}: {stdout.getvalue()!r}",
+            )
+            self.assertEqual("", stderr.getvalue())
+            if expected_status == 0:
+                self.assertNotIn("DevelopmentCodeFragment", stdout.getvalue())
+            else:
+                self.assertIn(
+                    "DevelopmentCodeFragment [priority 2]",
+                    stdout.getvalue(),
+                    f"comment {source!r} should be reported",
+                )
+
+    def test_development_code_fragment_honors_custom_markers_as_whole_words(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "custom_markers.py"
+            ruleset = directory / "custom-markers.xml"
+            source.write_text(
+                "def walk():\n"
+                "    # REVIEW before release\n"
+                "    # reviewed by qc\n"
+                "    # REVIEWMENT pending\n"
+                "    return 1\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset><rule ref=\"design\"><properties>"
+                "<property name=\"markers\" value=\"REVIEW\"/>"
+                "</properties></rule></ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset), "--only", "DevelopmentCodeFragment"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertEqual(1, report.count("DevelopmentCodeFragment"))
+        self.assertIn(":2:", report)
+        self.assertNotIn(":3:", report)
+        self.assertNotIn(":4:", report)
+
     def test_design_policies_keep_goto_loadable_and_strict_rules_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
