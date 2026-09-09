@@ -2876,6 +2876,134 @@ class CommandAcceptanceTests(unittest.TestCase):
         ]:
             self.assertIn(rule_name, report)
 
+    def test_cleancode_reports_only_else_that_follows_an_always_exiting_branch(self) -> None:
+        reported = {
+            "if_raises": (
+                "def decide(value):\n"
+                "    if value:\n"
+                "        raise ValueError(value)\n"
+                "    else:\n"
+                "        return 2\n",
+                5,
+            ),
+            "if_returns": (
+                "def decide(value):\n"
+                "    if value:\n"
+                "        return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                5,
+            ),
+            "for_returns": (
+                "def first(values):\n"
+                "    for value in values:\n"
+                "        return value\n"
+                "    else:\n"
+                "        return None\n",
+                5,
+            ),
+            "while_returns": (
+                "def hunt(items):\n"
+                "    while items:\n"
+                "        return items.pop()\n"
+                "    else:\n"
+                "        return None\n",
+                5,
+            ),
+            "try_raises": (
+                "def verify(data):\n"
+                "    try:\n"
+                "        raise ValueError(data)\n"
+                "    except ValueError:\n"
+                "        return False\n"
+                "    else:\n"
+                "        return True\n",
+                7,
+            ),
+            "elif_chain_exits": (
+                "def chain(value):\n"
+                "    if value == 1:\n"
+                "        raise ValueError(value)\n"
+                "    elif value == 2:\n"
+                "        return 2\n"
+                "    else:\n"
+                "        return 3\n",
+                7,
+            ),
+        }
+        quiet = {
+            "if_assigns": (
+                "def choose(flag):\n"
+                "    if flag:\n"
+                "        value = 1\n"
+                "    else:\n"
+                "        value = 0\n"
+                "    return value\n"
+            ),
+            "for_keeps_scanning": (
+                "def scan(values):\n"
+                "    for value in values:\n"
+                "        total += value\n"
+                "    else:\n"
+                "        return total\n"
+            ),
+            "while_keeps_scanning": (
+                "def drain(items):\n"
+                "    while items:\n"
+                "        items.pop()\n"
+                "    else:\n"
+                "        return None\n"
+            ),
+            "try_completes": (
+                "def verify(data):\n"
+                "    try:\n"
+                "        check(data)\n"
+                "    except ValueError:\n"
+                "        return False\n"
+                "    else:\n"
+                "        return True\n"
+            ),
+            "elif_chain_falls_through": (
+                "def keep(value):\n"
+                "    if value == 1:\n"
+                "        return 1\n"
+                "    elif value == 2:\n"
+                "        raise ValueError(value)\n"
+                "    return 3\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, (code, _) in {**reported, **{n: (c, None) for n, c in quiet.items()}}.items():
+                (Path(temporary_directory) / f"{name}.py").write_text(code, encoding="utf-8")
+            for name, (_, line) in reported.items():
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(Path(temporary_directory) / f"{name}.py"), "json", "cleancode", "--only", "ElseExpression"],
+                    stdout,
+                    stderr,
+                )
+                findings = [f for f in json.loads(stdout.getvalue())["findings"] if f["ruleName"] == "ElseExpression"]
+                self.assertEqual(2, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                self.assertEqual([line], [f["line"] for f in findings], name)
+                self.assertIn("dead or misleading", findings[0]["message"], name)
+            for name, code in quiet.items():
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(Path(temporary_directory) / f"{name}.py"), "json", "cleancode", "--only", "ElseExpression"],
+                    stdout,
+                    stderr,
+                )
+                self.assertEqual(0, status, name)
+                self.assertEqual(
+                    [],
+                    [f for f in json.loads(stdout.getvalue())["findings"] if f["ruleName"] == "ElseExpression"],
+                    name,
+                )
+                self.assertEqual("", stderr.getvalue(), name)
+
     def test_cleancode_keeps_clean_boundaries_and_dynamic_dictionary_keys_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "clean_hazards.py"
