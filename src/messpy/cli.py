@@ -2244,24 +2244,98 @@ def _else_expression_findings(
         return []
     findings: list[Finding] = []
     for callable_info in callables:
-        for node in _executable_nodes(callable_info.node):
-            if not isinstance(node, ast.If) or not node.orelse:
+        context = _clean_code_context(callable_info)
+        nodes = _executable_nodes(callable_info.node)
+        elif_nodes = _elif_nodes(nodes)
+        for node in nodes:
+            else_clause = _dead_else_clause(elif_nodes, node)
+            if else_clause is None:
                 continue
-            if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
-                continue
-            context = _clean_code_context(callable_info)
             findings.append(
                 Finding(
                     path,
-                    node.orelse[0].lineno,
+                    else_clause.lineno,
                     rule.name,
                     rule.priority,
-                    f"The method {context} uses an else expression. Else clauses are basically not necessary "
-                    "and you can simplify the code by not using them.",
+                    f"The method {context} uses an else that follows a branch which always returns, raises, "
+                    "continues, or breaks. That else clause is dead or misleading and you can simplify the "
+                    "code by removing it.",
                     context=context,
                 )
             )
     return findings
+
+
+def _elif_nodes(nodes: Sequence[ast.AST]) -> set[int]:
+    return {
+        id(node.orelse[0])
+        for node in nodes
+        if isinstance(node, ast.If) and _is_single_if(node.orelse)
+    }
+
+
+def _dead_else_clause(elif_nodes: set[int], node: ast.AST) -> ast.stmt | None:
+    if isinstance(node, ast.If):
+        return None if id(node) in elif_nodes else _dead_else_after_if_chain(node)
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar)):
+        return node.orelse[0] if node.orelse and _block_always_exits(node.body) else None
+    return None
+
+
+def _is_single_if(statements: Sequence[ast.stmt]) -> bool:
+    return len(statements) == 1 and isinstance(statements[0], ast.If)
+
+
+def _dead_else_after_if_chain(node: ast.If) -> ast.stmt | None:
+    branches, tail = _if_chain(node)
+    if not tail:
+        return None
+    if all(_block_always_exits(branch) for branch in branches):
+        return tail[0]
+    return None
+
+
+def _if_chain(node: ast.If) -> tuple[list[list[ast.stmt]], list[ast.stmt]]:
+    branches = [node.body]
+    tail = node.orelse
+    while _is_single_if(tail):
+        inner = tail[0]
+        branches.append(inner.body)
+        tail = inner.orelse
+    return branches, tail
+
+
+def _block_always_exits(body: Sequence[ast.stmt]) -> bool:
+    return any(_statement_always_exits(statement) for statement in body)
+
+
+def _statement_always_exits(statement: ast.stmt) -> bool:
+    if isinstance(statement, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+        return True
+    if isinstance(statement, ast.If):
+        return _if_statement_always_exits(statement)
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        return _block_always_exits(statement.body)
+    if isinstance(statement, (ast.Try, ast.TryStar)):
+        return _try_statement_always_exits(statement)
+    return False
+
+
+def _if_statement_always_exits(node: ast.If) -> bool:
+    branches, tail = _if_chain(node)
+    if not tail:
+        return False
+    return all(_block_always_exits(branch) for branch in branches) and _block_always_exits(tail)
+
+
+def _try_statement_always_exits(node: ast.Try | ast.TryStar) -> bool:
+    if not node.handlers:
+        return False
+    if node.finalbody and _block_always_exits(node.finalbody):
+        return True
+    if not _block_always_exits(node.body) or (node.orelse and not _block_always_exits(node.orelse)):
+        return False
+    return all(_block_always_exits(handler.body) for handler in node.handlers)
 
 
 def _static_access_findings(
