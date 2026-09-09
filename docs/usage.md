@@ -59,7 +59,7 @@ Membership, defaults, thresholds, and Python-specific behavior for every rule ar
 | `-h`, `--help` | Show command help. |
 | `-v`, `--version` | Show the package version. |
 | `--suffixes LIST` | Replace the default `.py,.pyi` suffix list. |
-| `--exclude LIST` | Exclude matching normalized paths (generated trees, vendored code, one awkward package). |
+| `--exclude LIST` | Exclude matching normalized path components (generated trees, vendored code, one awkward package). |
 | `--ignore-tests` | Skip conventional test directories and `test_*.py` / `*_test.py` modules. Use this for a production-code gate. |
 | `--only LIST`, `--enable LIST` | Keep only named rules already present in the loaded policy. Useful for bisecting a noisy run. |
 | `--disable LIST` | Remove named loaded rules without writing new XML. |
