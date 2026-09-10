@@ -4527,6 +4527,79 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn("GlobalVariable", report)
             self.assertEqual("", stderr.getvalue())
 
+    def test_global_variable_ignores_nested_global_for_outer_local_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_global.py"
+            source.write_text(
+                "state = {}\n"
+                "async_state = {}\n"
+                "class_state = {}\n"
+                "\n"
+                "def outer():\n"
+                "    def inner():\n"
+                "        global state\n"
+                "        return state\n"
+                "    state = {}\n"
+                "\n"
+                "async def async_outer():\n"
+                "    def inner():\n"
+                "        global async_state\n"
+                "        return async_state\n"
+                "    async_state = {}\n"
+                "\n"
+                "def class_outer():\n"
+                "    class Inner:\n"
+                "        global class_state\n"
+                "        value = class_state\n"
+                "    class_state = {}\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "design", "--only", "GlobalVariable"],
+                stdout,
+                stderr,
+            )
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_global_variable_reports_same_scope_and_nested_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "scoped_global.py"
+            source.write_text(
+                "mutated = {}\n"
+                "inner_mutated = {}\n"
+                "guarded = {}\n"
+                "\n"
+                "def outer():\n"
+                "    global mutated\n"
+                "    mutated = {}\n"
+                "\n"
+                "def nested():\n"
+                "    def inner():\n"
+                "        global inner_mutated\n"
+                "        inner_mutated = {}\n"
+                "\n"
+                "def guarded_outer():\n"
+                "    if True:\n"
+                "        global guarded\n"
+                "    guarded = {}\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "design", "--only", "GlobalVariable"],
+                stdout,
+                stderr,
+            )
+            self.assertEqual(2, status)
+            report = stdout.getvalue()
+            self.assertIn("mutated", report)
+            self.assertIn("inner_mutated", report)
+            self.assertIn("guarded", report)
+            self.assertEqual("", stderr.getvalue())
+
     def test_nested_function_or_class_name_itself_binds_in_outer_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
