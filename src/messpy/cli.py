@@ -4640,20 +4640,34 @@ def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
 
 
 def _class_info(node: ast.ClassDef, is_ast_visitor: bool) -> ClassInfo:
+    members = _class_member_statements(node.body)
     methods = tuple(
         statement
-        for statement in node.body
+        for statement in members
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
     )
     fields = tuple(
         dict.fromkeys(
             [
-                *(name for statement in node.body for name in _field_names(statement)),
+                *(name for statement in members for name in _field_names(statement)),
                 *(name for method in methods for name in _instance_field_names(method)),
             ]
         )
     )
     return ClassInfo(node, node.name, fields, methods, is_ast_visitor)
+
+
+def _class_member_statements(statements: Sequence[ast.stmt]) -> list[ast.stmt]:
+    members: list[ast.stmt] = []
+    for statement in statements:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            members.append(statement)
+            continue
+        if isinstance(statement, ast.ClassDef):
+            continue
+        members.append(statement)
+        members.extend(_class_member_statements(_child_statements(statement)))
+    return members
 
 
 def _field_names(statement: ast.stmt) -> list[str]:

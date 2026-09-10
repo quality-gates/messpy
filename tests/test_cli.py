@@ -1589,6 +1589,94 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertNotIn("ServiceProtocol has", report)
         self.assertNotIn("AbstractService has an overall complexity", report)
 
+    def test_class_metrics_include_members_declared_in_class_control_flow_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "conditional.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "class Conditional:\n"
+                "    if feature_enabled:\n"
+                "        conditional_field = 1\n"
+                "\n"
+                "        def conditional_method(self):\n"
+                "            def helper():\n"
+                "                return 0\n"
+                "            helper()\n"
+                "            if self.value:\n"
+                "                return 1\n"
+                "            return 0\n"
+                "\n"
+                "    try:\n"
+                "        fallback_field = 2\n"
+                "    except OSError:\n"
+                "        pass\n"
+                "\n"
+                "    for _ in range(3):\n"
+                "        pass\n"
+                "    else:\n"
+                "        loop_field = 3\n"
+                "\n"
+                "    while waiting:\n"
+                "        class Inner:\n"
+                "            inner_field = 5\n"
+                "\n"
+                "    match shape:\n"
+                "        case 1:\n"
+                "            match_field = 4\n"
+                "            def match_method(self):\n"
+                "                return self.match_field\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="0" /></properties></rule>
+    <rule ref="TooManyMethods"><properties><property name="maxmethods" value="0" /></properties></rule>
+    <rule ref="TooManyPublicMethods"><properties><property name="maxmethods" value="0" /></properties></rule>
+    <rule ref="ExcessivePublicCount"><properties><property name="minimum" value="1" /></properties></rule>
+    <rule ref="ExcessiveClassComplexity"><properties><property name="maximum" value="1" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn(
+            "TooManyFields [priority 3] The class Conditional has 4 fields. "
+            "Consider redesigning Conditional to keep the number of fields under 0.",
+            report,
+        )
+        self.assertIn(
+            "TooManyMethods [priority 3] The class Conditional has 2 non-getter- and setter-methods. "
+            "Consider refactoring Conditional to keep number of methods under 0.",
+            report,
+        )
+        self.assertIn(
+            "TooManyPublicMethods [priority 3] The class Conditional has 2 public methods. "
+            "Consider refactoring Conditional to keep number of public methods under 0.",
+            report,
+        )
+        self.assertIn(
+            "ExcessivePublicCount [priority 3] The class Conditional has 6 public methods and attributes. "
+            "Consider reducing the number of public items to less than 1.",
+            report,
+        )
+        self.assertIn(
+            "ExcessiveClassComplexity [priority 3] The class Conditional has an overall complexity of 3 "
+            "which is very high. The configured complexity threshold is 1.",
+            report,
+        )
+        self.assertNotIn("helper", report)
+        self.assertNotIn("inner_field = 5", report)
+        self.assertNotIn("Conditional has 5 fields", report)
+        self.assertNotIn("Conditional has 3 non-getter", report)
+
     def test_codesize_includes_all_ten_callable_and_class_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "clean.py"
