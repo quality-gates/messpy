@@ -3308,6 +3308,18 @@ class _PrivateFieldCollector(ast.NodeVisitor):
         self.has_unknown_dynamic_access = self.has_unknown_dynamic_access or has_unknown_access
         self.generic_visit(node)
 
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        # A direct attribute target is a store in the AST, but augmented
+        # assignment reads the existing attribute before storing the result.
+        target = node.target
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == self.receiver
+        ):
+            self.loads.add(target.attr)
+        self.generic_visit(node)
+
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.ctx, ast.Load):
             self.loads.add(node.attr)
