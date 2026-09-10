@@ -3385,6 +3385,60 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertNotIn("GotoStatement", report)
         self.assertNotIn("logger.warning", report)
 
+    def test_exit_expression_ignores_module_rebindings_of_imported_names(self) -> None:
+        cases = [
+            (
+                "rebound_function_alias",
+                "from sys import exit\n"
+                "def exit(code=None):\n"
+                "    return code\n"
+                "exit(0)\n",
+                0,
+            ),
+            (
+                "rebound_module_alias",
+                "import sys\n"
+                "class Fake:\n"
+                "    def exit(self, code=None):\n"
+                "        return code\n"
+                "sys = Fake()\n"
+                "sys.exit(0)\n",
+                0,
+            ),
+            (
+                "ordinary_import",
+                "import sys\n"
+                "sys.exit(0)\n",
+                2,
+            ),
+            (
+                "ordinary_function_alias",
+                "from sys import exit\n"
+                "exit(0)\n",
+                2,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, source_text, expected_status in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", "ExitExpression"],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(expected_status, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                if expected_status == 0:
+                    self.assertEqual("", stdout.getvalue(), name)
+                else:
+                    self.assertIn("ExitExpression", stdout.getvalue(), name)
+
     def test_design_honors_custom_markers_calls_and_priorities_without_importing_target_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
