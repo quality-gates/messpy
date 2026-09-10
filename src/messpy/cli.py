@@ -3990,7 +3990,7 @@ def _npath_try(node: ast.Try | ast.TryStar) -> int:
 
 
 def _npath_match(node: ast.Match) -> int:
-    return sum(
+    return _npath_expression(node.subject) * sum(
         _npath_block(case.body) + (_npath_expression(case.guard) if case.guard is not None else 0)
         for case in node.cases
     )
