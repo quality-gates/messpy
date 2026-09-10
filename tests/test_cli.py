@@ -1334,6 +1334,39 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_npath_counts_conditional_expression_in_match_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "match_subject.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(
+                "def choose(flag):\n"
+                "    match (1 if flag else 2):\n"
+                "        case 1:\n"
+                "            return 1\n"
+                "        case _:\n"
+                "            return 2\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="3" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "The function choose() has an NPath complexity of 6. The configured NPath complexity threshold is 3.",
+            stdout.getvalue(),
+        )
+
     def test_npath_counts_with_statement_body_branches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
