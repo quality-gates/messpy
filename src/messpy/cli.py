@@ -1788,10 +1788,24 @@ def _is_module_assignment(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
         current = parents[id(current)]
         if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             return any(
-                isinstance(statement, ast.Global) and isinstance(node, ast.Name) and node.id in statement.names
+                isinstance(statement, ast.Global)
+                and isinstance(node, ast.Name)
+                and node.id in statement.names
+                and _same_function_scope(statement, current, parents)
                 for statement in ast.walk(current)
             )
     return True
+
+
+def _same_function_scope(node: ast.AST, function: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if current is function:
+            return True
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            return False
+    return False
 
 
 def _root_name(node: ast.AST) -> str:
