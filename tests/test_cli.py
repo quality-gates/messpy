@@ -2122,6 +2122,29 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_unusedcode_treats_a_direct_augmented_private_field_update_as_a_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "augmented_field.py"
+            source.write_text(
+                "class Counter:\n"
+                "    def __init__(self):\n"
+                "        self._count = 0\n"
+                "        self._count += 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_unusedcode_reports_an_unused_private_method_through_the_command_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "unused_method.py"
