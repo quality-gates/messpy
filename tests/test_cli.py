@@ -4244,6 +4244,24 @@ class CommandAcceptanceTests(unittest.TestCase):
                     f"wrong result for {source_text!r}",
                 )
 
+    def test_aliased_type_alias_annotation_not_flagged_as_snake_case_variable(self) -> None:
+        sources = [
+            "from typing import TypeAlias as TA\nPoint: TA = tuple[int, int]\n",
+            "import typing as t\nPoint: t.TypeAlias = tuple[int, int]\n",
+        ]
+        for source_text in sources:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source = Path(temporary_directory) / "aliased_typealias.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
+                self.assertEqual(
+                    (0, "", ""),
+                    (status, stdout.getvalue(), stderr.getvalue()),
+                    f"wrong result for {source_text!r}",
+                )
+
     def test_snake_case_type_alias_annotation_matches_pep695_class_role(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "typealias_snake.py"

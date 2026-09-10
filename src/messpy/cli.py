@@ -4021,7 +4021,7 @@ class _CallableCollector:
 
 
 def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
-    collector = _NamingRoleCollector(_ast_visitor_method_ids(tree))
+    collector = _NamingRoleCollector(_ast_visitor_method_ids(tree), _type_alias_annotation_ids(tree))
     collector.visit(tree)
     for target in _named_binding_targets(tree):
         collector._add_target(target.name, target.line, target.role)
@@ -4042,8 +4042,72 @@ def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
     return targets
 
 
+def _type_alias_annotation_ids(tree: ast.Module) -> set[int]:
+    collector = _TypeAliasAnnotationCollector()
+    collector.visit(tree)
+    return collector.annotation_ids
+
+
+class _TypeAliasAnnotationCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.annotation_ids: set[int] = set()
+        self.import_aliases: dict[str, tuple[str, bool]] = {}
+        self.class_outer_aliases: list[dict[str, tuple[str, bool]]] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.import_aliases.update(_statement_import_aliases(node))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self.import_aliases.update(_statement_import_aliases(node))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        outer_aliases = self.import_aliases
+        inherited_aliases = self.class_outer_aliases[-1] if self.class_outer_aliases else outer_aliases
+        local_names = _direct_bindings(node)
+        self.import_aliases = {
+            name: alias for name, alias in inherited_aliases.items() if name not in local_names
+        }
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.import_aliases = outer_aliases
+            self.import_aliases.pop(node.name, None)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        outer_aliases = self.import_aliases
+        self.import_aliases = dict(outer_aliases)
+        self.class_outer_aliases.append(outer_aliases)
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.class_outer_aliases.pop()
+            self.import_aliases = outer_aliases
+            self.import_aliases.pop(node.name, None)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.generic_visit(node)
+        for name in _statement_assigned_names(node):
+            self.import_aliases.pop(name, None)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if _is_type_alias_annotation(node.annotation, self.import_aliases):
+            self.annotation_ids.add(id(node.annotation))
+        self.generic_visit(node)
+        for name in _statement_assigned_names(node):
+            self.import_aliases.pop(name, None)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.generic_visit(node)
+        for name in _statement_assigned_names(node):
+            self.import_aliases.pop(name, None)
+
+
 class _NamingRoleCollector(ast.NodeVisitor):
-    def __init__(self, visitor_method_ids: set[int]) -> None:
+    def __init__(self, visitor_method_ids: set[int], type_alias_annotation_ids: set[int]) -> None:
         self.targets: list[NamingTarget] = []
         self.target_names: set[NamingTarget] = set()
         self.callables: list[NamingCallable] = []
@@ -4053,6 +4117,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
         self.constant_target_ids: set[int] = set()
         self.generic_target_ids: set[int] = set()
         self.visitor_method_ids = frozenset(visitor_method_ids)
+        self.type_alias_annotation_ids = frozenset(type_alias_annotation_ids)
 
     def visit_TypeAlias(self, node: ast.TypeAlias) -> None:
         self.generic_target_ids.add(id(node.name))
@@ -4100,7 +4165,7 @@ class _NamingRoleCollector(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         targets = _target_names(node.target)
-        if _is_type_alias_annotation(node.annotation):
+        if id(node.annotation) in self.type_alias_annotation_ids:
             self.generic_target_ids.update(id(target) for target in targets)
             for target in targets:
                 self._add_target(target.id, target.lineno, "class")
@@ -4205,15 +4270,18 @@ def _target_names(node: ast.AST) -> list[ast.Name]:
     return []
 
 
-def _is_type_alias_annotation(node: ast.expr) -> bool:
+def _is_type_alias_annotation(
+    node: ast.expr,
+    import_aliases: dict[str, tuple[str, bool]] | None = None,
+) -> bool:
     if isinstance(node, ast.Name):
-        return node.id == "TypeAlias"
+        return node.id == "TypeAlias" or _resolved_import_name(node, import_aliases or {}) == "typing.TypeAlias"
     return (
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
         and node.value.id == "typing"
         and node.attr == "TypeAlias"
-    )
+    ) or _resolved_import_name(node, import_aliases or {}) == "typing.TypeAlias"
 
 
 def _is_final_annotation(node: ast.expr) -> bool:
