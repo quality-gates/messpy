@@ -49,6 +49,9 @@ STATIC_ACCESS_RULE_NAME = "StaticAccess"
 IF_STATEMENT_ASSIGNMENT_RULE_NAME = "IfStatementAssignment"
 DUPLICATED_ARRAY_KEY_RULE_NAME = "DuplicatedArrayKey"
 EXIT_EXPRESSION_RULE_NAME = "ExitExpression"
+EXIT_CALL_NAMES = frozenset(
+    {"sys.exit", "os._exit", "builtins.exit", "builtins.quit", "exit", "quit"}
+)
 COUNT_IN_LOOP_EXPRESSION_RULE_NAME = "CountInLoopExpression"
 DEVELOPMENT_CODE_FRAGMENT_RULE_NAME = "DevelopmentCodeFragment"
 EMPTY_CATCH_BLOCK_RULE_NAME = "EmptyCatchBlock"
@@ -1223,6 +1226,17 @@ def _selected_design_bindings(tree: ast.Module, rule_names: AbstractSet[str]) ->
     return _scope_bindings(tree)
 
 
+_BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+
+
+@dataclass(frozen=True)
+class _ExitScopeImports:
+    """The exit-relevant imports and the other name bindings of one scope."""
+
+    exit_modules: dict[str, str]
+    rebound: set[str]
+
+
 def _exit_expression_findings(
     path: Path,
     tree: ast.Module,
@@ -1260,37 +1274,47 @@ def _exit_expression_findings(
 def _is_exit_call(
     node: ast.Call,
     tree: ast.Module,
-    aliases: dict[str, str],
+    aliases: dict[int, _ExitScopeImports],
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
 ) -> bool:
-    original_name = _dotted_name(node.func)
-    name = aliases.get(original_name, original_name)
-    if name not in {"sys.exit", "os._exit", "builtins.exit", "builtins.quit", "exit", "quit"}:
-        return False
-    root_name = original_name.split(".", 1)[0]
-    if original_name != name and _is_function_shadowed(root_name, node, parents, bindings):
-        return False
-    if "." in original_name and _exit_root_is_shadowed(
-        root_name, node, tree, aliases, parents, bindings
-    ):
-        return False
-    return name not in {"exit", "quit"} or not _is_shadowed(
-        name, node, tree, parents, bindings
-    )
+    name = _resolved_exit_name(node, tree, aliases, parents, bindings)
+    return name in EXIT_CALL_NAMES
 
 
-def _exit_root_is_shadowed(
-    root_name: str,
+def _resolved_exit_name(
     node: ast.Call,
     tree: ast.Module,
-    aliases: dict[str, str],
+    aliases: dict[int, _ExitScopeImports],
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
-) -> bool:
-    return _is_function_shadowed(root_name, node, parents, bindings) or (
-        root_name not in aliases and _is_shadowed(root_name, node, tree, parents, bindings)
-    )
+) -> str:
+    original_name = _dotted_name(node.func)
+    root_name = original_name.split(".", 1)[0]
+    attributes = original_name[len(root_name):]
+    for scope in _enclosing_scopes(node, tree, parents):
+        imports = aliases[id(scope)]
+        if root_name in imports.rebound:
+            return ""
+        if root_name in imports.exit_modules:
+            return f"{imports.exit_modules[root_name]}{attributes}"
+        if root_name in bindings[id(scope)]:
+            return ""
+    return original_name
+
+
+def _enclosing_scopes(
+    node: ast.AST, tree: ast.Module, parents: dict[int, ast.AST]
+) -> list[ast.AST]:
+    # The scopes that hold the call, from the innermost function out to the module.
+    scopes: list[ast.AST] = []
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            scopes.append(current)
+    scopes.append(tree)
+    return scopes
 
 
 def _count_in_loop_findings(
@@ -2010,48 +2034,44 @@ def _dotted_name(node: ast.expr) -> str:
     return ""
 
 
-def _imported_call_aliases(tree: ast.Module) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for statement in tree.body:
-        if isinstance(statement, ast.Import):
-            aliases.update(_exit_import_aliases(statement))
-        elif isinstance(statement, ast.ImportFrom) and statement.module in {"sys", "os", "builtins"}:
-            aliases.update(_exit_import_from_aliases(statement))
-    expanded = dict(aliases)
-    for alias, target in aliases.items():
-        for method in {"exit", "quit", "_exit"}:
-            expanded[f"{alias}.{method}"] = f"{target}.{method}"
-    rebound_names = _module_rebound_names(tree)
-    return {
-        alias: target
-        for alias, target in expanded.items()
-        if alias.split(".", 1)[0] not in rebound_names
-    }
+def _imported_call_aliases(tree: ast.Module) -> dict[int, _ExitScopeImports]:
+    return {id(scope): _scope_exit_imports(scope) for scope in _binding_scopes(tree)}
 
 
-def _exit_import_aliases(statement: ast.Import) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: imported.name
-        for imported in statement.names
-        if imported.name in {"sys", "os", "builtins"}
-    }
+def _scope_exit_imports(scope: _BindingScope) -> _ExitScopeImports:
+    imports = _ExitImportCollector()
+    rebindings = _ScopeRebindingCollector()
+    for statement in _scope_statements(scope):
+        imports.visit(statement)
+        rebindings.visit(statement)
+    return _ExitScopeImports(exit_modules=imports.names, rebound=rebindings.names)
 
 
-def _exit_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: f"{statement.module}.{imported.name}"
-        for imported in statement.names
-    }
+class _ExitImportCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: dict[str, str] = {}
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.names.update(_exit_import_aliases(node))
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module in {"sys", "os", "builtins"}:
+            self.names.update(_exit_import_from_aliases(node))
+
+    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
+        return
+
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
+        return
 
 
-def _module_rebound_names(tree: ast.Module) -> set[str]:
-    collector = _ModuleRebindingCollector()
-    for statement in tree.body:
-        collector.visit(statement)
-    return collector.names
-
-
-class _ModuleRebindingCollector(ast.NodeVisitor):
+class _ScopeRebindingCollector(ast.NodeVisitor):
     def __init__(self) -> None:
         self.names: set[str] = set()
 
@@ -2080,24 +2100,44 @@ class _ModuleRebindingCollector(ast.NodeVisitor):
         super().generic_visit(node)
 
 
-def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
-    scopes: list[ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda] = [tree]
+def _exit_import_aliases(statement: ast.Import) -> dict[str, str]:
+    return {
+        imported.asname or imported.name: imported.name
+        for imported in statement.names
+        if imported.name in {"sys", "os", "builtins"}
+    }
+
+
+def _exit_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
+    return {
+        imported.asname or imported.name: f"{statement.module}.{imported.name}"
+        for imported in statement.names
+    }
+
+
+def _binding_scopes(tree: ast.Module) -> list[_BindingScope]:
+    scopes: list[_BindingScope] = [tree]
     scopes.extend(
         node
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
     )
-    return {id(scope): _direct_bindings(scope) for scope in scopes}
+    return scopes
 
 
-def _direct_bindings(
-    scope: ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
-) -> set[str]:
+def _scope_statements(scope: _BindingScope) -> list[ast.AST]:
+    return [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
+
+
+def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
+    return {id(scope): _direct_bindings(scope) for scope in _binding_scopes(tree)}
+
+
+def _direct_bindings(scope: _BindingScope) -> set[str]:
     collector = _ScopeBindingCollector()
     if not isinstance(scope, ast.Module):
         collector.names.update(argument.arg for argument in _arguments(scope.args))
-    statements = scope.body if not isinstance(scope, ast.Lambda) else [scope.body]
-    for statement in statements:
+    for statement in _scope_statements(scope):
         collector.visit(statement)
     return collector.names
 

@@ -3527,6 +3527,79 @@ class CommandAcceptanceTests(unittest.TestCase):
                 else:
                     self.assertIn("ExitExpression", stdout.getvalue(), name)
 
+    def test_exit_expression_follows_function_local_exit_imports(self) -> None:
+        cases = [
+            (
+                "local_module_import",
+                "def stop():\n"
+                "    import sys\n"
+                "    sys.exit(1)\n",
+                2,
+            ),
+            (
+                "local_function_import",
+                "def stop():\n"
+                "    from sys import exit\n"
+                "    exit(1)\n",
+                2,
+            ),
+            (
+                "local_low_level_import",
+                "def stop():\n"
+                "    import os\n"
+                "    os._exit(1)\n",
+                2,
+            ),
+            (
+                "local_aliased_import",
+                "def stop():\n"
+                "    import sys as platform\n"
+                "    platform.exit(1)\n",
+                2,
+            ),
+            (
+                "local_rebinding_of_local_import",
+                "def stop(fake):\n"
+                "    import sys\n"
+                "    sys = fake\n"
+                "    sys.exit(1)\n",
+                0,
+            ),
+            (
+                "local_parameter_shadowing",
+                "def stop(sys):\n"
+                "    sys.exit(1)\n",
+                0,
+            ),
+            (
+                "local_import_of_unrelated_module",
+                "def stop():\n"
+                "    import fake_sys as sys\n"
+                "    sys.exit(1)\n",
+                0,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, source_text, expected_status in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", "ExitExpression"],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(expected_status, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                if expected_status == 0:
+                    self.assertEqual("", stdout.getvalue(), name)
+                else:
+                    self.assertIn("ExitExpression", stdout.getvalue(), name)
+
     def test_design_honors_custom_markers_calls_and_priorities_without_importing_target_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
