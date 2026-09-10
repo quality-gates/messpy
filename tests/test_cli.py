@@ -2507,6 +2507,76 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
 
+    def test_augmented_assignment_counts_as_local_variable_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "augmented_local.py"
+            source.write_text(
+                "def transform():\n"
+                "    value = 1\n"
+                "    value += 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_augmented_assignment_counts_as_parameter_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "augmented_parameter.py"
+            source.write_text(
+                "def transform(value):\n"
+                "    value += 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_augmented_assignment_in_nested_function_does_not_use_outer_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "augmented_nested.py"
+            source.write_text(
+                "def outer():\n"
+                "    unused = 1\n"
+                "\n"
+                "    def inner():\n"
+                "        unused = 2\n"
+                "        unused += 1\n"
+                "\n"
+                "    return inner\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, stdout.getvalue().count("such as 'unused'"))
+
     def test_visitor_like_function_does_not_hide_unused_parameter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "visitor_like_function.py"

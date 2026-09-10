@@ -2902,7 +2902,11 @@ def _function_scopes(
         table = _match_function_table(node, candidates)
         if table is None:
             continue
-        used_names = _scope_usage(table).used_names | _comprehension_referenced_names(node)
+        used_names = (
+            _scope_usage(table).used_names
+            | _comprehension_referenced_names(node)
+            | _augmented_assignment_names(node)
+        )
         scopes.append((node, table, used_names))
     return scopes
 
@@ -2955,6 +2959,18 @@ def _comprehension_referenced_names(
         if isinstance(descendant, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             referenced.update(_loaded_non_target_names(descendant))
     return frozenset(referenced)
+
+
+def _augmented_assignment_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    # symtable does not mark a plain Name target of an augmented assignment as
+    # referenced, yet `name += 1` reads the previous value before storing.
+    return frozenset(
+        descendant.target.id
+        for descendant in _executable_nodes(node)
+        if isinstance(descendant, ast.AugAssign) and isinstance(descendant.target, ast.Name)
+    )
 
 
 def _loaded_non_target_names(
