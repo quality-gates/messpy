@@ -2021,7 +2021,12 @@ def _imported_call_aliases(tree: ast.Module) -> dict[str, str]:
     for alias, target in aliases.items():
         for method in {"exit", "quit", "_exit"}:
             expanded[f"{alias}.{method}"] = f"{target}.{method}"
-    return expanded
+    rebound_names = _module_rebound_names(tree)
+    return {
+        alias: target
+        for alias, target in expanded.items()
+        if alias.split(".", 1)[0] not in rebound_names
+    }
 
 
 def _exit_import_aliases(statement: ast.Import) -> dict[str, str]:
@@ -2037,6 +2042,42 @@ def _exit_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
         imported.asname or imported.name: f"{statement.module}.{imported.name}"
         for imported in statement.names
     }
+
+
+def _module_rebound_names(tree: ast.Module) -> set[str]:
+    collector = _ModuleRebindingCollector()
+    for statement in tree.body:
+        collector.visit(statement)
+    return collector.names
+
+
+class _ModuleRebindingCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_Import(self, _node: ast.Import) -> None:
+        return
+
+    def visit_ImportFrom(self, _node: ast.ImportFrom) -> None:
+        return
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.add(node.name)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.names.add(node.name)
+
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
+        return
+
+    def generic_visit(self, node: ast.AST) -> None:
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            self.names.add(node.id)
+        _record_pattern_binding(self.names, node)
+        super().generic_visit(node)
 
 
 def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
