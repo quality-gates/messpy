@@ -4825,6 +4825,8 @@ def _field_names(statement: ast.stmt) -> list[str]:
         return _assigned_names(statement.target)
     if isinstance(statement, ast.Assign):
         return [name for target in statement.targets for name in _assigned_names(target)]
+    if isinstance(statement, ast.AugAssign):
+        return _assigned_names(statement.target)
     return []
 
 

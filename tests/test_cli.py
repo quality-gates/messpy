@@ -1710,6 +1710,39 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertNotIn("Conditional has 5 fields", report)
         self.assertNotIn("Conditional has 3 non-getter", report)
 
+    def test_too_many_fields_counts_class_body_augmented_assignments(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "counter.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "counter = 1\n"
+                "\n"
+                "class Counter:\n"
+                "    field = 1\n"
+                "    counter += 1\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="1" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "TooManyFields [priority 3] The class Counter has 2 fields. "
+            "Consider redesigning Counter to keep the number of fields under 1.",
+            stdout.getvalue(),
+        )
+
     def test_codesize_includes_all_ten_callable_and_class_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "clean.py"
