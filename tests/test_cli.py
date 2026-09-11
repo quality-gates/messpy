@@ -1743,6 +1743,39 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_too_many_fields_counts_instance_fields_assigned_with_unpacking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "unpacking.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "class Point:\n"
+                "    def __init__(self, point, items, tree):\n"
+                "        self.x, self.y = point\n"
+                "        [self.head, *self.tail] = items\n"
+                "        (self.left, (self.mid, [self.right])) = tree\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="6" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "TooManyFields [priority 3] The class Point has 7 fields. "
+            "Consider redesigning Point to keep the number of fields under 6.",
+            stdout.getvalue(),
+        )
+
     def test_codesize_includes_all_ten_callable_and_class_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "clean.py"
