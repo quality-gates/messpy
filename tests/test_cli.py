@@ -2244,6 +2244,74 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_unusedcode_reports_unused_private_class_fields_in_control_flow_and_augmented_assignments(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "control_flow_fields.py"
+            source.write_text(
+                "class Counter:\n"
+                "    if True:\n"
+                "        _in_if = 1\n"
+                "    try:\n"
+                "        _in_try = 2\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "    _augmented += 3\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_in_if'.",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_in_try'.",
+            stdout.getvalue(),
+        )
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_augmented'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_reports_unused_private_instance_fields_from_methods_in_control_flow(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "control_flow_method.py"
+            source.write_text(
+                "class Counter:\n"
+                "    if True:\n"
+                "        def __init__(self):\n"
+                "            self._unused = 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_unused'.",
+            stdout.getvalue(),
+        )
+
     def test_unusedcode_reports_an_unused_private_method_through_the_command_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "unused_method.py"

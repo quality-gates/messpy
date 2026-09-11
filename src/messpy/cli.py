@@ -3302,15 +3302,12 @@ class _PrivateFieldCollector(ast.NodeVisitor):
         return {name: line for name, line in self.fields.items() if name not in self.loads}
 
     def _collect_class_fields(self) -> None:
-        for statement in self.node.body:
-            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
-                for target in targets:
-                    for name in _assigned_names(target):
-                        self._add_field(name, statement.lineno)
+        for statement in _class_member_statements(self.node.body):
+            for name in _field_names(statement):
+                self._add_field(name, statement.lineno)
 
     def _collect_method_fields(self) -> None:
-        for statement in self.node.body:
+        for statement in _class_member_statements(self.node.body):
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 self.receiver = _instance_receiver(statement)
                 for item in statement.body:
