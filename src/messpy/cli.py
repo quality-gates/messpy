@@ -4879,22 +4879,14 @@ class _InstanceFieldCollector(ast.NodeVisitor):
     def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
 
-    def visit_Assign(self, node: ast.Assign) -> None:
-        for target in node.targets:
-            self._add_target(target)
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if (
+            isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == self.receiver
+        ):
+            self.names.append(node.attr)
         self.generic_visit(node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self._add_target(node.target)
-        self.generic_visit(node)
-
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._add_target(node.target)
-        self.generic_visit(node)
-
-    def _add_target(self, target: ast.AST) -> None:
-        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == self.receiver:
-            self.names.append(target.attr)
 
 
 def _protocol_base_names(tree: ast.Module) -> set[str]:
