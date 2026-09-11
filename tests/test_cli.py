@@ -2607,6 +2607,45 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_unusedcode_keeps_local_type_alias_used_by_postponed_annotation_quiet(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        source = (FIXTURES / "issue_127_local_annotation.py").resolve()
+
+        status = run(
+            [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+            stdout,
+            stderr,
+        )
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_unusedcode_keeps_outer_type_alias_used_by_nested_annotations_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_annotation.py"
+            source.write_text(
+                "from __future__ import annotations\n"
+                "\n"
+                "def outer():\n"
+                "    MyType = int\n"
+                "\n"
+                "    def inner(value: MyType) -> MyType:\n"
+                "        return value\n"
+                "\n"
+                "    return inner\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
     def test_unusedcode_distinguishes_prebinding_and_shadowed_comprehension_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "comprehension_scopes.py"

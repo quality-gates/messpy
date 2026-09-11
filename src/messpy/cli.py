@@ -2920,6 +2920,7 @@ def _function_scopes(
             _scope_usage(table).used_names
             | _comprehension_referenced_names(node)
             | _augmented_assignment_names(node)
+            | _annotation_referenced_names(node)
         )
         scopes.append((node, table, used_names))
     return scopes
@@ -2985,6 +2986,58 @@ def _augmented_assignment_names(
         for descendant in _executable_nodes(node)
         if isinstance(descendant, ast.AugAssign) and isinstance(descendant.target, ast.Name)
     )
+
+
+def _annotation_referenced_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+) -> frozenset[str]:
+    collector = _AnnotationReferenceCollector()
+    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
+    for root in roots:
+        collector.visit(root)
+    return frozenset(collector.names)
+
+
+class _AnnotationReferenceCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.names.update(_annotation_name_loads(node.annotation))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.names.update(_callable_annotation_name_loads(node))
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.names.update(_callable_annotation_name_loads(node))
+
+    def visit_Lambda(self, _node: ast.Lambda) -> None:
+        return
+
+    def visit_ClassDef(self, _node: ast.ClassDef) -> None:
+        return
+
+
+def _callable_annotation_name_loads(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    annotations = [argument.annotation for argument in _arguments(node.args)]
+    if node.returns is not None:
+        annotations.append(node.returns)
+    return {
+        name
+        for annotation in annotations
+        if annotation is not None
+        for name in _annotation_name_loads(annotation)
+    }
+
+
+def _annotation_name_loads(node: ast.AST) -> set[str]:
+    return {
+        descendant.id
+        for descendant in ast.walk(node)
+        if isinstance(descendant, ast.Name) and isinstance(descendant.ctx, ast.Load)
+    }
 
 
 def _loaded_non_target_names(
