@@ -3401,11 +3401,15 @@ class _PrivateFieldCollector(ast.NodeVisitor):
             self._add_field(node.attr, node.lineno)
         self.generic_visit(node)
 
-    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
-        return
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if self.receiver is not None and _shadows_receiver(node, self.receiver):
+            return
+        self.generic_visit(node)
 
-    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
-        return
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if self.receiver is not None and _shadows_receiver(node, self.receiver):
+            return
+        self.generic_visit(node)
 
     def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
@@ -4917,16 +4921,32 @@ def _instance_receiver(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | 
     return None
 
 
+def _shadows_receiver(function: ast.FunctionDef | ast.AsyncFunctionDef, receiver: str) -> bool:
+    arguments = function.args
+    candidates = [
+        *arguments.posonlyargs,
+        *arguments.args,
+        *arguments.kwonlyargs,
+        arguments.vararg,
+        arguments.kwarg,
+    ]
+    return any(argument is not None and argument.arg == receiver for argument in candidates)
+
+
 class _InstanceFieldCollector(ast.NodeVisitor):
     def __init__(self, receiver: str) -> None:
         self.receiver = receiver
         self.names: list[str] = []
 
-    def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
-        return
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        if _shadows_receiver(node, self.receiver):
+            return
+        self.generic_visit(node)
 
-    def visit_AsyncFunctionDef(self, _node: ast.AsyncFunctionDef) -> None:
-        return
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        if _shadows_receiver(node, self.receiver):
+            return
+        self.generic_visit(node)
 
     def visit_Lambda(self, _node: ast.Lambda) -> None:
         return
