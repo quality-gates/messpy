@@ -31,7 +31,7 @@ BEHAVIOR = {
     "UnusedLocalVariable": "Flags locals and comprehension bindings with no proven use inside their lexical scope.",
     "UnusedFormalParameter": "Flags callable parameters with no proven use; conventional underscore-unused names stay quiet.",
     "UnusedPrivateField": "Flags underscore-private fields with no proven class use, backing off when dynamic access or framework patterns make certainty impossible.",
-    "UnusedPrivateMethod": "Flags underscore-private methods with no proven class use, with the same conservative safeguards.",
+    "UnusedPrivateMethod": "Flags underscore-private methods with no proven class use, backing off when dynamic access, framework patterns, or an unresolved base class makes certainty impossible.",
     "BooleanArgumentFlag": "Flags boolean parameters that often force forked call-site behavior; allowlist names with `exceptions` or `ignorepattern`.",
     "ElseExpression": "Flags an `else` that follows a branch which always returns, raises, continues, or breaks—usually dead or misleading structure.",
     "StaticAccess": "Flags class-like static calls that are clearer as ordinary functions or instance methods; allowlist with `exceptions` or `ignorepattern`.",

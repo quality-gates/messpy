@@ -2566,6 +2566,50 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_unusedcode_keeps_private_methods_overriding_imported_bases_quiet(self) -> None:
+        source = (FIXTURES / "issue_138").resolve()
+        stdout = StringIO()
+        stderr = StringIO()
+
+        status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_unusedcode_still_reports_unused_private_methods_in_local_subclasses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "local_base.py"
+            source.write_text(
+                "class Base:\n"
+                "    def run(self):\n"
+                "        return self._hook()\n"
+                "\n"
+                "    def _hook(self):\n"
+                "        return 0\n"
+                "\n"
+                "class Child(Base):\n"
+                "    def _hook(self):\n"
+                "        return 1\n"
+                "\n"
+                "    def _discarded(self):\n"
+                "        return 2\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertNotIn("_hook", report)
+        self.assertIn(
+            "UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_discarded'.",
+            report,
+        )
+
     def test_unusedcode_keeps_closure_and_comprehension_bindings_quiet(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "scopes.py"

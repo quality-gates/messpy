@@ -268,6 +268,7 @@ class ClassInfo:
     fields: tuple[str, ...]
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
     is_ast_visitor: bool
+    has_unresolved_base: bool
 
 
 @dataclass(frozen=True)
@@ -3315,6 +3316,9 @@ def _unused_private_method_findings(
         return []
     findings: list[Finding] = []
     for class_info in classes:
+        # An unresolved base may call protected hooks that this file cannot see.
+        if class_info.has_unresolved_base:
+            continue
         for method in class_info.methods:
             if not _is_unused_private_method(method, usage):
                 continue
@@ -4623,10 +4627,17 @@ def _classes(tree: ast.Module) -> list[ClassInfo]:
     classes = []
     protocol_names = _protocol_base_names(tree)
     visitor_ids = _ast_visitor_class_ids(tree)
+    qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
-        classes.append(_class_info(node, id(node) in visitor_ids))
+        classes.append(
+            _class_info(
+                node,
+                id(node) in visitor_ids,
+                _has_unresolved_base(node, qualified_names, classes_by_qualified_name),
+            )
+        )
     return sorted(classes, key=lambda class_info: class_info.node.lineno)
 
 
@@ -4824,6 +4835,17 @@ def _local_base_class(
     return None
 
 
+def _has_unresolved_base(
+    node: ast.ClassDef,
+    qualified_names: dict[int, str],
+    classes_by_qualified_name: defaultdict[str, list[ast.ClassDef]],
+) -> bool:
+    return any(
+        _local_base_class(node, _base_dotted_name(base), qualified_names, classes_by_qualified_name) is None
+        for base in node.bases
+    )
+
+
 def _resolved_import_name(
     node: ast.expr,
     aliases: dict[str, tuple[str, bool]],
@@ -4848,7 +4870,7 @@ def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
     }
 
 
-def _class_info(node: ast.ClassDef, is_ast_visitor: bool) -> ClassInfo:
+def _class_info(node: ast.ClassDef, is_ast_visitor: bool, has_unresolved_base: bool) -> ClassInfo:
     members = _class_member_statements(node.body)
     methods = tuple(
         statement
@@ -4863,7 +4885,7 @@ def _class_info(node: ast.ClassDef, is_ast_visitor: bool) -> ClassInfo:
             ]
         )
     )
-    return ClassInfo(node, node.name, fields, methods, is_ast_visitor)
+    return ClassInfo(node, node.name, fields, methods, is_ast_visitor, has_unresolved_base)
 
 
 def _class_member_statements(statements: Sequence[ast.stmt]) -> list[ast.stmt]:

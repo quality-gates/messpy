@@ -29,7 +29,7 @@ messpy only reads syntax. It does not import your packages, execute your code, o
 | `unusedcode` | `UnusedLocalVariable` | 3 | — | Flags locals and comprehension bindings with no proven use inside their lexical scope. |
 | `unusedcode` | `UnusedFormalParameter` | 3 | — | Flags callable parameters with no proven use; conventional underscore-unused names stay quiet. |
 | `unusedcode` | `UnusedPrivateField` | 3 | — | Flags underscore-private fields with no proven class use, backing off when dynamic access or framework patterns make certainty impossible. |
-| `unusedcode` | `UnusedPrivateMethod` | 3 | — | Flags underscore-private methods with no proven class use, with the same conservative safeguards. |
+| `unusedcode` | `UnusedPrivateMethod` | 3 | — | Flags underscore-private methods with no proven class use, backing off when dynamic access, framework patterns, or an unresolved base class makes certainty impossible. |
 | `cleancode` | `BooleanArgumentFlag` | 1 | `exceptions=`, `ignorepattern=` | Flags boolean parameters that often force forked call-site behavior; allowlist names with `exceptions` or `ignorepattern`. Uses annotations and defaults only—no runtime type lookup. |
 | `cleancode` | `ElseExpression` | 1 | — | Flags an `else` that follows a branch which always returns, raises, continues, or breaks—usually dead or misleading structure. |
 | `cleancode` | `StaticAccess` | 1 | `exceptions=`, `ignorepattern=` | Flags class-like static calls that are clearer as ordinary functions or instance methods; allowlist with `exceptions` or `ignorepattern`. |
