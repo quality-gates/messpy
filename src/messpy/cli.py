@@ -2896,7 +2896,7 @@ def _protocol_method_ids(tree: ast.Module) -> set[int]:
         id(method)
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and _is_protocol(node, protocol_names)
-        for method in node.body
+        for method in _class_member_statements(node.body)
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
@@ -4833,7 +4833,7 @@ def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
         id(statement)
         for node in ast.walk(tree)
         if isinstance(node, ast.ClassDef) and id(node) in visitor_ids
-        for statement in node.body
+        for statement in _class_member_statements(node.body)
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
         and _is_ast_visitor_handler(statement.name)
     }

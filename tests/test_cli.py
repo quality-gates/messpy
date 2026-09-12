@@ -2880,6 +2880,73 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_unusedcode_exempts_visitor_and_protocol_methods_in_class_control_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "control_flow_contracts.py"
+            source.write_text(
+                "import ast\n"
+                "from typing import Protocol\n"
+                "\n"
+                "class IfVisitor(ast.NodeVisitor):\n"
+                "    if True:\n"
+                "        def visit_Name(self, node):\n"
+                "            return None\n"
+                "\n"
+                "class TryVisitor(ast.NodeVisitor):\n"
+                "    try:\n"
+                "        def visit_Constant(self, node):\n"
+                "            return None\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "\n"
+                "class ForVisitor(ast.NodeVisitor):\n"
+                "    for _ in ():\n"
+                "        def visit_Attribute(self, node):\n"
+                "            return None\n"
+                "\n"
+                "class MatchVisitor(ast.NodeVisitor):\n"
+                "    match 0:\n"
+                "        case _:\n"
+                "            def visit_BinOp(self, node):\n"
+                "                return None\n"
+                "\n"
+                "class IfProtocol(Protocol):\n"
+                "    if True:\n"
+                "        def read_if(self, unused_param: int) -> str:\n"
+                "            return \"ok\"\n"
+                "\n"
+                "class TryProtocol(Protocol):\n"
+                "    try:\n"
+                "        def read_try(self, unused_param: int) -> str:\n"
+                "            return \"ok\"\n"
+                "    except Exception:\n"
+                "        pass\n"
+                "\n"
+                "class ForProtocol(Protocol):\n"
+                "    for _ in ():\n"
+                "        def read_for(self, unused_param: int) -> str:\n"
+                "            return \"ok\"\n"
+                "\n"
+                "class MatchProtocol(Protocol):\n"
+                "    match 0:\n"
+                "        case _:\n"
+                "            def read_match(self, unused_param: int) -> str:\n"
+                "                return \"ok\"\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedFormalParameter"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_node_transformer_preserves_callback_parameter_exemption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "transformer.py"
