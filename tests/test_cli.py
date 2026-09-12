@@ -4103,6 +4103,134 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertNotIn(":3:", report)
         self.assertNotIn(":4:", report)
 
+    def test_development_code_fragment_reports_aliased_debug_calls(self) -> None:
+        cases = [
+            (
+                "direct_module_call",
+                "import pdb\n"
+                "def compute_total():\n"
+                "    pdb.set_trace()\n",
+                "pdb.set_trace()",
+            ),
+            (
+                "from_imported_function",
+                "from pdb import set_trace\n"
+                "def compute_total():\n"
+                "    set_trace()\n",
+                "pdb.set_trace()",
+            ),
+            (
+                "aliased_module_import",
+                "import pdb as debug\n"
+                "def compute_total():\n"
+                "    debug.set_trace()\n",
+                "pdb.set_trace()",
+            ),
+            (
+                "aliased_from_import",
+                "from pdb import set_trace as trace\n"
+                "def compute_total():\n"
+                "    trace()\n",
+                "pdb.set_trace()",
+            ),
+            (
+                "function_local_import",
+                "def compute_total():\n"
+                "    from pdb import set_trace\n"
+                "    set_trace()\n",
+                "pdb.set_trace()",
+            ),
+            (
+                "builtins_attribute_call",
+                "import builtins\n"
+                "def compute_total():\n"
+                "    builtins.breakpoint()\n",
+                "builtins.breakpoint()",
+            ),
+            (
+                "builtins_from_import",
+                "from builtins import breakpoint\n"
+                "def compute_total():\n"
+                "    breakpoint()\n",
+                "builtins.breakpoint()",
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, source_text, debug_call in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", "DevelopmentCodeFragment"],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(2, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                self.assertIn(
+                    f"calls the typical debug function {debug_call} which is mostly only used during development.",
+                    stdout.getvalue(),
+                    name,
+                )
+
+    def test_development_code_fragment_keeps_shadowed_and_unrelated_calls_quiet(self) -> None:
+        cases = [
+            (
+                "user_defined_breakpoint",
+                "def breakpoint():\n"
+                "    pass\n"
+                "\n"
+                "def compute_total():\n"
+                "    breakpoint()\n",
+            ),
+            (
+                "parameter_shadow",
+                "def compute_total(breakpoint):\n"
+                "    breakpoint()\n",
+            ),
+            (
+                "rebound_alias",
+                "import pdb as debug\n"
+                "\n"
+                "debug = object()\n"
+                "\n"
+                "def compute_total():\n"
+                "    debug.set_trace()\n",
+            ),
+            (
+                "unrelated_method_call",
+                "class Recorder:\n"
+                "    def set_trace(self):\n"
+                "        ...\n"
+                "\n"
+                "recorder = Recorder()\n"
+                "\n"
+                "def compute_total():\n"
+                "    recorder.set_trace()\n",
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, source_text in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", "DevelopmentCodeFragment"],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(0, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                self.assertEqual("", stdout.getvalue(), name)
+
     def test_design_policies_keep_goto_loadable_and_strict_rules_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
