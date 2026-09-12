@@ -531,6 +531,57 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(f"{_finding_for(source, 'still_reported', 104)}\n", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_disable_next_line_above_a_decorator_suppresses_the_decorated_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "decorated.py"
+            source.write_text(
+                "import functools\n"
+                "\n"
+                "\n"
+                "class Widget:\n"
+                "    # messpy-disable-next-line CamelCaseMethodName\n"
+                "    @functools.cache\n"
+                "    def getValue(self):\n"
+                "        return 1\n"
+                "\n"
+                "    def getStillReported(self):\n"
+                "        return 2\n",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "controversial"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertNotIn("getValue", report)
+        self.assertIn("The method getStillReported is not named in snake_case.", report)
+
+    def test_disable_next_line_between_a_decorator_and_def_suppresses_the_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "between.py"
+            source.write_text(
+                "import functools\n"
+                "\n"
+                "\n"
+                "class Widget:\n"
+                "    @functools.cache\n"
+                "    # messpy-disable-next-line CamelCaseMethodName\n"
+                "    def getValue(self):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "controversial"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_disable_next_line_does_not_skip_an_unsuitable_source_line(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "next_line.py"

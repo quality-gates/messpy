@@ -625,7 +625,7 @@ def _analyze(
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
         try:
-            findings.extend(_apply_suppressions(source, _findings(source_file, source, tree, rules)))
+            findings.extend(_apply_suppressions(source, tree, _findings(source_file, source, tree, rules)))
         except SyntaxError as error:
             # ast.parse() above accepts some sources (e.g. duplicate parameter
             # names) that symtable.symtable() rejects; rules that build symbol
@@ -5094,8 +5094,9 @@ def _unsuppressed(findings: Sequence[Finding]) -> list[Finding]:
     return [finding for finding in findings if not finding.suppressed]
 
 
-def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Finding]:
+def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Finding]) -> list[Finding]:
     directives, source_lines = _suppression_directives(source)
+    decorated_headers = _decorated_definition_lines(tree)
     active_counts: dict[str, int] = {}
     next_line_rules: dict[int, set[str]] = {}
     directive_index = 0
@@ -5104,7 +5105,7 @@ def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Findin
     for finding in sorted(findings, key=lambda candidate: candidate.line):
         while directive_index < directive_count and directives[directive_index][0] < finding.line:
             _apply_suppression_directive(
-                directives[directive_index], source_lines, active_counts, next_line_rules
+                directives[directive_index], source_lines, decorated_headers, active_counts, next_line_rules
             )
             directive_index += 1
         identity = _rule_identity(finding.rule_name)
@@ -5115,9 +5116,22 @@ def _apply_suppressions(source: str, findings: Sequence[Finding]) -> list[Findin
     return suppressed
 
 
+def _decorated_definition_lines(tree: ast.Module) -> dict[int, int]:
+    decorated_headers: dict[int, int] = {}
+    for node in ast.walk(tree):
+        decorators = getattr(node, "decorator_list", None)
+        if not decorators:
+            continue
+        header_line = node.lineno
+        for line in range(decorators[0].lineno, header_line):
+            decorated_headers[line] = header_line
+    return decorated_headers
+
+
 def _apply_suppression_directive(
     directive: tuple[int, str, set[str]],
     source_lines: list[int],
+    decorated_headers: dict[int, int],
     active_counts: dict[str, int],
     next_line_rules: dict[int, set[str]],
 ) -> None:
@@ -5125,7 +5139,11 @@ def _apply_suppression_directive(
     if action == "disable-next-line":
         next_line_index = bisect_right(source_lines, line)
         if next_line_index < len(source_lines):
-            next_line_rules.setdefault(source_lines[next_line_index], set()).update(rule_names)
+            target_line = source_lines[next_line_index]
+            next_line_rules.setdefault(target_line, set()).update(rule_names)
+            header_line = decorated_headers.get(target_line)
+            if header_line is not None:
+                next_line_rules.setdefault(header_line, set()).update(rule_names)
         return
     delta = 1 if action == "disable" else -1
     for rule_name in rule_names:
