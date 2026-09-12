@@ -1093,6 +1093,54 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", unknown_ruleset_exclusion_stdout.getvalue())
         self.assertIn("Unknown rule exclusion 'ExcessiveMethodLenght'.", unknown_ruleset_exclusion_stderr.getvalue())
 
+    def test_ruleset_loading_rejects_unknown_property_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "source.py"
+            ruleset = temporary / "invalid-property.xml"
+            source.write_text("pass\n", encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="invalid">
+    <rule ref="LongVariable">
+        <properties><property name="maximun" value="5" /></properties>
+    </rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("Error: Unknown property 'maximun' for rule 'LongVariable'.\n", stderr.getvalue())
+
+    def test_ruleset_loading_rejects_unknown_property_on_rule_without_properties(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "source.py"
+            ruleset = temporary / "invalid-property.xml"
+            source.write_text("pass\n", encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="invalid">
+    <rule ref="BooleanGetMethodName">
+        <properties><property name="typo" value="true" /></properties>
+    </rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("Error: Unknown property 'typo' for rule 'BooleanGetMethodName'.\n", stderr.getvalue())
+
     def test_callable_metrics_cover_python_callables_and_exact_configured_thresholds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
