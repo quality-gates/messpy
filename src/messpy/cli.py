@@ -620,7 +620,7 @@ def _analyze(
                 ProcessingError(source_file, line, f"Could not parse {source_file}: {error.msg}")
             )
             continue
-        except (OSError, UnicodeError) as error:
+        except (RecursionError, OSError, UnicodeError) as error:
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
         try:
@@ -633,7 +633,7 @@ def _analyze(
             processing_errors.append(
                 ProcessingError(source_file, line, f"Could not analyze {source_file}: {error.msg}")
             )
-        except (tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
+        except (RecursionError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
             processing_errors.append(
                 ProcessingError(source_file, 1, f"Could not process {source_file}: {error}")
             )
@@ -1654,7 +1654,7 @@ def _annotation_expression(annotation: ast.expr | None) -> ast.expr | None:
         return annotation
     try:
         return ast.parse(annotation.value, mode="eval").body
-    except SyntaxError:
+    except (SyntaxError, RecursionError):
         return None
 
 
