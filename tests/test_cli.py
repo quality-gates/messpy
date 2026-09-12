@@ -763,6 +763,24 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("duplicate argument 'x' in function definition", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_deeply_nested_expression_reports_processing_error_without_aborting_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            deep = project / "deep.py"
+            messy = project / "messy.py"
+            deep.write_text("def compute_total():\n    value = " + "+".join(["1"] * 500) + "\n    return value\n", encoding="utf-8")
+            messy.write_text("def unused_example():\n    leftover = 1\n    return 0\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([f"{deep},{messy}", "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(f"{deep.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+
     def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
