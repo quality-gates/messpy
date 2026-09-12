@@ -381,7 +381,9 @@ def _merge_ruleset_element(
         raise RulesetError(f"Rule reference in '{path}' is missing ref.")
     referenced = _load_reference(reference, path.parent, ancestry)
     referenced = _without_rule_exclusions(referenced, element, path)
-    _merge_reference(loaded, referenced, element, path)
+    properties = _properties(element, path)
+    _validate_property_names(properties, referenced, reference)
+    _merge_reference(loaded, referenced, element, path, properties)
 
 
 def _without_rule_exclusions(
@@ -396,9 +398,13 @@ def _without_rule_exclusions(
     return [rule for rule in referenced if _identity(rule.name) not in excluded_names]
 
 
-def _overrides(rules: Iterable[LoadedRule], element: ElementTree.Element, path: Path) -> list[LoadedRule]:
+def _overrides(
+    rules: Iterable[LoadedRule],
+    element: ElementTree.Element,
+    path: Path,
+    properties: dict[str, str],
+) -> list[LoadedRule]:
     priority = _priority(element, path)
-    properties = _properties(element, path)
     if priority is None and not properties:
         return list(rules)
     return [
@@ -440,17 +446,35 @@ def _properties(element: ElementTree.Element, path: Path) -> dict[str, str]:
     return properties
 
 
+def _validate_property_names(
+    properties: dict[str, str], referenced: list[LoadedRule], reference: str
+) -> None:
+    known_names = {name for rule in referenced for name in rule.properties}
+    for name in properties:
+        if name in known_names:
+            continue
+        if len(referenced) == 1:
+            target = f"rule '{referenced[0].name}'"
+        else:
+            target = f"ruleset reference '{reference}'"
+        raise RulesetError(f"Unknown property '{name}' for {target}.")
+
+
 def _merge(target: dict[str, LoadedRule], rules: Iterable[LoadedRule]) -> None:
     for rule in rules:
         target[_identity(rule.name)] = rule
 
 
 def _merge_reference(
-    target: dict[str, LoadedRule], referenced: Iterable[LoadedRule], element: ElementTree.Element, path: Path
+    target: dict[str, LoadedRule],
+    referenced: Iterable[LoadedRule],
+    element: ElementTree.Element,
+    path: Path,
+    properties: dict[str, str],
 ) -> None:
     for rule in referenced:
         existing = target.get(_identity(rule.name), rule)
-        target[_identity(rule.name)] = _overrides([existing], element, path)[0]
+        target[_identity(rule.name)] = _overrides([existing], element, path, properties)[0]
 
 
 def _exclude(rules: dict[str, LoadedRule], name: str) -> None:
