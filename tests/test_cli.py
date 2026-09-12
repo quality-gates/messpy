@@ -1794,6 +1794,69 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_too_many_fields_counts_instance_fields_assigned_in_nested_functions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "nested_fields.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "class Widget:\n"
+                "    def __init__(self):\n"
+                "        def inner():\n"
+                "            self.first = 1\n"
+                "            self.second = 2\n"
+                "        inner()\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="1" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "TooManyFields [priority 3] The class Widget has 2 fields. "
+            "Consider redesigning Widget to keep the number of fields under 1.",
+            stdout.getvalue(),
+        )
+
+    def test_too_many_fields_ignores_nested_functions_that_shadow_the_receiver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "shadowed_receiver.py"
+            ruleset = temporary / "class-metrics.xml"
+            source.write_text(
+                "class Widget:\n"
+                "    def __init__(self):\n"
+                "        def inner(self):\n"
+                "            self.first = 1\n"
+                "        inner(Widget())\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                """<ruleset name="class metrics">
+    <rule ref="TooManyFields"><properties><property name="maxfields" value="0" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
     def test_codesize_includes_all_ten_callable_and_class_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "clean.py"
@@ -2329,6 +2392,59 @@ class CommandAcceptanceTests(unittest.TestCase):
             "UnusedPrivateField [priority 3] Avoid unused private fields such as '_unused'.",
             stdout.getvalue(),
         )
+
+    def test_unusedcode_reports_unused_private_fields_assigned_in_nested_functions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_private_field.py"
+            source.write_text(
+                "class Cache:\n"
+                "    def __init__(self):\n"
+                "        def inner():\n"
+                "            self._stale = 1\n"
+                "        inner()\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_stale'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_ignores_nested_functions_that_shadow_the_receiver_for_private_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_shadowed_private_field.py"
+            source.write_text(
+                "class Cache:\n"
+                "    def __init__(self):\n"
+                "        def inner(self):\n"
+                "            self._stale = 1\n"
+                "        inner(Cache())\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
 
     def test_unusedcode_reports_an_unused_private_method_through_the_command_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
