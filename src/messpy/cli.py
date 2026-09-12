@@ -54,6 +54,7 @@ EXIT_CALL_NAMES = frozenset(
 )
 COUNT_IN_LOOP_EXPRESSION_RULE_NAME = "CountInLoopExpression"
 DEVELOPMENT_CODE_FRAGMENT_RULE_NAME = "DevelopmentCodeFragment"
+DEVELOPMENT_CALL_NAMES = frozenset({"breakpoint", "builtins.breakpoint", "pdb.set_trace"})
 EMPTY_CATCH_BLOCK_RULE_NAME = "EmptyCatchBlock"
 COUPLING_BETWEEN_OBJECTS_RULE_NAME = "CouplingBetweenObjects"
 GLOBAL_VARIABLE_RULE_NAME = "GlobalVariable"
@@ -1230,10 +1231,10 @@ _BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
 
 
 @dataclass(frozen=True)
-class _ExitScopeImports:
-    """The exit-relevant imports and the other name bindings of one scope."""
+class _ScopeCallImports:
+    """The call-relevant imports and the other name bindings of one scope."""
 
-    exit_modules: dict[str, str]
+    call_modules: dict[str, str]
     rebound: set[str]
 
 
@@ -1274,18 +1275,18 @@ def _exit_expression_findings(
 def _is_exit_call(
     node: ast.Call,
     tree: ast.Module,
-    aliases: dict[int, _ExitScopeImports],
+    aliases: dict[int, _ScopeCallImports],
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
 ) -> bool:
-    name = _resolved_exit_name(node, tree, aliases, parents, bindings)
+    name = _resolved_call_name(node, tree, aliases, parents, bindings)
     return name in EXIT_CALL_NAMES
 
 
-def _resolved_exit_name(
+def _resolved_call_name(
     node: ast.Call,
     tree: ast.Module,
-    aliases: dict[int, _ExitScopeImports],
+    aliases: dict[int, _ScopeCallImports],
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
 ) -> str:
@@ -1296,8 +1297,8 @@ def _resolved_exit_name(
         imports = aliases[id(scope)]
         if root_name in imports.rebound:
             return ""
-        if root_name in imports.exit_modules:
-            return f"{imports.exit_modules[root_name]}{attributes}"
+        if root_name in imports.call_modules:
+            return f"{imports.call_modules[root_name]}{attributes}"
         if root_name in bindings[id(scope)]:
             return ""
     return original_name
@@ -1365,7 +1366,7 @@ def _development_fragment_findings(
     rule = _rule(rules, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME)
     if rule is None:
         return []
-    unwanted = {"breakpoint", "pdb.set_trace"} | {
+    unwanted = DEVELOPMENT_CALL_NAMES | {
         name.strip()
         for name in rule.properties.get("unwanted-functions", "").split(",")
         if name.strip()
@@ -1385,13 +1386,17 @@ def _development_call_findings(
     bindings: dict[int, set[str]],
 ) -> list[Finding]:
     findings: list[Finding] = []
+    aliases = _imported_call_aliases(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted_name(node.func)
-        if name not in unwanted or (
-            name == "breakpoint" and _is_shadowed(name, node, tree, parents, bindings)
-        ):
+        resolved = _resolved_call_name(node, tree, aliases, parents, bindings)
+        if resolved in DEVELOPMENT_CALL_NAMES:
+            name = resolved
+        elif name not in unwanted or name == "breakpoint":
+            # A bare `breakpoint` that resolution could not pin on the builtins
+            # module is a user-defined or rebound name, so it stays quiet.
             continue
         _, context = _design_scope(node, parents, contexts)
         subject = "The module" if context == "module" else f"The {context}"
@@ -2048,29 +2053,29 @@ def _dotted_name(node: ast.expr) -> str:
     return ""
 
 
-def _imported_call_aliases(tree: ast.Module) -> dict[int, _ExitScopeImports]:
-    return {id(scope): _scope_exit_imports(scope) for scope in _binding_scopes(tree)}
+def _imported_call_aliases(tree: ast.Module) -> dict[int, _ScopeCallImports]:
+    return {id(scope): _scope_call_imports(scope) for scope in _binding_scopes(tree)}
 
 
-def _scope_exit_imports(scope: _BindingScope) -> _ExitScopeImports:
-    imports = _ExitImportCollector()
+def _scope_call_imports(scope: _BindingScope) -> _ScopeCallImports:
+    imports = _CallImportCollector()
     rebindings = _ScopeRebindingCollector()
     for statement in _scope_statements(scope):
         imports.visit(statement)
         rebindings.visit(statement)
-    return _ExitScopeImports(exit_modules=imports.names, rebound=rebindings.names)
+    return _ScopeCallImports(call_modules=imports.names, rebound=rebindings.names)
 
 
-class _ExitImportCollector(ast.NodeVisitor):
+class _CallImportCollector(ast.NodeVisitor):
     def __init__(self) -> None:
         self.names: dict[str, str] = {}
 
     def visit_Import(self, node: ast.Import) -> None:
-        self.names.update(_exit_import_aliases(node))
+        self.names.update(_call_import_aliases(node))
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        if node.module in {"sys", "os", "builtins"}:
-            self.names.update(_exit_import_from_aliases(node))
+        if node.module in {"sys", "os", "builtins", "pdb"}:
+            self.names.update(_call_import_from_aliases(node))
 
     def visit_FunctionDef(self, _node: ast.FunctionDef) -> None:
         return
@@ -2114,15 +2119,15 @@ class _ScopeRebindingCollector(ast.NodeVisitor):
         super().generic_visit(node)
 
 
-def _exit_import_aliases(statement: ast.Import) -> dict[str, str]:
+def _call_import_aliases(statement: ast.Import) -> dict[str, str]:
     return {
         imported.asname or imported.name: imported.name
         for imported in statement.names
-        if imported.name in {"sys", "os", "builtins"}
+        if imported.name in {"sys", "os", "builtins", "pdb"}
     }
 
 
-def _exit_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
+def _call_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
     return {
         imported.asname or imported.name: f"{statement.module}.{imported.name}"
         for imported in statement.names
