@@ -127,6 +127,11 @@ Waive one intentional finding without weakening the whole gate:
 def deliberately_dense_helper(...):
     ...
 
+# messpy-disable-next-line CamelCaseMethodName
+@functools.cache
+def cached_method(...):
+    ...
+
 # messpy-disable DevelopmentCodeFragment
 # ... temporary debug region ...
 # messpy-enable DevelopmentCodeFragment
