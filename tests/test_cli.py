@@ -5,6 +5,7 @@ import json
 import os
 from io import StringIO
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -941,6 +942,57 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("", stdout.getvalue())
         self.assertIn("Unable to write report", stderr.getvalue())
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows does not support POSIX file permission bits or umask.",
+    )
+    def test_reportfile_preserves_existing_file_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            report_file = temporary / "reports" / "messpy.txt"
+            report_file.parent.mkdir()
+            report_file.write_text("stale report", encoding="utf-8")
+            report_file.chmod(0o640)
+            source = temporary / "violating.py"
+            source.write_text(_long_function("violating"), encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "codesize", "--reportfile", str(report_file)], stdout, stderr
+            )
+
+            mode = stat.S_IMODE(report_file.stat().st_mode)
+
+        self.assertEqual(2, status)
+        self.assertEqual(0o640, mode)
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Windows does not support POSIX file permission bits or umask.",
+    )
+    def test_reportfile_creates_new_file_with_umask_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            report_file = temporary / "reports" / "messpy.txt"
+            report_file.parent.mkdir()
+            source = temporary / "violating.py"
+            source.write_text(_long_function("violating"), encoding="utf-8")
+
+            original_umask = os.umask(0o027)
+            try:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [str(source), "text", "codesize", "--reportfile", str(report_file)], stdout, stderr
+                )
+                mode = stat.S_IMODE(report_file.stat().st_mode)
+            finally:
+                os.umask(original_umask)
+
+        self.assertEqual(2, status)
+        self.assertEqual(0o640, mode)
 
     def test_command_errors_have_deterministic_diagnostics(self) -> None:
         cases = [

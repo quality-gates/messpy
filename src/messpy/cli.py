@@ -9,7 +9,9 @@ from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import json
 import keyword
+import os
 import re
+import stat
 import symtable
 import sys
 import token
@@ -979,9 +981,21 @@ def _use_color(parsed_arguments: ParsedArguments, stdout: TextIO) -> bool:
     return bool(getattr(stdout, "isatty", lambda: False)())
 
 
+def _destination_file_mode(report_file: Path) -> int:
+    try:
+        return stat.S_IMODE(report_file.stat().st_mode)
+    except OSError:
+        current_umask = os.umask(0)
+        try:
+            return 0o666 & ~current_umask
+        finally:
+            os.umask(current_umask)
+
+
 def _write_report(report_file: Path, report: str) -> None:
     temporary_file: Path | None = None
     try:
+        target_mode = _destination_file_mode(report_file)
         with NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -991,6 +1005,7 @@ def _write_report(report_file: Path, report: str) -> None:
         ) as output:
             temporary_file = Path(output.name)
             output.write(report)
+        temporary_file.chmod(target_mode)
         temporary_file.replace(report_file)
     except OSError as error:
         if temporary_file is not None:
