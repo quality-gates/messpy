@@ -414,6 +414,30 @@ class CommandAcceptanceTests(unittest.TestCase):
             json.loads(stdout.getvalue()),
         )
 
+    def test_github_report_escapes_properties_but_keeps_message_colons_and_commas(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory).resolve()
+            package = project / "a,b%c"
+            package.mkdir()
+            (package / "m.py").write_text("def configure(a, b):\n    return a\n", encoding="utf-8")
+            (package / "bad.py").write_text("def broken(:\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(project), "github", "unusedcode"], stdout, stderr)
+
+        escaped_package = package.as_posix().replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
+        escaped_source = str(package / "bad.py").replace("%", "%25")
+        self.assertEqual(1, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(
+            f"::warning file={escaped_package}/m.py,line=1,col=1,title=UnusedFormalParameter [priority 3]::"
+            "Avoid unused parameters such as 'b'. (context: b)\n"
+            f"::error file={escaped_package}/bad.py,line=1,col=1,title=ProcessingError::"
+            f"Could not parse {escaped_source}: invalid syntax\n",
+            stdout.getvalue(),
+        )
+
     def test_public_reports_keep_one_finding_and_one_processing_error(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)

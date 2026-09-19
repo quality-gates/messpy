@@ -95,7 +95,7 @@ One workflow command per record so Actions can attach annotations to source line
   The trailing ` [suppressed]` segment is present only when suppressed.
 - error: `::error file=PATH,line=LINE,col=1,title=ProcessingError::MESSAGE`
 
-`%`, CR, LF, `:`, and `,` in path, title, and message values are percent-escaped.
+Property values (path and title) percent-escape `%`, CR, LF, `:`, and `,`, because `:` and `,` delimit workflow command properties. The message after `::` percent-escapes only `%`, CR, and LF; its `:` and `,` stay literal, since the Actions runner does not unescape them in message data.
 
 ### GitLab Code Quality
 
