@@ -820,26 +820,30 @@ def _colored_error(error: ProcessingError, color: bool) -> str:
     return f"{_report_path(error.path)}:{error.line}: {message}"
 
 
-def _github_escape(value: str) -> str:
+def _github_escape_property(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A").replace(":", "%3A").replace(",", "%2C")
+
+
+def _github_escape_data(value: str) -> str:
+    return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
 def _github_report(findings: Sequence[Finding], processing_errors: Sequence[ProcessingError]) -> str:
     lines = []
     for finding in _ordered_findings(findings):
         record = _finding_record(finding)
-        title = _github_escape(f"{record['ruleName']} [priority {record['priority']}]")
-        message = _github_escape(
+        title = _github_escape_property(f"{record['ruleName']} [priority {record['priority']}]")
+        message = _github_escape_data(
             f"{record['message']} (context: {record['context']})"
             f"{' [suppressed]' if record['suppressed'] else ''}"
         )
         lines.append(
-            f"::warning file={_github_escape(str(record['path']))},line={record['line']},col=1,title={title}::{message}"
+            f"::warning file={_github_escape_property(str(record['path']))},line={record['line']},col=1,title={title}::{message}"
         )
     for error in _ordered_errors(processing_errors):
         record = _error_record(error)
         lines.append(
-            f"::error file={_github_escape(str(record['path']))},line={record['line']},col=1,title=ProcessingError::{_github_escape(str(record['message']))}"
+            f"::error file={_github_escape_property(str(record['path']))},line={record['line']},col=1,title=ProcessingError::{_github_escape_data(str(record['message']))}"
         )
     return "" if not lines else "\n".join(lines) + "\n"
 
