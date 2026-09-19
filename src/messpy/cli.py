@@ -5264,24 +5264,66 @@ def _source_files(
 ) -> list[Path]:
     source_files: set[Path] = set()
     for path in paths:
-        source_files.update(_source_files_under(path, suffixes, exclusions, ignore_tests))
+        source_files.update(_source_files_under(path, suffixes, exclusions, ignore_tests, root=path))
     return sorted(source_files, key=lambda candidate: candidate.as_posix())
 
 
 def _source_files_under(
-    path: Path, suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
+    path: Path,
+    suffixes: AbstractSet[str],
+    exclusions: Sequence[str],
+    ignore_tests: bool,
+    root: Path | None = None,
 ) -> set[Path]:
-    if _is_excluded(path, exclusions) or (ignore_tests and _is_test_path(path)):
+    scan_root = root if root is not None else path
+    if _is_root_ignored(path, exclusions, ignore_tests, scan_root):
         return set()
     if path.is_file():
-        return {path} if path.suffix.lower() in suffixes else set()
+        return {path.resolve()} if path.suffix.lower() in suffixes else set()
     if not path.is_dir():
         raise OSError("Input path does not exist")
+    return _collect_directory_source_files(path, suffixes, exclusions, ignore_tests, scan_root)
 
+
+def _collect_directory_source_files(
+    path: Path,
+    suffixes: AbstractSet[str],
+    exclusions: Sequence[str],
+    ignore_tests: bool,
+    root: Path,
+) -> set[Path]:
     source_files: set[Path] = set()
     for candidate in sorted(path.iterdir(), key=lambda entry: entry.name):
-        source_files.update(_source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests))
+        source_files.update(
+            _source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests, root)
+        )
     return source_files
+
+
+def _is_root_ignored(
+    path: Path, exclusions: Sequence[str], ignore_tests: bool, root: Path
+) -> bool:
+    if _is_excluded(path, exclusions, root):
+        return True
+    return ignore_tests and _is_test_path(path, root)
+
+
+def _is_candidate_directory_ignored(
+    candidate: Path, exclusions: Sequence[str], ignore_tests: bool, root: Path
+) -> bool:
+    if candidate.is_symlink() or candidate.name.lower() in DEFAULT_IGNORED_DIRECTORY_NAMES:
+        return True
+    if _is_excluded(candidate, exclusions, root):
+        return True
+    return ignore_tests and _is_test_path(candidate, root)
+
+
+def _is_candidate_file_ignored(
+    candidate: Path, exclusions: Sequence[str], ignore_tests: bool, root: Path
+) -> bool:
+    if _is_excluded(candidate, exclusions, root):
+        return True
+    return ignore_tests and _is_test_path(candidate, root)
 
 
 def _source_files_for_candidate(
@@ -5289,14 +5331,15 @@ def _source_files_for_candidate(
     suffixes: AbstractSet[str],
     exclusions: Sequence[str],
     ignore_tests: bool,
+    root: Path,
 ) -> set[Path]:
     if candidate.is_dir():
-        if candidate.is_symlink() or candidate.name.lower() in DEFAULT_IGNORED_DIRECTORY_NAMES:
+        if _is_candidate_directory_ignored(candidate, exclusions, ignore_tests, root):
             return set()
-        return _source_files_under(candidate, suffixes, exclusions, ignore_tests)
+        return _source_files_under(candidate, suffixes, exclusions, ignore_tests, root=root)
     if not candidate.is_file() or candidate.suffix.lower() not in suffixes:
         return set()
-    if _is_excluded(candidate, exclusions) or (ignore_tests and _is_test_path(candidate)):
+    if _is_candidate_file_ignored(candidate, exclusions, ignore_tests, root):
         return set()
     return {candidate.resolve()}
 
@@ -5312,16 +5355,33 @@ def _normalized_suffixes(value: str) -> set[str]:
     }
 
 
-def _is_excluded(path: Path, exclusions: Sequence[str]) -> bool:
-    return any(exclusion in path.parts for exclusion in exclusions)
+def _relative_parts(path: Path, root: Path | None = None) -> tuple[str, ...]:
+    if root is not None and path != root:
+        try:
+            return path.relative_to(root).parts
+        except ValueError:
+            return (path.name,) if path.name else ()
+    try:
+        return path.resolve().relative_to(Path.cwd().resolve()).parts
+    except ValueError:
+        return (path.name,) if path.name else ()
 
 
-def _is_test_path(path: Path) -> bool:
-    return (
-        any(part.lower() in TEST_DIRECTORY_NAMES for part in path.parts[:-1])
-        or path.name.lower().startswith("test_")
-        or path.stem.lower().endswith("_test")
-    )
+def _is_excluded(path: Path, exclusions: Sequence[str], root: Path | None = None) -> bool:
+    if not exclusions:
+        return False
+    parts = _relative_parts(path, root)
+    return any(exclusion in parts for exclusion in exclusions)
+
+
+def _is_test_path(path: Path, root: Path | None = None) -> bool:
+    if path.is_file() and (
+        path.name.lower().startswith("test_") or path.stem.lower().endswith("_test")
+    ):
+        return True
+    parts = _relative_parts(path, root)
+    test_parts = parts[:-1] if path.is_file() else parts
+    return any(part.lower() in TEST_DIRECTORY_NAMES for part in test_parts)
 
 
 def _help_text() -> str:
