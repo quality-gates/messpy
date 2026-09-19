@@ -92,4 +92,4 @@ artifacts:
 
 ## Maintainers
 
-Release process: [docs/releasing.md](https://github.com/quality-gates/messpy/blob/main/docs/releasing.md). Fuzzing: [docs/fuzzing.md](https://github.com/quality-gates/messpy/blob/main/docs/fuzzing.md).
+Release process: [docs/releasing.md](https://github.com/quality-gates/messpy/blob/main/docs/releasing.md). Fuzzing: [docs/fuzzing.md](https://github.com/quality-gates/messpy/blob/main/docs/fuzzing.md). Exploratory testing feedback: [docs/exploratory-testing/](https://github.com/quality-gates/messpy/tree/main/docs/exploratory-testing).
