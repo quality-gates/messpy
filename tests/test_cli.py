@@ -680,6 +680,54 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_disable_next_line_above_a_multi_line_def_suppresses_parameter_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "signature.py"
+            source.write_text(
+                "import functools\n"
+                "\n"
+                "\n"
+                "# messpy-disable-next-line BooleanArgumentFlag\n"
+                "def configure(\n"
+                "    name,\n"
+                "    enabled=False,\n"
+                "):\n"
+                "    def inner(verbose=False):\n"
+                "        return verbose\n"
+                "\n"
+                "    return name, enabled, inner\n"
+                "\n"
+                "\n"
+                "class Widget:\n"
+                "    # messpy-disable-next-line BooleanArgumentFlag\n"
+                "    @functools.cache\n"
+                "    async def decorated(\n"
+                "        self,\n"
+                "        enabled=False,\n"
+                "    ):\n"
+                "        return enabled\n"
+                "\n"
+                "    def still_reported(\n"
+                "        self,\n"
+                "        enabled=False,\n"
+                "    ):\n"
+                "        return enabled\n",
+                encoding="utf-8",
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "cleancode", "--only", "BooleanArgumentFlag"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertNotIn(":7:", report)
+        self.assertNotIn(":20:", report)
+        self.assertIn(":9: BooleanArgumentFlag", report)
+        self.assertIn(":26: BooleanArgumentFlag", report)
+        self.assertEqual(2, len(report.splitlines()), report)
+
     def test_disable_next_line_does_not_skip_an_unsuitable_source_line(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "next_line.py"
