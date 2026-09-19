@@ -14,7 +14,15 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run, _direct_bindings, _is_protocol, _protocol_base_names
+from messpy.cli import (
+    Finding,
+    ProcessingError,
+    _direct_bindings,
+    _github_report,
+    _is_protocol,
+    _protocol_base_names,
+    run,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -449,6 +457,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("\x1b[", reports["ansi"])
         self.assertIn("::warning file=", reports["github"])
         self.assertIn("::error file=", reports["github"])
+        self.assertIn("(context: too_long)", reports["github"])
 
         xml = ElementTree.fromstring(reports["xml"])
         self.assertEqual("messpy", xml.tag)
@@ -531,6 +540,75 @@ class CommandAcceptanceTests(unittest.TestCase):
                 message = report.find(".//error").get("message")
                 self.assertIn("\\x01", message, report_format)
                 self.assertNotIn("\x01", stdout.getvalue(), report_format)
+
+    def test_github_report_distinguishes_property_escaping_from_message_escaping(self) -> None:
+        finding = Finding(
+            path=Path("path,with:delimiters%and\r\nnewlines.py"),
+            line=12,
+            rule_name="Rule,With:Special%Chars\r\n",
+            priority=2,
+            message="Error in method, please check: line 10 % 2 == 0\r\nsecond line",
+            context="ctx:with,comma",
+            suppressed=True,
+        )
+        error = ProcessingError(
+            path=Path("err,path:with%special\r\n.py"),
+            line=42,
+            message="Could not parse: unexpected token, at line 42 % invalid\r\nsecond line",
+        )
+
+        output = _github_report([finding], [error])
+        lines = output.strip().split("\n")
+        self.assertEqual(2, len(lines))
+
+        warning_line = lines[0]
+        self.assertTrue(warning_line.startswith("::warning "))
+        _, properties_str, message_str = warning_line.split("::", 2)
+        self.assertIn("file=path%2Cwith%3Adelimiters%25and%0D%0Anewlines.py", properties_str)
+        self.assertIn("title=Rule%2CWith%3ASpecial%25Chars%0D%0A [priority 2]", properties_str)
+        self.assertNotIn("path,with", properties_str)
+        self.assertEqual(
+            "Error in method, please check: line 10 %25 2 == 0%0D%0Asecond line (context: ctx:with,comma) [suppressed]",
+            message_str,
+        )
+
+        error_line = lines[1]
+        self.assertTrue(error_line.startswith("::error "))
+        _, properties_str, message_str = error_line.split("::", 2)
+        self.assertIn("file=err%2Cpath%3Awith%25special%0D%0A.py", properties_str)
+        self.assertIn("title=ProcessingError", properties_str)
+        self.assertEqual(
+            "Could not parse: unexpected token, at line 42 %25 invalid%0D%0Asecond line",
+            message_str,
+        )
+
+    def test_github_report_cli_preserves_colons_and_commas_in_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            source = project / "d.py"
+            source.write_text(
+                "def configure(\n"
+                "    name,\n"
+                "    verbose=False,\n"
+                "):\n"
+                "    return name, verbose\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "github", "python,opinionated"], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            output = stdout.getvalue()
+            warning_lines = [line for line in output.splitlines() if line.startswith("::warning ")]
+            self.assertTrue(warning_lines)
+            for line in warning_lines:
+                _, _, message = line.split("::", 2)
+                self.assertNotIn("%2C", message)
+                self.assertNotIn("%3A", message)
+                self.assertIn("(context: configure)", message)
+                self.assertIn("verbose, which is a certain sign", message)
 
     def test_text_color_controls_do_not_color_redirected_output_by_default(self) -> None:
         source = str((FIXTURES / "long_function.py").resolve())
