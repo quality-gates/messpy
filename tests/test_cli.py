@@ -257,6 +257,80 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(f"{_finding_for(application, 'application')}\n", ignored_stdout.getvalue())
         self.assertEqual("", ignored_stderr.getvalue())
 
+    def test_ignore_tests_and_exclude_do_not_match_ancestor_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace = Path(temporary_directory)
+            project = workspace / "test" / "shop"
+            src = project / "src"
+            app = src / "application.py"
+            nested_test = src / "tests" / "test_module.py"
+            vendor = src / "vendor" / "helper.py"
+
+            for path, name in [
+                (app, "application"),
+                (nested_test, "test_module"),
+                (vendor, "helper"),
+            ]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_long_function(name), encoding="utf-8")
+
+            # 1. Running on src with --ignore-tests when ancestor directory is named "test":
+            # should scan application.py and vendor/helper.py, while ignoring src/tests/test_module.py.
+            ignore_stdout = StringIO()
+            ignore_stderr = StringIO()
+            status = run([str(src), "text", "codesize", "--ignore-tests"], ignore_stdout, ignore_stderr)
+            self.assertEqual(2, status)
+            self.assertEqual(
+                "\n".join([
+                    _finding_for(app, "application"),
+                    _finding_for(vendor, "helper"),
+                    "",
+                ]),
+                ignore_stdout.getvalue(),
+            )
+            self.assertEqual("", ignore_stderr.getvalue())
+
+            # 2. Running on src with --exclude matching an ancestor directory name:
+            # should not exclude files under src.
+            exclude_stdout = StringIO()
+            exclude_stderr = StringIO()
+            status = run([str(src), "text", "codesize", "--exclude", "shop"], exclude_stdout, exclude_stderr)
+            self.assertEqual(2, status)
+            self.assertEqual(
+                "\n".join([
+                    _finding_for(app, "application"),
+                    _finding_for(nested_test, "test_module"),
+                    _finding_for(vendor, "helper"),
+                    "",
+                ]),
+                exclude_stdout.getvalue(),
+            )
+            self.assertEqual("", exclude_stderr.getvalue())
+
+            # 3. Running with --exclude for an ancestor and a nested component together:
+            # ancestor "test" should not exclude, but nested "vendor" should exclude vendor/helper.py.
+            both_stdout = StringIO()
+            both_stderr = StringIO()
+            status = run([str(src), "text", "codesize", "--exclude", "test,vendor"], both_stdout, both_stderr)
+            self.assertEqual(2, status)
+            self.assertEqual(
+                "\n".join([
+                    _finding_for(app, "application"),
+                    _finding_for(nested_test, "test_module"),
+                    "",
+                ]),
+                both_stdout.getvalue(),
+            )
+            self.assertEqual("", both_stderr.getvalue())
+
+            # 4. Running directly on a file located beneath ancestor "test" with --ignore-tests
+            file_stdout = StringIO()
+            file_stderr = StringIO()
+            status = run([str(app), "text", "codesize", "--ignore-tests"], file_stdout, file_stderr)
+            self.assertEqual(2, status)
+            self.assertEqual(f"{_finding_for(app, 'application')}\n", file_stdout.getvalue())
+            self.assertEqual("", file_stderr.getvalue())
+
     def test_directory_symlinks_are_not_followed_during_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             workspace = Path(temporary_directory)
