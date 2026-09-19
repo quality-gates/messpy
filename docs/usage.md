@@ -137,4 +137,4 @@ def cached_method(...):
 # messpy-enable DevelopmentCodeFragment
 ```
 
-Names are case-insensitive. Region disables nest and must be enabled independently. Malformed directives are ignored and never reinterpret `noqa`, type-checker, formatter, or coverage comments. Normal reports omit suppressed findings; `--strict` keeps them marked suppressed.
+A next-line directive above a `def` or its decorators also covers every line of a wrapped signature, so parameter findings stay waived when a formatter splits the parameters. Names are case-insensitive. Region disables nest and must be enabled independently. Malformed directives are ignored and never reinterpret `noqa`, type-checker, formatter, or coverage comments. Normal reports omit suppressed findings; `--strict` keeps them marked suppressed.

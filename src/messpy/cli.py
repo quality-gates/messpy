@@ -5157,7 +5157,7 @@ def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Findin
         if finding.line not in source_line_set:
             comment_finding_rules.setdefault(finding.line, set()).add(_rule_identity(finding.rule_name))
     source_lines = sorted(source_line_set | set(comment_finding_rules))
-    decorated_headers = _decorated_definition_lines(tree)
+    header_lines = _definition_header_lines(tree)
     active_counts: dict[str, int] = {}
     next_line_rules: dict[int, set[str]] = {}
     directive_index = 0
@@ -5169,7 +5169,7 @@ def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Findin
                 directives[directive_index],
                 source_lines,
                 comment_finding_rules,
-                decorated_headers,
+                header_lines,
                 active_counts,
                 next_line_rules,
             )
@@ -5182,23 +5182,35 @@ def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Findin
     return suppressed
 
 
-def _decorated_definition_lines(tree: ast.Module) -> dict[int, int]:
-    decorated_headers: dict[int, int] = {}
+def _definition_header_lines(tree: ast.Module) -> dict[int, range]:
+    header_lines: dict[int, range] = {}
     for node in ast.walk(tree):
-        decorators = getattr(node, "decorator_list", None)
-        if not decorators:
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        header_line = node.lineno
-        for line in range(decorators[0].lineno, header_line):
-            decorated_headers[line] = header_line
-    return decorated_headers
+        header = range(node.lineno, _signature_end_line(node) + 1)
+        first_line = min([node.lineno] + [decorator.lineno for decorator in node.decorator_list])
+        for line in range(first_line, node.lineno + 1):
+            header_lines[line] = header
+    return header_lines
+
+
+def _signature_end_line(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    # A wrapped signature puts parameter findings on the lines below the def line.
+    if isinstance(node, ast.ClassDef):
+        return node.lineno
+    signature_parts = [node.args] + ([node.returns] if node.returns else [])
+    return max(
+        getattr(part, "end_lineno", None) or node.lineno
+        for signature_part in signature_parts
+        for part in ast.walk(signature_part)
+    )
 
 
 def _apply_suppression_directive(
     directive: tuple[int, str, set[str]],
     source_lines: list[int],
     comment_finding_rules: dict[int, set[str]],
-    decorated_headers: dict[int, int],
+    header_lines: dict[int, range],
     active_counts: dict[str, int],
     next_line_rules: dict[int, set[str]],
 ) -> None:
@@ -5211,8 +5223,7 @@ def _apply_suppression_directive(
             ):
                 continue
             next_line_rules.setdefault(target_line, set()).update(rule_names)
-            header_line = decorated_headers.get(target_line)
-            if header_line is not None:
+            for header_line in header_lines.get(target_line, ()):
                 next_line_rules.setdefault(header_line, set()).update(rule_names)
             break
         return
