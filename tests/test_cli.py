@@ -426,14 +426,15 @@ class CommandAcceptanceTests(unittest.TestCase):
 
             status = run([str(project), "github", "unusedcode"], stdout, stderr)
 
-        escaped_package = str(package).replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
+        escaped_package = package.as_posix().replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
+        escaped_source = str(package / "bad.py").replace("%", "%25")
         self.assertEqual(1, status)
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(
             f"::warning file={escaped_package}/m.py,line=1,col=1,title=UnusedFormalParameter [priority 3]::"
             "Avoid unused parameters such as 'b'. (context: b)\n"
             f"::error file={escaped_package}/bad.py,line=1,col=1,title=ProcessingError::"
-            f"Could not parse {str(package).replace('%', '%25')}/bad.py: invalid syntax\n",
+            f"Could not parse {escaped_source}: invalid syntax\n",
             stdout.getvalue(),
         )
 
