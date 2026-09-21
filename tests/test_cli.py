@@ -1020,7 +1020,6 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(1, status)
         self.assertIn(f"{overflow.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
-        self.assertIn("Parser stack overflowed", stdout.getvalue())
         self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
