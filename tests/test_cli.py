@@ -1088,6 +1088,55 @@ class CommandAcceptanceTests(unittest.TestCase):
         node_count = len(list(ast.walk(ast.parse(source))))
         self.assertLess(parent_maps[0].lookups, 2 * node_count)
 
+    def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
+        # Regression for GH #178: the column lookup used to split the whole
+        # source for every finding, so analysis cost grew with findings
+        # times file length.
+        import messpy.cli as cli_module
+
+        source = "".join(
+            [
+                "é = \"café\"\n",
+                "".join(f"if (a{i} := {i}):\n    pass\n" for i in range(50)),
+            ]
+        )
+        original_findings = cli_module._if_statement_assignment_findings
+        split_counts: list[int] = []
+
+        class CountingSource(str):
+            def splitlines(self, keepends: bool = False) -> list[str]:
+                split_counts.append(1)
+                return str.splitlines(self, keepends)
+
+        def counting(path: Path, source_text: str, tree: ast.Module, rules: object) -> object:
+            return original_findings(path, CountingSource(source_text), tree, rules)
+
+        cli_module._if_statement_assignment_findings = counting
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = Path(temporary_directory) / "many_walrus.py"
+                source_path.write_text(source, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [
+                        str(source_path),
+                        "text",
+                        "cleancode",
+                        "--only",
+                        "IfStatementAssignment",
+                    ],
+                    stdout,
+                    stderr,
+                )
+        finally:
+            cli_module._if_statement_assignment_findings = original_findings
+
+        self.assertEqual(2, status)
+        self.assertEqual(50, stdout.getvalue().count("IfStatementAssignment"))
+        self.assertIn("column '5'", stdout.getvalue())
+        self.assertEqual(1, len(split_counts))
+
     def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
         stdout = StringIO()
         stderr = StringIO()
