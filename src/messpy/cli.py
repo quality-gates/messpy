@@ -624,7 +624,7 @@ def _analyze(
                 ProcessingError(source_file, line, f"Could not parse {source_file}: {error.msg}")
             )
             continue
-        except (RecursionError, OSError, UnicodeError) as error:
+        except (RecursionError, MemoryError, OSError, UnicodeError) as error:
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
         try:
@@ -637,7 +637,7 @@ def _analyze(
             processing_errors.append(
                 ProcessingError(source_file, line, f"Could not analyze {source_file}: {error.msg}")
             )
-        except (RecursionError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
+        except (RecursionError, MemoryError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
             processing_errors.append(
                 ProcessingError(source_file, 1, f"Could not process {source_file}: {error}")
             )

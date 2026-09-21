@@ -1001,6 +1001,27 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_parser_stack_overflow_reports_processing_error_without_aborting_scan(self) -> None:
+        depth = 200
+        inner = f"print(a{depth - 1})"
+        for index in range(depth - 1, 0, -1):
+            inner = f"(print(a{index}), lambda a{index + 1}: {inner})"
+        overflow_source = f"x = lambda a0: {inner}\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            overflow = project / "overflow.py"
+            messy = project / "messy.py"
+            overflow.write_text(overflow_source, encoding="utf-8")
+            messy.write_text("def unused_example():\n    leftover = 1\n    return 0\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([f"{overflow},{messy}", "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(f"{overflow.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
 
     def test_scope_usage_is_computed_once_per_table_across_sibling_callables(self) -> None:
         # Regression for GH #175: _scope_usage used to re-walk every descendant
