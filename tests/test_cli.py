@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run, _direct_bindings, _is_protocol, _protocol_base_names
+from messpy.cli import run, _direct_bindings, _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1001,6 +1001,30 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+
+    def test_scope_usage_is_computed_once_per_table_across_sibling_callables(self) -> None:
+        # Regression for GH #175: _scope_usage used to re-walk every descendant
+        # table once per ancestor callable, making analysis time quadratic in
+        # lambda nesting depth. Count actual usage computations (ScopeUsage
+        # constructions), so per-ancestor cache hits do not count as work.
+        import messpy.cli as cli_module
+
+        created: list[cli_module.ScopeUsage] = []
+        original_usage_class = cli_module.ScopeUsage
+
+        class CountingScopeUsage(original_usage_class):
+            def __init__(self, used_names: frozenset[str], free_names: frozenset[str]) -> None:
+                created.append(self)
+                super().__init__(used_names, free_names)
+
+        cli_module.ScopeUsage = CountingScopeUsage
+        try:
+            source = "x = " + "lambda:" * 60 + "f()\n"
+            _function_scopes(source, ast.parse(source))
+        finally:
+            cli_module.ScopeUsage = original_usage_class
+
+        self.assertEqual(60, len(created))
 
     def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
         stdout = StringIO()
