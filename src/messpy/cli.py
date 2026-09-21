@@ -2543,6 +2543,7 @@ def _if_statement_assignment_findings(
     rule = _rule(rules, IF_STATEMENT_ASSIGNMENT_RULE_NAME)
     if rule is None:
         return []
+    lines = source.splitlines()
     findings: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.If, ast.While)):
@@ -2556,15 +2557,15 @@ def _if_statement_assignment_findings(
                 rule.name,
                 rule.priority,
                 "Avoid assigning values to variables in if clauses and the like "
-                f"(line '{assignment.lineno}', column '{_character_column(source, assignment)}').",
+                f"(line '{assignment.lineno}', column '{_character_column(lines, assignment)}').",
             )
             for assignment in collector.assignments
         )
     return findings
 
 
-def _character_column(source: str, node: ast.AST) -> int:
-    line = source.splitlines()[node.lineno - 1]
+def _character_column(lines: Sequence[str], node: ast.AST) -> int:
+    line = lines[node.lineno - 1]
     prefix = line.encode("utf-8")[: node.col_offset].decode("utf-8")
     return len(prefix) + 1
 
