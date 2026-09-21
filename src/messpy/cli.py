@@ -2935,6 +2935,7 @@ def _function_scopes(
     tables: defaultdict[tuple[str, int], list[symtable.SymbolTable]] = defaultdict(list)
     _collect_function_tables(symtable.symtable(source, "<source>", "exec"), tables)
     scopes = []
+    usage_cache: dict[int, ScopeUsage] = {}
     callable_nodes = _collect_callable_nodes(tree)
     for node in callable_nodes:
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
@@ -2945,7 +2946,7 @@ def _function_scopes(
         if table is None:
             continue
         used_names = (
-            _scope_usage(table).used_names
+            _scope_usage(table, usage_cache).used_names
             | _comprehension_referenced_names(node)
             | _augmented_assignment_names(node)
             | _annotation_referenced_names(node)
@@ -3280,12 +3281,25 @@ def _collect_function_tables(
         _collect_function_tables(child, tables)
 
 
-def _scope_usage(table: symtable.SymbolTable) -> ScopeUsage:
+def _scope_usage(
+    table: symtable.SymbolTable, usage_cache: dict[int, ScopeUsage] | None = None
+) -> ScopeUsage:
+    if usage_cache is not None and id(table) in usage_cache:
+        return usage_cache[id(table)]
+    usage = _uncached_scope_usage(table, usage_cache)
+    if usage_cache is not None:
+        usage_cache[id(table)] = usage
+    return usage
+
+
+def _uncached_scope_usage(
+    table: symtable.SymbolTable, usage_cache: dict[int, ScopeUsage] | None
+) -> ScopeUsage:
     local_names = {name for name in table.get_identifiers() if table.lookup(name).is_local()}
     used_names = {name for name in table.get_identifiers() if table.lookup(name).is_referenced()}
     free_names = {name for name in table.get_identifiers() if table.lookup(name).is_free()}
     for child in table.get_children():
-        child_usage = _scope_usage(child)
+        child_usage = _scope_usage(child, usage_cache)
         captured = child_usage.free_names & local_names
         used_names.update(captured)
         free_names.update(child_usage.free_names - captured)
