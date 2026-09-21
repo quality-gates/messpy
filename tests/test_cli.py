@@ -1026,6 +1026,68 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(60, len(created))
 
+    def test_design_call_resolution_walks_nested_calls_once(self) -> None:
+        # Regression for GH #176: the two call-based design rules used to
+        # resolve every call independently, walking all enclosing scopes for
+        # each resolution.
+        import messpy.cli as cli_module
+
+        source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
+        original_parents = cli_module._selected_design_parents
+        original_aliases = cli_module._imported_call_aliases
+        parent_maps: list[dict[int, ast.AST]] = []
+        alias_call_count = 0
+
+        class CountingParents(dict[int, ast.AST]):
+            def __init__(self, values: dict[int, ast.AST]) -> None:
+                super().__init__(values)
+                self.lookups = 0
+
+            def __contains__(self, key: object) -> bool:
+                self.lookups += 1
+                return super().__contains__(key)
+
+        def selected_parents(tree: ast.Module, rule_names: object) -> CountingParents:
+            parents = CountingParents(original_parents(tree, rule_names))
+            parent_maps.append(parents)
+            return parents
+
+        def imported_call_aliases(tree: ast.Module) -> dict[int, object]:
+            nonlocal alias_call_count
+            alias_call_count += 1
+            return original_aliases(tree)
+
+        cli_module._selected_design_parents = selected_parents
+        cli_module._imported_call_aliases = imported_call_aliases
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = Path(temporary_directory) / "nested_calls.py"
+                source_path.write_text(source, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [
+                        str(source_path),
+                        "text",
+                        "design",
+                        "--only",
+                        "ExitExpression,DevelopmentCodeFragment",
+                    ],
+                    stdout,
+                    stderr,
+                )
+        finally:
+            cli_module._selected_design_parents = original_parents
+            cli_module._imported_call_aliases = original_aliases
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, alias_call_count)
+        self.assertEqual(1, len(parent_maps))
+        node_count = len(list(ast.walk(ast.parse(source))))
+        self.assertLess(parent_maps[0].lookups, 2 * node_count)
+
     def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
         stdout = StringIO()
         stderr = StringIO()

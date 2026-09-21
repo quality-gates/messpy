@@ -1194,10 +1194,15 @@ def _design_findings(
     parents = _selected_design_parents(tree, rule_names)
     contexts = _selected_design_contexts(clean_code_callables, rule_names)
     bindings = _selected_design_bindings(tree, rule_names)
+    resolved_calls = (
+        _resolved_call_names(tree, bindings)
+        if _has_any_rule(rule_names, {EXIT_EXPRESSION_RULE_NAME, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME})
+        else {}
+    )
     return [
-        *_exit_expression_findings(path, tree, rules, parents, contexts, bindings),
+        *_exit_expression_findings(path, tree, rules, parents, contexts, resolved_calls),
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
-        *_development_fragment_findings(path, source, tree, rules, parents, contexts, bindings),
+        *_development_fragment_findings(path, source, tree, rules, parents, contexts, resolved_calls),
         *_empty_catch_findings(path, tree, rules, parents, contexts),
         *_coupling_findings(path, tree, classes, rules),
         *_global_variable_findings(path, tree, rules, parents, bindings),
@@ -1264,16 +1269,15 @@ def _exit_expression_findings(
     rules: Sequence[LoadedRule],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    bindings: dict[int, set[str]],
+    resolved_calls: dict[int, str],
 ) -> list[Finding]:
     rule = _rule(rules, EXIT_EXPRESSION_RULE_NAME)
     if rule is None:
         return []
-    aliases = _imported_call_aliases(tree)
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_exit_call(node, tree, aliases, parents, bindings):
+        if not isinstance(node, ast.Call) or not _is_exit_call(node, resolved_calls):
             continue
         scope, context = _design_scope(node, parents, contexts)
         if id(scope) in reported_scopes:
@@ -1293,49 +1297,79 @@ def _exit_expression_findings(
 
 
 def _is_exit_call(
-    node: ast.Call,
-    tree: ast.Module,
-    aliases: dict[int, _ScopeCallImports],
-    parents: dict[int, ast.AST],
-    bindings: dict[int, set[str]],
+    node: ast.Call, resolved_calls: dict[int, str]
 ) -> bool:
-    name = _resolved_call_name(node, tree, aliases, parents, bindings)
-    return name in EXIT_CALL_NAMES
+    return resolved_calls.get(id(node), "") in EXIT_CALL_NAMES
 
 
-def _resolved_call_name(
-    node: ast.Call,
+def _resolved_call_names(
     tree: ast.Module,
-    aliases: dict[int, _ScopeCallImports],
-    parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
+) -> dict[int, str]:
+    aliases = _imported_call_aliases(tree)
+    resolved_calls: dict[int, str] = {}
+
+    class CallResolutionWalker:
+        def __init__(self) -> None:
+            self.active_names: dict[str, str] = {}
+            self.changes: list[list[tuple[str, str | None]]] = []
+            self._enter_scope(tree)
+
+        def resolve(self) -> None:
+            pending: list[tuple[ast.AST, bool]] = [(tree, False)]
+            while pending:
+                node, leaving_scope = pending.pop()
+                if leaving_scope:
+                    self._leave_scope()
+                    continue
+                if isinstance(node, ast.Call):
+                    resolved_calls[id(node)] = _resolve_call_name(
+                        _dotted_name(node.func), self.active_names
+                    )
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                    self._enter_scope(node)
+                    pending.append((node, True))
+                children = list(ast.iter_child_nodes(node))
+                pending.extend((child, False) for child in reversed(children))
+
+        def _enter_scope(self, scope: _BindingScope) -> None:
+            imports = aliases[id(scope)]
+            scope_bindings = bindings[id(scope)]
+            changes: list[tuple[str, str | None]] = []
+            for name in imports.rebound | set(imports.call_modules) | scope_bindings:
+                previous = self.active_names.get(name)
+                changes.append((name, previous))
+                if name in imports.rebound:
+                    self.active_names[name] = ""
+                elif name in imports.call_modules:
+                    self.active_names[name] = imports.call_modules[name]
+                else:
+                    self.active_names[name] = ""
+            self.changes.append(changes)
+
+        def _leave_scope(self) -> None:
+            for name, previous in reversed(self.changes.pop()):
+                if previous is None:
+                    self.active_names.pop(name, None)
+                else:
+                    self.active_names[name] = previous
+
+    CallResolutionWalker().resolve()
+    return resolved_calls
+
+
+def _resolve_call_name(
+    original_name: str,
+    active_names: dict[str, str],
 ) -> str:
-    original_name = _dotted_name(node.func)
     root_name = original_name.split(".", 1)[0]
     attributes = original_name[len(root_name):]
-    for scope in _enclosing_scopes(node, tree, parents):
-        imports = aliases[id(scope)]
-        if root_name in imports.rebound:
-            return ""
-        if root_name in imports.call_modules:
-            return f"{imports.call_modules[root_name]}{attributes}"
-        if root_name in bindings[id(scope)]:
-            return ""
-    return original_name
-
-
-def _enclosing_scopes(
-    node: ast.AST, tree: ast.Module, parents: dict[int, ast.AST]
-) -> list[ast.AST]:
-    # The scopes that hold the call, from the innermost function out to the module.
-    scopes: list[ast.AST] = []
-    current = node
-    while id(current) in parents:
-        current = parents[id(current)]
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            scopes.append(current)
-    scopes.append(tree)
-    return scopes
+    resolved_name = active_names.get(root_name)
+    if resolved_name is None:
+        return original_name
+    if not resolved_name:
+        return ""
+    return f"{resolved_name}{attributes}"
 
 
 def _count_in_loop_findings(
@@ -1381,7 +1415,7 @@ def _development_fragment_findings(
     rules: Sequence[LoadedRule],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    bindings: dict[int, set[str]],
+    resolved_calls: dict[int, str],
 ) -> list[Finding]:
     rule = _rule(rules, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME)
     if rule is None:
@@ -1391,7 +1425,7 @@ def _development_fragment_findings(
         for name in rule.properties.get("unwanted-functions", "").split(",")
         if name.strip()
     }
-    findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, bindings)
+    findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, resolved_calls)
     findings.extend(_development_marker_findings(path, source, rule))
     return findings
 
@@ -1403,15 +1437,14 @@ def _development_call_findings(
     unwanted: set[str],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    bindings: dict[int, set[str]],
+    resolved_calls: dict[int, str],
 ) -> list[Finding]:
     findings: list[Finding] = []
-    aliases = _imported_call_aliases(tree)
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted_name(node.func)
-        resolved = _resolved_call_name(node, tree, aliases, parents, bindings)
+        resolved = resolved_calls.get(id(node), "")
         if resolved in DEVELOPMENT_CALL_NAMES:
             name = resolved
         elif name not in unwanted or name == "breakpoint":
