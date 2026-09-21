@@ -2,6 +2,8 @@
 
 messpy’s analyzer is a parser-facing surface: random and hostile bytes should not crash it. The fuzz target writes generated input to one temporary `source.py`, then runs the real command path with `text` format and the `codesize` ruleset. Clean runs, ordinary findings, and processing errors are all normal outcomes. Only an unexpected exception is a fuzz failure.
 
+A findings-level target, `fuzz/fuzz_findings.py`, drives the same input through `messpy.analyzer.analyze()` with no render step and asserts the `Analysis` invariants (finding and error shapes) directly.
+
 ## Run a campaign
 
 Linux:

@@ -14,7 +14,8 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run, _direct_bindings, _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.analyzer import _direct_bindings, _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.cli import run
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1028,22 +1029,22 @@ class CommandAcceptanceTests(unittest.TestCase):
         # table once per ancestor callable, making analysis time quadratic in
         # lambda nesting depth. Count actual usage computations (ScopeUsage
         # constructions), so per-ancestor cache hits do not count as work.
-        import messpy.cli as cli_module
+        import messpy.analyzer as engine_module
 
-        created: list[cli_module.ScopeUsage] = []
-        original_usage_class = cli_module.ScopeUsage
+        created: list[engine_module.ScopeUsage] = []
+        original_usage_class = engine_module.ScopeUsage
 
         class CountingScopeUsage(original_usage_class):
             def __init__(self, used_names: frozenset[str], free_names: frozenset[str]) -> None:
                 created.append(self)
                 super().__init__(used_names, free_names)
 
-        cli_module.ScopeUsage = CountingScopeUsage
+        engine_module.ScopeUsage = CountingScopeUsage
         try:
             source = "x = " + "lambda:" * 60 + "f()\n"
             _function_scopes(source, ast.parse(source))
         finally:
-            cli_module.ScopeUsage = original_usage_class
+            engine_module.ScopeUsage = original_usage_class
 
         self.assertEqual(60, len(created))
 
@@ -1051,11 +1052,11 @@ class CommandAcceptanceTests(unittest.TestCase):
         # Regression for GH #176: the two call-based design rules used to
         # resolve every call independently, walking all enclosing scopes for
         # each resolution.
-        import messpy.cli as cli_module
+        import messpy.analyzer as engine_module
 
         source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
-        original_parents = cli_module._selected_design_parents
-        original_aliases = cli_module._imported_call_aliases
+        original_parents = engine_module._selected_design_parents
+        original_aliases = engine_module._imported_call_aliases
         parent_maps: list[dict[int, ast.AST]] = []
         alias_call_count = 0
 
@@ -1078,8 +1079,8 @@ class CommandAcceptanceTests(unittest.TestCase):
             alias_call_count += 1
             return original_aliases(tree)
 
-        cli_module._selected_design_parents = selected_parents
-        cli_module._imported_call_aliases = imported_call_aliases
+        engine_module._selected_design_parents = selected_parents
+        engine_module._imported_call_aliases = imported_call_aliases
         try:
             with tempfile.TemporaryDirectory() as temporary_directory:
                 source_path = Path(temporary_directory) / "nested_calls.py"
@@ -1098,8 +1099,8 @@ class CommandAcceptanceTests(unittest.TestCase):
                     stderr,
                 )
         finally:
-            cli_module._selected_design_parents = original_parents
-            cli_module._imported_call_aliases = original_aliases
+            engine_module._selected_design_parents = original_parents
+            engine_module._imported_call_aliases = original_aliases
 
         self.assertEqual(0, status)
         self.assertEqual("", stdout.getvalue())
@@ -1113,7 +1114,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         # Regression for GH #178: the column lookup used to split the whole
         # source for every finding, so analysis cost grew with findings
         # times file length.
-        import messpy.cli as cli_module
+        import messpy.analyzer as engine_module
 
         source = "".join(
             [
@@ -1121,7 +1122,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "".join(f"if (a{i} := {i}):\n    pass\n" for i in range(50)),
             ]
         )
-        original_findings = cli_module._if_statement_assignment_findings
+        original_findings = engine_module._if_statement_assignment_findings
         split_counts: list[int] = []
 
         class CountingSource(str):
@@ -1132,7 +1133,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         def counting(path: Path, source_text: str, tree: ast.Module, rules: object) -> object:
             return original_findings(path, CountingSource(source_text), tree, rules)
 
-        cli_module._if_statement_assignment_findings = counting
+        engine_module._if_statement_assignment_findings = counting
         try:
             with tempfile.TemporaryDirectory() as temporary_directory:
                 source_path = Path(temporary_directory) / "many_walrus.py"
@@ -1151,7 +1152,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                     stderr,
                 )
         finally:
-            cli_module._if_statement_assignment_findings = original_findings
+            engine_module._if_statement_assignment_findings = original_findings
 
         self.assertEqual(2, status)
         self.assertEqual(50, stdout.getvalue().count("IfStatementAssignment"))
