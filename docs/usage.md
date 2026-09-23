@@ -171,6 +171,8 @@ A clean `onion` report is not proof of purity. Three blind spots remain:
 - An injected callback or repository is not treated as an action. `repo.add(order)` is reported because `add` is a mutator name. `notify(order)` and `repo.save(order)` stay quiet.
 - Mutators are recognized by name, using the same list as `ImplicitOutput`.
 
+A user pass of this behavior is recorded in [exploratory testing: onion and explicitness](exploratory-testing/2026-09-23-onion-production.md).
+
 ## Suppressions in source
 
 Waive one intentional finding without weakening the whole gate:
