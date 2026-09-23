@@ -208,7 +208,8 @@ EXPLICITNESS_RULE_NAMES = frozenset(
         IMPLICIT_INSTANCE_OUTPUT_RULE_NAME,
     }
 )
-CONSTRUCTOR_METHOD_NAMES = frozenset({"__init__", "__new__", "__post_init__"})
+# __new__ is not in this set. Its receiver is the class, so a write in __new__ changes shared state.
+CONSTRUCTOR_METHOD_NAMES = frozenset({"__init__", "__post_init__"})
 MUTATOR_METHOD_NAMES = frozenset(
     {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
 )

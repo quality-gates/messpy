@@ -53,7 +53,7 @@ BEHAVIOR = {
     "ImplicitInput": "Flags functions that read data from outside their argument list: variables from the module or an enclosing function, and ambient sources such as `input`, `open` for reading, `os.environ`, `sys.argv`, the clock, and `random` / `secrets` calls.",
     "ImplicitOutput": "Flags functions that send data out other than by `return`: `global` / `nonlocal` writes, changes to outer or argument objects, and ambient sinks such as `print`, `open` for writing, `sys.stdout`, `logging`, and `subprocess` or file-system calls.",
     "ImplicitInstanceInput": "Flags methods that read instance or class state through `self` / `cls`. Calls to other methods on the receiver stay quiet.",
-    "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__`, `__new__`, and `__post_init__` stay quiet.",
+    "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__` and `__post_init__` stay quiet. `__new__` does not, because its receiver is the class.",
 }
 
 

@@ -320,6 +320,26 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_strict_ruleset_treats_class_state_changed_in_new_as_an_output(self) -> None:
+        status, report, errors = _analyze(
+            "class Tracked:\n"
+            "    def __new__(cls):\n"
+            "        cls.count = 1\n"
+            "        instance = super().__new__(cls)\n"
+            "        instance.ready = True\n"
+            "        return instance\n",
+            "ImplicitInstanceOutput",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "3: ImplicitInstanceOutput [priority 3] The method Tracked.__new__() writes the implicit output "
+                "cls.count. Return it instead."
+            ],
+            report,
+        )
+
     def test_default_ruleset_leaves_instance_state_alone(self) -> None:
         status, report, errors = _analyze(
             "counter = 0\n"
