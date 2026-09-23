@@ -179,12 +179,17 @@ def _import_time_node(node: ast.AST, deferred: bool) -> list[ast.AST]:
         return _import_time_class(node, deferred)
     if isinstance(node, ast.AnnAssign):
         return _import_time_annotation(node, deferred)
-    if isinstance(node, ast.TypeAlias):
+    if _is_type_alias(node):
         return []
     found = [node]
     for child in ast.iter_child_nodes(node):
         found.extend(_import_time_node(child, deferred))
     return found
+
+
+def _is_type_alias(node: ast.AST) -> bool:
+    type_alias = getattr(ast, "TypeAlias", None)
+    return type_alias is not None and isinstance(node, type_alias)
 
 
 def _import_time_signature(node: ast.FunctionDef | ast.AsyncFunctionDef, deferred: bool) -> list[ast.AST]:
