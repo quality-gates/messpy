@@ -99,6 +99,47 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_nested_definition_reads_data_when_the_enclosing_function_runs(self) -> None:
+        status, report, errors = _analyze(
+            "counter = 0\n"
+            "registry = []\n"
+            "\n"
+            "def with_lambda_default():\n"
+            "    return lambda extra=counter: extra\n"
+            "\n"
+            "def with_nested_default():\n"
+            "    def inner(*, extra=counter):\n"
+            "        return extra\n"
+            "    return inner\n"
+            "\n"
+            "def with_nested_decorator():\n"
+            "    @registry.append\n"
+            "    def inner():\n"
+            "        return 1\n"
+            "    return inner\n"
+            "\n"
+            "def with_class_base():\n"
+            "    class Local(registry[0]):\n"
+            "        pass\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                f"{line}: ImplicitInput [priority 3] The function {function}() reads the implicit input {name}. "
+                "Pass it as an argument instead."
+                for line, function, name in [
+                    (5, "with_lambda_default", "counter"),
+                    (8, "with_nested_default", "counter"),
+                    (13, "with_nested_decorator", "registry"),
+                    (19, "with_class_base", "registry"),
+                ]
+            ],
+            report,
+        )
+
     def test_function_that_reads_the_environment_clock_or_randomness_has_implicit_inputs(self) -> None:
         status, report, errors = _analyze(
             "import os\n"

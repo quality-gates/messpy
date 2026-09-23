@@ -3204,9 +3204,26 @@ class _EvaluatedNodeCollector(_ExecutableNodeCollector):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         # Python does not evaluate the annotation of a local variable.
         self.nodes.append(node)
-        self.visit(node.target)
-        if node.value is not None:
-            self.visit(node.value)
+        self._visit_all([node.target, node.value])
+
+    # Python evaluates the decorators, defaults, and class bases of a nested definition in the enclosing function.
+    # The body of a nested class is a different scope, so it stays out.
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._visit_all([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._visit_all([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._visit_all([*node.args.defaults, *node.args.kw_defaults])
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._visit_all([*node.decorator_list, *node.bases, *node.keywords])
+
+    def _visit_all(self, nodes: Sequence[ast.AST | None]) -> None:
+        for node in nodes:
+            if node is not None:
+                self.visit(node)
 
 
 def _exception_names(rule: LoadedRule) -> set[str]:
