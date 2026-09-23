@@ -5817,8 +5817,31 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn("guarded", report)
             self.assertEqual("", stderr.getvalue())
 
+    def test_global_variable_reports_mutating_decorator(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "mutating_decorator.py"
+            source.write_text(
+                "registry = []\n"
+                "\n"
+                "@registry.append\n"
+                "def handler():\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run(
+                [str(source), "text", "design", "--only", "GlobalVariable"],
+                stdout,
+                stderr,
+            )
+            self.assertEqual(2, status)
+            self.assertIn("registry", stdout.getvalue())
+            self.assertEqual("", stderr.getvalue())
+
     def test_nested_function_or_class_name_itself_binds_in_outer_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
+
             directory = Path(temporary_directory)
             source = directory / "nested_name_binds.py"
             source.write_text(
