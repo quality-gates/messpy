@@ -32,5 +32,5 @@
 - Use `typing`/`collections.abc` protocols for seams; do not invent runtime dependency-injection frameworks.
 - Parse and analyze via the stdlib `ast` (and existing project helpers). Do not add a second parsing stack.
 - Tests use `unittest` and live under `tests/`. Prefer acceptance-style tests that invoke the installed/`messpy` entrypoint or public package APIs.
-- Keep production-code self-analysis clean across the `codesize`, `design`, and `unusedcode` rulesets; fix new findings rather than suppressing them.
+- Keep production-code self-analysis clean across the `codesize`, `design`, `unusedcode`, `explicitness`, and `onion` rulesets; fix new findings rather than suppressing them. `scripts/verify_self_analysis.py` loads `onion` from `rulesets/messpy-onion.xml`. The domain is `analyzer.py`, `onion.py`, and `rulesets.py`. `cli.py` is the interaction layer and stays outside that domain.
 - No `# type: ignore` or broad `except:` without a short comment that states why it is safe.
