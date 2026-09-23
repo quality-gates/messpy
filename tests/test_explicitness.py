@@ -128,19 +128,22 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(
             [
-                f"{line}: ImplicitInput [priority 3] The function {function}() reads the implicit input {name}. "
-                "Pass it as an argument instead."
-                for line, function, name in [
-                    (5, "with_lambda_default", "counter"),
-                    (8, "with_nested_default", "counter"),
-                    (13, "with_nested_decorator", "registry"),
-                    (19, "with_class_base", "registry"),
-                ]
+                "5: ImplicitInput [priority 3] The function with_lambda_default() reads the implicit input counter. "
+                "Pass it as an argument instead.",
+                "8: ImplicitInput [priority 3] The function with_nested_default() reads the implicit input counter. "
+                "Pass it as an argument instead.",
+                "13: ImplicitInput [priority 3] The function with_nested_decorator() reads the implicit input registry. "
+                "Pass it as an argument instead.",
+                "13: ImplicitOutput [priority 3] The function with_nested_decorator() writes the implicit output registry. "
+                "Return it instead.",
+                "19: ImplicitInput [priority 3] The function with_class_base() reads the implicit input registry. "
+                "Pass it as an argument instead.",
             ],
             report,
         )
 
     def test_function_that_reads_the_environment_clock_or_randomness_has_implicit_inputs(self) -> None:
+
         status, report, errors = _analyze(
             "import os\n"
             "import time as clock\n"
@@ -522,8 +525,77 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_mutating_decorator_such_as_registry_append_is_reported_as_implicit_output(self) -> None:
+        status, report, errors = _analyze(
+            "registry = []\n"
+            "\n"
+            "\n"
+            "def build():\n"
+            "    @registry.append\n"
+            "    def handler():\n"
+            "        return 1\n"
+            "    return handler\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "5: ImplicitInput [priority 3] The function build() reads the implicit input registry. "
+                "Pass it as an argument instead.",
+                "5: ImplicitOutput [priority 3] The function build() writes the implicit output registry. "
+                "Return it instead.",
+            ],
+            report,
+        )
+
+    def test_pure_or_non_mutating_decorators_do_not_produce_implicit_output(self) -> None:
+        status, report, errors = _analyze(
+            "import functools\n"
+            "\n"
+            "def wrapper(fn):\n"
+            "    return fn\n"
+            "\n"
+            "def build():\n"
+            "    @wrapper\n"
+            "    @functools.cache\n"
+            "    def handler():\n"
+            "        return 1\n"
+            "    return handler\n",
+            "explicitness",
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    def test_method_decorator_mutating_instance_state_reports_implicit_instance_output(self) -> None:
+        status, report, errors = _analyze(
+            "class Hub:\n"
+            "    def __init__(self):\n"
+            "        self.handlers = []\n"
+            "\n"
+            "    def setup(self):\n"
+            "        @self.handlers.append\n"
+            "        def handler():\n"
+            "            return 1\n"
+            "        return handler\n",
+            "strictexplicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitInstanceInput [priority 3] The method Hub.setup() reads the implicit input self.handlers. "
+                "Pass it as an argument instead.",
+                "6: ImplicitInstanceOutput [priority 3] The method Hub.setup() writes the implicit output self.handlers. "
+                "Return it instead.",
+            ],
+            report,
+        )
+
 
 def _analyze(source: str, ruleset: str) -> tuple[int, list[str], str]:
+
     with tempfile.TemporaryDirectory() as temporary_directory:
         path = Path(temporary_directory) / "subject.py"
         path.write_text(source, encoding="utf-8")

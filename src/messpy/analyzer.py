@@ -1317,6 +1317,26 @@ def _mutated_global_names(
     }
 
 
+def _is_decorator(node: ast.AST, parents: dict[int, ast.AST] | None) -> bool:
+    if parents is None:
+        return False
+    parent = parents.get(id(node))
+    return (
+        isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and any(decorator is node for decorator in parent.decorator_list)
+    )
+
+
+def _mutator_target(
+    node: ast.AST, mutators: frozenset[str], parents: dict[int, ast.AST] | None
+) -> ast.expr | None:
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutators:
+        return node.func.value
+    if isinstance(node, ast.Attribute) and node.attr in mutators and _is_decorator(node, parents):
+        return node.value
+    return None
+
+
 def _mutated_global_name(
     node: ast.AST,
     candidates: dict[str, ast.Name],
@@ -1329,12 +1349,12 @@ def _mutated_global_name(
         return node.id if _is_mutated_module_name(node, candidates, initial_targets, parents) else ""
     if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return _unshadowed_candidate_root(node, candidates, parents, bindings)
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in mutators:
-        return _unshadowed_candidate_root(node.func.value, candidates, parents, bindings)
-    return ""
+    target = _mutator_target(node, mutators, parents)
+    return _unshadowed_candidate_root(target, candidates, parents, bindings) if target is not None else ""
 
 
 def _is_mutated_module_name(
+
     node: ast.Name,
     candidates: dict[str, ast.Name],
     initial_targets: set[int],
@@ -1922,14 +1942,14 @@ def _implicit_instance_input_findings(
 
 
 def _implicit_instance_output_findings(
-    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, _chain: _ScopeChain
+    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
     receiver = _method_receiver(callable_info)
     if receiver is None or _clean_code_callable_name(callable_info.node) in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
     for node in _evaluated_nodes(callable_info.node):
-        expression = _mutated_expression(node)
+        expression = _mutated_expression(node, chain.parents)
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
             first_writes.setdefault(name, node)
@@ -1939,6 +1959,7 @@ def _implicit_instance_output_findings(
 
 
 def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
+
     # This finds the receiver attribute that holds the accessed value, for example self.items in self.items[0].
     current = expression
     while isinstance(current, (ast.Attribute, ast.Subscript)):
@@ -2038,12 +2059,12 @@ def _is_local_object(name: str, chain: _ScopeChain) -> bool:
 
 def _changed_object(node: ast.AST, chain: _ScopeChain) -> ast.expr | None:
     # This finds what the node changes: sys.stdout in sys.stdout = value, sys.modules in sys.modules[key] = value.
-    expression = _mutated_expression(node)
+    expression = _mutated_expression(node, chain.parents)
     if expression is None:
         return None
     if isinstance(expression, ast.Subscript):
         return expression.value
-    if not isinstance(node, ast.Call):
+    if not (isinstance(node, ast.Call) or _is_decorator(node, chain.parents)):
         return expression
     # A call such as os.remove() or dict.clear(self) runs a function. It does not change the module or the builtin.
     if isinstance(expression, ast.Name) and (
@@ -2060,15 +2081,14 @@ def _dotted_prefix(expression: ast.expr) -> str:
     return _dotted_name(current)
 
 
-def _mutated_expression(node: ast.AST) -> ast.expr | None:
+def _mutated_expression(node: ast.AST, parents: dict[int, ast.AST] | None = None) -> ast.expr | None:
     if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return node
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATOR_METHOD_NAMES:
-        return node.func.value
-    return None
+    return _mutator_target(node, MUTATOR_METHOD_NAMES, parents)
 
 
 def _free_variable_read(node: ast.AST, chain: _ScopeChain) -> str:
+
     if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
         return ""
     kind, scope = chain.binding(node.id)
