@@ -14,7 +14,7 @@ import tokenize
 from io import StringIO
 from pathlib import Path
 
-from .rulesets import LoadedRule
+from .rulesets import LoadedRule, RulesetError
 
 __all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "analyze"]
 
@@ -35,6 +35,9 @@ def analyze(
     exclusions: Sequence[str] = (),
     ignore_tests: bool = False,
 ) -> Analysis:
+    from .onion import validate_onion_rules
+
+    validate_onion_rules(rules)
     input_paths = [Path(value).resolve() for value in paths]
     source_files = _source_files(input_paths, suffixes, exclusions, ignore_tests)
     findings, processing_errors = _analyze(source_files, rules)
@@ -505,6 +508,7 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables),
         *_selected_explicitness_findings(path, tree, rules, rule_names),
+        *_onion_findings(path, tree, rules),
     ]
 
 
@@ -1737,6 +1741,12 @@ def _is_shadowed(
             if name in bindings[id(current)]:
                 return True
     return name in bindings[id(tree)]
+
+
+def _onion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    from .onion import onion_findings
+
+    return onion_findings(path, tree, rules)
 
 
 def _selected_explicitness_findings(
