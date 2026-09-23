@@ -182,6 +182,12 @@ _CATALOG = {
     "implicitoutput": LoadedRule(name="ImplicitOutput", priority=3, properties={}),
     "implicitinstanceinput": LoadedRule(name="ImplicitInstanceInput", priority=3, properties={}),
     "implicitinstanceoutput": LoadedRule(name="ImplicitInstanceOutput", priority=3, properties={}),
+    "domainaction": LoadedRule(name="DomainAction", priority=2, properties={"domain": ""}),
+    "domainouterimport": LoadedRule(
+        name="DomainOuterImport",
+        priority=2,
+        properties={"domain": "", "outer-layers": ""},
+    ),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -287,6 +293,10 @@ _BUILT_IN_RULESETS = {
         "ImplicitOutput",
         "ImplicitInstanceInput",
         "ImplicitInstanceOutput",
+    ),
+    "onion": (
+        "DomainAction",
+        "DomainOuterImport",
     ),
 }
 

@@ -45,6 +45,7 @@ Field-level shapes for every format are in [reports.md](reports.md).
 | `controversial` | CapWords classes and snake_case identifiers. |
 | `explicitness` | Implicit inputs and outputs: data that enters a function other than by its arguments, or leaves it other than by its return value. |
 | `strictexplicitness` | `explicitness` plus instance and class state read or written through `self` / `cls`. |
+| `onion` | Actions and outer-layer imports in the domain layer. Set `domain` and `outer-layers` in XML. |
 
 Comma-separated values may mix built-ins and custom XML paths:
 
@@ -138,6 +139,37 @@ messpy src text path/to/team-policy.xml --ignore-tests
 ```
 
 References are case-insensitive and may name a built-in, one rule, `rulesets/name.xml`, or another XML file relative to the current file. Rulesets can nest; cycles and unknown references fail. Later references override earlier priority and property values. `<exclude name="..."/>` removes a rule from the referenced set.
+
+## Onion architecture
+
+`onion` checks a domain layer made of calculations. Interaction with the world stays in the interaction layer. Configure it in the team ruleset:
+
+```xml
+<ruleset name="team">
+    <rule ref="onion">
+        <properties>
+            <property name="domain" value="*/myapp/domain/*" />
+            <property name="outer-layers" value="myapp.infra,myapp.web,requests,sqlalchemy" />
+        </properties>
+    </rule>
+</ruleset>
+```
+
+```console
+messpy src text path/to/team.xml
+```
+
+`domain` is a comma-separated list of shell patterns. Each pattern is matched against the file's absolute path, and `*` matches across directories, so `messpy .` and `messpy src` report the same domain files. `outer-layers` is a comma-separated list of module names. A module matches an entry when it is that module or a submodule (`myapp.infra` covers `myapp.infra.db`).
+
+`DomainAction` reports an action in a domain module: an implicit input, an implicit output, a write to `self` or `cls` outside a constructor, ambient I/O at import time, or a call to another action in the same module. Import-time I/O includes annotations Python evaluates while loading the module: module and class variables, and signatures of module-level functions and methods. Those expressions stay quiet under `from __future__ import annotations`, and on Python 3.14 or later, where annotations are deferred. A `type` alias value stays quiet. The spread finding names the chain and points at the call. `DomainOuterImport` reports an import of an outer layer, including `import`, `from ... import`, relative imports, imports inside functions, and imports under `if TYPE_CHECKING:`.
+
+Selecting `onion` without `domain`, or loading `DomainOuterImport` without `outer-layers`, fails with exit code 1.
+
+A clean `onion` report is not proof of purity. Three blind spots remain:
+
+- The analysis stays inside one file. `DomainAction` does not follow a call into another module.
+- An injected callback or repository is not treated as an action. `repo.add(order)` is reported because `add` is a mutator name. `notify(order)` and `repo.save(order)` stay quiet.
+- Mutators are recognized by name, using the same list as `ImplicitOutput`.
 
 ## Suppressions in source
 

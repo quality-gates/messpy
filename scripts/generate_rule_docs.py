@@ -54,6 +54,8 @@ BEHAVIOR = {
     "ImplicitOutput": "Flags functions that send data out other than by `return`: `global` / `nonlocal` writes, changes to outer or argument objects, and ambient sinks such as `print`, `open` for writing, `sys.stdout`, `logging`, and `subprocess` or file-system calls.",
     "ImplicitInstanceInput": "Flags methods that read instance or class state through `self` / `cls`. Calls to other methods on the receiver stay quiet.",
     "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__` and `__post_init__` stay quiet. `__new__` does not, because its receiver is the class.",
+    "DomainAction": "Flags an action in a domain-layer module: an implicit input, an implicit output, a write to `self` / `cls` outside a constructor, ambient I/O at import time, or a call to another action in the same module.",
+    "DomainOuterImport": "Flags an import, in a domain-layer module, of a module named in `outer-layers`. A name matches that module and its submodules.",
 }
 
 
@@ -102,6 +104,33 @@ NOTES = {
         "Changes to local objects, `*args`, `**kwargs`, and a parameter that the function rebinds stay quiet. "
         "The method receiver is left to `ImplicitInstanceOutput`."
     ),
+    "DomainAction": (
+        "Set `domain` to a comma-separated list of shell patterns matched against the file's absolute path. "
+        "`*` matches across directories, so the result does not depend on the working directory or the scan root. "
+        "The usual form is `*/package/domain/*`. "
+        "The check reuses `ImplicitInput`, `ImplicitOutput`, and `ImplicitInstanceOutput`, so those rules do not have to be loaded. "
+        "Reads of `self` / `cls` stay quiet. "
+        "A spread finding is anchored at the call and names the chain, for example "
+        "`calls save_report(), which writes the implicit output print`. "
+        "A suppression on a direct action does not stop that action from spreading to callers in the same file. "
+        "Calls into other files are not followed. "
+        "A callback or repository passed as an argument is judged only by the name-based mutator list: "
+        "`repo.add(order)` is an action, while `notify(order)` and `repo.save(order)` stay quiet. "
+        "Annotations that Python evaluates at import time are included: module and class variable annotations, "
+        "and signature annotations on module-level functions and methods. "
+        "`from __future__ import annotations` and Python 3.14 defer those expressions, so they stay quiet. "
+        "A `type` alias value is not evaluated at import time. "
+        "Annotations on a nested function are not import-time actions."
+    ),
+    "DomainOuterImport": (
+        "Set `domain` the same way as `DomainAction`, and `outer-layers` to a comma-separated list of module names "
+        "such as `myapp.infra,requests`. "
+        "`import`, `from ... import`, and relative imports are checked, including imports inside functions and under "
+        "`if TYPE_CHECKING:`. A type-only import still couples the domain layer to that outer layer. "
+        "A relative import is resolved by walking parent directories that contain `__init__.py`. "
+        "A relative import that cannot be resolved this way stays quiet. "
+        "An empty `domain`, or an empty `outer-layers` on this rule, is a ruleset error."
+    ),
 }
 
 
@@ -114,6 +143,7 @@ COMPONENT_BLURBS = {
     "controversial": "Strict CapWords classes and snake_case identifiers.",
     "explicitness": "Implicit inputs and outputs: data that enters a function other than by its arguments, or leaves it other than by its return value.",
     "strictexplicitness": "`explicitness` plus instance and class state, so methods count `self` / `cls` data as implicit too.",
+    "onion": "Actions and outer-layer imports in the domain layer. Configure `domain` and `outer-layers` before use.",
     "python": "Recommended low-noise default for ordinary projects.",
     "opinionated": "Stricter checks left out of `python`; combine as `python,opinionated`.",
 }
@@ -132,6 +162,7 @@ def render() -> str:
             # A later component overwrites an earlier one. ImplicitInput and ImplicitOutput must show as explicitness.
             "strictexplicitness",
             "explicitness",
+            "onion",
         ]
         for reference in _BUILT_IN_RULESETS[component]
         for name in [_reference_name(reference)]
@@ -179,7 +210,34 @@ def render() -> str:
             else:
                 rendered.append(f"`{name}`")
         lines.append(f"- **`{component}`** — {blurb} {', '.join(rendered)}")
-    lines.append("")
+    lines.extend(
+        [
+            "",
+            "## Onion ruleset",
+            "",
+            "`onion` is not part of `python`. A team names its domain layer and its outer layers once:",
+            "",
+            "```xml",
+            '<ruleset name="team">',
+            '    <rule ref="onion">',
+            "        <properties>",
+            '            <property name="domain" value="*/myapp/domain/*" />',
+            '            <property name="outer-layers" value="myapp.infra,myapp.web,requests,sqlalchemy" />',
+            "        </properties>",
+            "    </rule>",
+            "</ruleset>",
+            "```",
+            "",
+            "`domain` matches the file's absolute path. `outer-layers` matches a module and its submodules, so `myapp.infra` covers `myapp.infra.db`.",
+            "",
+            "A clean report is not proof that the domain layer is pure. The check has three blind spots:",
+            "",
+            "- It stays inside one file, so a domain function that calls an action defined in another module is not reported by `DomainAction`.",
+            "- An injected callback or repository is not treated as an action. Only a mutator-named call on an argument, such as `repo.add(order)`, is reported.",
+            "- Mutators are recognized by name (`append`, `add`, and the same list as `ImplicitOutput`).",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
