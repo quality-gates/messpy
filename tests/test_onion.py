@@ -410,6 +410,236 @@ class OnionAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_a_match_capture_does_not_spread_to_the_outer_function(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout(value):\n"
+            "    save_report()\n"
+            "    match value:\n"
+            "        case save_report:\n"
+            "            return save_report()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+            ],
+            report,
+        )
+
+    def test_a_global_name_reaches_the_module_function_past_a_nested_one(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout():\n"
+            "    def save_report():\n"
+            "        return 1\n"
+            "    def inner():\n"
+            "        global save_report\n"
+            "        save_report()\n"
+            "    inner()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "9: DomainAction [priority 2] The function inner() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "10: DomainAction [priority 2] The function checkout() calls inner(), "
+                "which calls save_report(), which writes the implicit output print. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_closure_spreads_a_method_call_on_the_enclosing_receiver(self) -> None:
+        status, report, errors = _analyze_source(
+            "class Order:\n"
+            "    def save(self):\n"
+            "        print('saved')\n"
+            "    def checkout(self):\n"
+            "        def inner():\n"
+            "            self.save()\n"
+            "        inner()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "3: DomainAction [priority 2] The method Order.save() writes the implicit output print. "
+                "Return it instead.",
+                "6: DomainAction [priority 2] The function inner() calls save(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "6: DomainAction [priority 2] The function inner() reads the implicit input self. "
+                "Pass it as an argument instead.",
+                "7: DomainAction [priority 2] The method Order.checkout() calls inner(), "
+                "which reads the implicit input self. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_an_immediately_invoked_lambda_spreads_the_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout():\n"
+            "    return (lambda: save_report())()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function <lambda>() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "5: DomainAction [priority 2] The function checkout() calls <lambda>(), "
+                "which calls save_report(), which writes the implicit output print. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_lambda_bound_to_several_names_spreads_through_the_called_name(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout():\n"
+            "    a = b = lambda: save_report()\n"
+            "    return a()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function <lambda>() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "6: DomainAction [priority 2] The function checkout() calls a(), "
+                "which calls save_report(), which writes the implicit output print. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_lambda_argument_still_reports_the_wrapped_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout(items):\n"
+            "    return (lambda: save_report())\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function <lambda>() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_lambda_default_still_reports_the_wrapped_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout(action=lambda: save_report()):\n"
+            "    return action\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "4: DomainAction [priority 2] The function <lambda>() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_nested_lambda_default_still_reports_the_wrapped_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout():\n"
+            "    action = lambda callback=lambda: save_report(): callback\n"
+            "    return action\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function <lambda>() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_signature_annotation_that_opens_a_file_is_an_import_time_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def checkout(path: open('config.json')) -> open('out.json'):\n"
+            "    return path\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainAction [priority 2] The module reads the implicit input open at import time. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_future_annotations_keep_signature_expressions_quiet(self) -> None:
+        status, report, errors = _analyze_source(
+            "from __future__ import annotations\n"
+            "\n"
+            "def checkout(path: open('config.json')) -> open('out.json'):\n"
+            "    return path\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    def test_a_nested_signature_annotation_is_not_an_import_time_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def checkout():\n"
+            "    def inner(path: open('config.json')):\n"
+            "        return path\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
     def test_one_import_statement_reports_each_outer_layer(self) -> None:
         status, report, errors = _analyze_source(
             "import requests, sqlalchemy\n"

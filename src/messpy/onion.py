@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import ast
 import fnmatch
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .rulesets import LoadedRule, RulesetError
+
+if TYPE_CHECKING:
+    from .analyzer import Finding
 
 DOMAIN_ACTION_RULE_NAME = "DomainAction"
 DOMAIN_OUTER_IMPORT_RULE_NAME = "DomainOuterImport"
@@ -21,7 +26,7 @@ def validate_onion_rules(rules: Sequence[LoadedRule]) -> None:
             _require_list(rule, "outer-layers", "module")
 
 
-def onion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list:
+def onion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     action_rule = _named_rule(rules, DOMAIN_ACTION_RULE_NAME)
     import_rule = _named_rule(rules, DOMAIN_OUTER_IMPORT_RULE_NAME)
     findings = []
@@ -141,15 +146,27 @@ def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], a
 
 
 def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
-    collector = _ImportTimeNodes()
+    collector = _ImportTimeNodes(_annotations_are_deferred(tree))
     for statement in tree.body:
         collector.visit(statement)
     return collector.nodes
 
 
+def _annotations_are_deferred(tree: ast.Module) -> bool:
+    if sys.version_info >= (3, 14):
+        return True
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in tree.body
+    )
+
+
 class _ImportTimeNodes(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(self, deferred_annotations: bool) -> None:
         self.nodes: list[ast.AST] = []
+        self._deferred_annotations = deferred_annotations
 
     def generic_visit(self, node: ast.AST) -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -168,6 +185,10 @@ class _ImportTimeNodes(ast.NodeVisitor):
         for child in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
             if child is not None:
                 self.visit(child)
+        if self._deferred_annotations:
+            return
+        for child in _signature_annotations(node):
+            self.visit(child)
 
     def _visit_defaults(self, node: ast.Lambda) -> None:
         for child in (*node.args.defaults, *node.args.kw_defaults):
@@ -179,6 +200,21 @@ class _ImportTimeNodes(ast.NodeVisitor):
             self.visit(child)
         for statement in node.body:
             self.visit(statement)
+
+
+def _signature_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    annotations = [
+        argument.annotation
+        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        if argument.annotation is not None
+    ]
+    if node.args.vararg is not None and node.args.vararg.annotation is not None:
+        annotations.append(node.args.vararg.annotation)
+    if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+        annotations.append(node.args.kwarg.annotation)
+    if node.returns is not None:
+        annotations.append(node.returns)
+    return annotations
 
 
 def _spread_findings(path: Path, tree: ast.Module, rule: LoadedRule, phrases: dict[int, str]) -> list:
@@ -257,7 +293,6 @@ class _CallSite:
 @dataclass(frozen=True)
 class _CallableIndex:
     nodes: dict[int, ast.AST]
-    names: dict[int, str]
     labels: dict[int, str]
     bindings: dict[int, dict[str, int]]
     shadows: dict[int, set[str]]
@@ -267,6 +302,8 @@ class _CallableIndex:
     receivers: dict[int, str]
     owners: dict[int, str]
     class_ids: frozenset[int]
+    module_id: int
+    declared_global: dict[int, set[str]]
 
 
 def _index_callables(tree: ast.Module) -> _CallableIndex:
@@ -274,7 +311,6 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
     binder.visit(tree)
     return _CallableIndex(
         nodes=binder.nodes,
-        names=binder.names,
         labels=binder.labels,
         bindings=binder.bindings,
         shadows=binder.shadows,
@@ -284,6 +320,8 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
         receivers=binder.receivers,
         owners=binder.owners,
         class_ids=frozenset(binder.class_ids),
+        module_id=binder.module_id,
+        declared_global=binder.declared_global,
     )
 
 
@@ -301,9 +339,18 @@ def _call_edges(index: _CallableIndex, parents: dict[int, ast.AST]) -> dict[int,
                 continue
             seen.add(callee_id)
             edges.setdefault(caller_id, []).append(
-                _CallSite(callee_id, index.names[callee_id], child.lineno)
+                _CallSite(callee_id, _called_name(child, index, callee_id), child.lineno)
             )
     return edges
+
+
+def _called_name(call: ast.Call, index: _CallableIndex, callee_id: int) -> str:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return index.labels[callee_id]
 
 
 def _resolved_callee(
@@ -316,6 +363,8 @@ def _resolved_callee(
         return _resolve_bare_name(index, caller_id, func.id)
     if isinstance(func, ast.Attribute):
         return _resolve_receiver_call(index, caller_id, func)
+    if isinstance(func, ast.Lambda) and id(func) in index.nodes:
+        return id(func)
     return None
 
 
@@ -358,33 +407,60 @@ def _in_outer_iterable(
 
 
 def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
+    if name in index.declared_global.get(caller_id, ()):
+        return _bound_callable(index, index.module_id, name)
     scopes = (caller_id, *index.enclosing.get(caller_id, ()))
     for scope_id in scopes:
         if scope_id in index.class_ids:
             continue
-        if name in index.shadows.get(scope_id, ()):
-            return None
-        callee_id = index.bindings.get(scope_id, {}).get(name)
-        if callee_id is not None:
+        resolved, callee_id = _lookup_scope(index, scope_id, name)
+        if resolved:
             return callee_id
     return None
 
 
+def _lookup_scope(index: _CallableIndex, scope_id: int, name: str) -> tuple[bool, int | None]:
+    if name in index.shadows.get(scope_id, ()):
+        return True, None
+    callee_id = index.bindings.get(scope_id, {}).get(name)
+    if callee_id is not None:
+        return True, callee_id
+    return False, None
+
+
+def _bound_callable(index: _CallableIndex, scope_id: int, name: str) -> int | None:
+    resolved, callee_id = _lookup_scope(index, scope_id, name)
+    if resolved:
+        return callee_id
+    return None
+
+
 def _resolve_receiver_call(index: _CallableIndex, caller_id: int, attribute: ast.Attribute) -> int | None:
-    receiver = index.receivers.get(caller_id, "")
     value = attribute.value
-    if not receiver or not isinstance(value, ast.Name) or value.id != receiver:
+    if not isinstance(value, ast.Name):
         return None
-    class_id = index.callable_class.get(caller_id)
+    class_id = _class_for_receiver(index, caller_id, value.id)
     if class_id is None:
         return None
     return index.class_methods.get(class_id, {}).get(attribute.attr)
 
 
+def _class_for_receiver(index: _CallableIndex, caller_id: int, receiver_name: str) -> int | None:
+    scopes = (caller_id, *index.enclosing.get(caller_id, ()))
+    for scope_id in scopes:
+        if index.receivers.get(scope_id) == receiver_name:
+            return index.callable_class.get(scope_id)
+        if scope_id in index.class_ids:
+            continue
+        resolved, _callee_id = _lookup_scope(index, scope_id, receiver_name)
+        if resolved:
+            return None
+    return None
+
+
 class _CallableBinder(ast.NodeVisitor):
     def __init__(self) -> None:
         self.nodes: dict[int, ast.AST] = {}
-        self.names: dict[int, str] = {}
         self.labels: dict[int, str] = {}
         self.bindings: dict[int, dict[str, int]] = {}
         self.shadows: dict[int, set[str]] = {}
@@ -394,10 +470,13 @@ class _CallableBinder(ast.NodeVisitor):
         self.receivers: dict[int, str] = {}
         self.owners: dict[int, str] = {}
         self.class_ids: set[int] = set()
+        self.module_id = 0
+        self.declared_global: dict[int, set[str]] = {}
         self._scopes: list[ast.AST] = []
         self._classes: list[ast.ClassDef] = []
 
     def visit_Module(self, node: ast.Module) -> None:
+        self.module_id = id(node)
         self._scopes.append(node)
         for statement in node.body:
             self.visit(statement)
@@ -424,11 +503,7 @@ class _CallableBinder(ast.NodeVisitor):
         self._define_function(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        bound = _lambda_binding(node)
-        if bound is not None:
-            name, lambda_node = bound
-            self._bind_callable(name, lambda_node)
-            self._enter_lambda(lambda_node)
+        if _bind_lambda_assignment(self, node):
             return
         for target in node.targets:
             self._shadow_target(target)
@@ -436,8 +511,7 @@ class _CallableBinder(ast.NodeVisitor):
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if isinstance(node.target, ast.Name) and isinstance(node.value, ast.Lambda):
-            self._bind_callable(node.target.id, node.value)
-            self._enter_lambda(node.value)
+            _bind_lambda(self, node.target.id, node.value)
             return
         self._shadow_target(node.target)
         self.generic_visit(node)
@@ -451,13 +525,19 @@ class _CallableBinder(ast.NodeVisitor):
             self._shadow(alias.asname or alias.name)
 
     def generic_visit(self, node: ast.AST) -> None:
-        self._shadow_node(node)
+        if isinstance(node, (ast.Lambda, ast.Global, ast.Match)):
+            _record_runtime_binding(self, node)
+            if isinstance(node, ast.Match):
+                super().generic_visit(node)
+            return
+        _shadow_statement(self, node)
         super().generic_visit(node)
 
     def _define_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         self._bind_callable(node.name, node)
         self._record_method(node)
         self.enclosing[id(node)] = tuple(id(scope) for scope in reversed(self._scopes))
+        _visit_enclosing_expressions(self, node.decorator_list, node.args)
         self._scopes.append(node)
         self._shadow_arguments(node)
         for statement in node.body:
@@ -466,18 +546,24 @@ class _CallableBinder(ast.NodeVisitor):
 
     def _enter_lambda(self, node: ast.Lambda) -> None:
         self.enclosing[id(node)] = tuple(id(scope) for scope in reversed(self._scopes))
+        _visit_enclosing_expressions(self, (), node.args)
         self._scopes.append(node)
         self._shadow_arguments(node)
         self.visit(node.body)
         self._scopes.pop()
 
     def _bind_callable(self, name: str, node: ast.AST) -> None:
+        self._register_callable(node)
+        self._bind_name(name, node)
+
+    def _register_callable(self, node: ast.AST) -> None:
+        self.nodes[id(node)] = node
+        self.labels[id(node)] = "<lambda>" if isinstance(node, ast.Lambda) else node.name
+
+    def _bind_name(self, name: str, node: ast.AST) -> None:
         scope = self._scopes[-1]
         self.bindings.setdefault(id(scope), {})[name] = id(node)
         self.shadows.setdefault(id(scope), set()).discard(name)
-        self.nodes[id(node)] = node
-        self.names[id(node)] = name
-        self.labels[id(node)] = "<lambda>" if isinstance(node, ast.Lambda) else node.name
 
     def _record_method(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         if not self._classes or self._scopes[-1] is not self._classes[-1]:
@@ -507,28 +593,89 @@ class _CallableBinder(ast.NodeVisitor):
         for name in _stored_names(node):
             self._shadow(name)
 
-    def _shadow_node(self, node: ast.AST) -> None:
-        if isinstance(node, (ast.For, ast.AsyncFor, ast.NamedExpr)):
-            self._shadow_target(node.target)
-            return
-        if isinstance(node, (ast.With, ast.AsyncWith)):
-            self._shadow_with(node)
-            return
-        if isinstance(node, ast.ExceptHandler) and node.name is not None:
-            self._shadow(node.name)
 
-    def _shadow_with(self, node: ast.With | ast.AsyncWith) -> None:
-        for item in node.items:
-            if item.optional_vars is not None:
-                self._shadow_target(item.optional_vars)
+def _bind_lambda_assignment(binder: _CallableBinder, node: ast.Assign) -> bool:
+    names = _lambda_target_names(node)
+    if not names or not isinstance(node.value, ast.Lambda):
+        return False
+    binder._register_callable(node.value)
+    for name in names:
+        binder._bind_name(name, node.value)
+    binder._enter_lambda(node.value)
+    return True
 
 
-def _lambda_binding(node: ast.Assign) -> tuple[str, ast.Lambda] | None:
-    if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-        return None
+def _bind_lambda(binder: _CallableBinder, name: str, node: ast.Lambda) -> None:
+    binder._register_callable(node)
+    binder._bind_name(name, node)
+    binder._enter_lambda(node)
+
+
+def _record_runtime_binding(binder: _CallableBinder, node: ast.AST) -> None:
+    if isinstance(node, ast.Lambda):
+        binder._register_callable(node)
+        binder._enter_lambda(node)
+        return
+    if isinstance(node, ast.Global):
+        scope_id = id(binder._scopes[-1])
+        binder.declared_global.setdefault(scope_id, set()).update(node.names)
+        return
+    if isinstance(node, ast.Match):
+        for case in node.cases:
+            for name in _pattern_bindings(case.pattern):
+                binder._shadow(name)
+
+
+def _visit_enclosing_expressions(
+    binder: _CallableBinder,
+    decorators: Sequence[ast.expr],
+    arguments: ast.arguments,
+) -> None:
+    for decorator in decorators:
+        binder.visit(decorator)
+    for child in (*arguments.defaults, *arguments.kw_defaults):
+        if child is not None:
+            binder.visit(child)
+
+
+def _shadow_statement(binder: _CallableBinder, node: ast.AST) -> None:
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.NamedExpr)):
+        binder._shadow_target(node.target)
+        return
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        _shadow_context_targets(binder, node)
+        return
+    if isinstance(node, ast.ExceptHandler) and node.name is not None:
+        binder._shadow(node.name)
+
+
+def _shadow_context_targets(binder: _CallableBinder, node: ast.With | ast.AsyncWith) -> None:
+    for item in node.items:
+        if item.optional_vars is not None:
+            binder._shadow_target(item.optional_vars)
+
+
+def _lambda_target_names(node: ast.Assign) -> list[str] | None:
     if not isinstance(node.value, ast.Lambda):
         return None
-    return node.targets[0].id, node.value
+    names: list[str] = []
+    for target in node.targets:
+        if not isinstance(target, ast.Name):
+            return None
+        names.append(target.id)
+    return names
+
+
+def _pattern_bindings(pattern: ast.pattern) -> list[str]:
+    names: list[str] = []
+    for node in ast.walk(pattern):
+        if isinstance(node, ast.MatchAs) and node.name:
+            names.append(node.name)
+        elif isinstance(node, ast.MatchStar) and node.name:
+            names.append(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.append(node.rest)
+    return names
 
 
 def _receiver_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

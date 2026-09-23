@@ -115,7 +115,11 @@ NOTES = {
         "A suppression on a direct action does not stop that action from spreading to callers in the same file. "
         "Calls into other files are not followed. "
         "A callback or repository passed as an argument is judged only by the name-based mutator list: "
-        "`repo.add(order)` is an action, while `notify(order)` and `repo.save(order)` stay quiet."
+        "`repo.add(order)` is an action, while `notify(order)` and `repo.save(order)` stay quiet. "
+        "Signature annotations on a module-level function or method run at import time. "
+        "They stay quiet under `from __future__ import annotations`, and on Python 3.14 or later, "
+        "where annotations are deferred. "
+        "Annotations on a nested function are not import-time actions."
     ),
     "DomainOuterImport": (
         "Set `domain` the same way as `DomainAction`, and `outer-layers` to a comma-separated list of module names "
