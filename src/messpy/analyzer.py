@@ -302,6 +302,7 @@ CONSTRUCTOR_METHOD_NAMES = frozenset({"__init__", "__post_init__"})
 MUTATOR_METHOD_NAMES = frozenset(
     {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
 )
+BUILTIN_ATTRIBUTE_MUTATORS = frozenset({"builtins.setattr", "builtins.delattr"})
 IMPLICIT_INPUT_NAMES = frozenset(
     {
         "builtins.input",
@@ -1949,7 +1950,7 @@ def _implicit_instance_output_findings(
         return []
     first_writes: dict[str, ast.AST] = {}
     for node in _evaluated_nodes(callable_info.node):
-        expression = _mutated_expression(node, chain.parents)
+        expression = _mutated_expression(node, chain.parents, chain.for_node(node))
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
             first_writes.setdefault(name, node)
@@ -2059,11 +2060,13 @@ def _is_local_object(name: str, chain: _ScopeChain) -> bool:
 
 def _changed_object(node: ast.AST, chain: _ScopeChain) -> ast.expr | None:
     # This finds what the node changes: sys.stdout in sys.stdout = value, sys.modules in sys.modules[key] = value.
-    expression = _mutated_expression(node, chain.parents)
+    expression = _mutated_expression(node, chain.parents, chain)
     if expression is None:
         return None
     if isinstance(expression, ast.Subscript):
         return expression.value
+    if _is_builtin_attribute_mutator(node, chain):
+        return expression
     if not (isinstance(node, ast.Call) or _is_decorator(node, chain.parents)):
         return expression
     # A call such as os.remove() or dict.clear(self) runs a function. It does not change the module or the builtin.
@@ -2081,10 +2084,43 @@ def _dotted_prefix(expression: ast.expr) -> str:
     return _dotted_name(current)
 
 
-def _mutated_expression(node: ast.AST, parents: dict[int, ast.AST] | None = None) -> ast.expr | None:
+def _mutated_expression(
+    node: ast.AST, parents: dict[int, ast.AST] | None = None, chain: _ScopeChain | None = None
+) -> ast.expr | None:
     if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return node
+    target = _builtin_attribute_target(node, chain)
+    if target is not None:
+        return target
     return _mutator_target(node, MUTATOR_METHOD_NAMES, parents)
+
+
+def _is_builtin_attribute_mutator(node: ast.AST, chain: _ScopeChain | None) -> bool:
+    return (
+        chain is not None
+        and isinstance(node, ast.Call)
+        and chain.qualified_name(node.func) in BUILTIN_ATTRIBUTE_MUTATORS
+    )
+
+
+def _literal_attribute_name(argument: ast.expr) -> str:
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and argument.value.isidentifier():
+        return argument.value
+    return ""
+
+
+def _builtin_attribute_target(node: ast.AST, chain: _ScopeChain | None) -> ast.expr | None:
+    if not _is_builtin_attribute_mutator(node, chain) or len(node.args) < 2:  # type: ignore[union-attr]
+        return None
+    target, attribute_argument = node.args[0], node.args[1]  # type: ignore[union-attr]
+    if isinstance(target, ast.Starred) or isinstance(attribute_argument, ast.Starred):
+        return None
+    attribute_name = _literal_attribute_name(attribute_argument)
+    if not attribute_name:
+        return target
+    is_del = chain is not None and chain.qualified_name(node.func) == "builtins.delattr"  # type: ignore[union-attr]
+    context = ast.Del() if is_del else ast.Store()
+    return ast.Attribute(value=target, attr=attribute_name, ctx=context)
 
 
 def _free_variable_read(node: ast.AST, chain: _ScopeChain) -> str:

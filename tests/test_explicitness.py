@@ -242,6 +242,70 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_setattr_and_delattr_on_module_or_global_is_implicit_output(self) -> None:
+        status, report, errors = _analyze(
+            "import sys\n"
+            "config = {}\n"
+            "\n"
+            "def set_dynamic(name, value):\n"
+            "    setattr(sys, name, value)\n"
+            "\n"
+            "def set_literal(value):\n"
+            "    setattr(sys, 'flag', value)\n"
+            "\n"
+            "def del_dynamic(name):\n"
+            "    delattr(sys, name)\n"
+            "\n"
+            "def del_literal():\n"
+            "    delattr(sys, 'flag')\n"
+            "\n"
+            "def set_global_literal(value):\n"
+            "    setattr(config, 'mode', value)\n"
+            "\n"
+            "def set_parameter(target, value):\n"
+            "    setattr(target, 'enabled', value)\n",
+            "ImplicitOutput",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "5: ImplicitOutput [priority 3] The function set_dynamic() writes the implicit output sys. Return it instead.",
+                "8: ImplicitOutput [priority 3] The function set_literal() writes the implicit output sys.flag. Return it instead.",
+                "11: ImplicitOutput [priority 3] The function del_dynamic() writes the implicit output sys. Return it instead.",
+                "14: ImplicitOutput [priority 3] The function del_literal() writes the implicit output sys.flag. Return it instead.",
+                "17: ImplicitOutput [priority 3] The function set_global_literal() writes the implicit output config.mode. Return it instead.",
+                "20: ImplicitOutput [priority 3] The function set_parameter() writes the implicit output target.enabled. Return it instead.",
+            ],
+            report,
+        )
+
+    def test_setattr_and_delattr_on_local_objects_and_shadowed_builtins_are_ignored(self) -> None:
+        status, report, errors = _analyze(
+            "import sys\n"
+            "\n"
+            "class Local:\n"
+            "    pass\n"
+            "\n"
+            "def local_setattr(value):\n"
+            "    obj = Local()\n"
+            "    setattr(obj, 'flag', value)\n"
+            "    delattr(obj, 'flag')\n"
+            "    return obj\n"
+            "\n"
+            "def shadowed_param(setattr, delattr, value):\n"
+            "    setattr(sys, 'flag', value)\n"
+            "    delattr(sys, 'flag')\n"
+            "\n"
+            "def local_def(value):\n"
+            "    def setattr(obj, name, val):\n"
+            "        pass\n"
+            "    setattr(sys, 'flag', value)\n",
+            "ImplicitOutput",
+        )
+
+        self.assertEqual((0, [], ""), (status, report, errors))
+
     def test_function_that_prints_logs_or_touches_the_system_has_implicit_outputs(self) -> None:
         status, report, errors = _analyze(
             "import logging\n"
