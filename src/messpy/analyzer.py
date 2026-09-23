@@ -486,6 +486,8 @@ def _analyze(
 
 
 def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    from .onion import onion_findings
+
     rule_names = frozenset(rule.name for rule in rules)
     classes = _selected_classes(tree, rule_names)
     callables = _selected_callables(tree, rule_names)
@@ -508,7 +510,7 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables),
         *_selected_explicitness_findings(path, tree, rules, rule_names),
-        *_onion_findings(path, tree, rules),
+        *onion_findings(path, tree, rules),
     ]
 
 
@@ -1741,12 +1743,6 @@ def _is_shadowed(
             if name in bindings[id(current)]:
                 return True
     return name in bindings[id(tree)]
-
-
-def _onion_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
-    from .onion import onion_findings
-
-    return onion_findings(path, tree, rules)
 
 
 def _selected_explicitness_findings(

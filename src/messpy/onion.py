@@ -122,8 +122,8 @@ def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> lis
     ]
 
 
-def _record_ambient(node: ast.AST, chain, reader, found: dict[str, ast.AST]) -> None:
-    name = reader(node, chain)
+def _record_ambient(node: ast.AST, chain, classify, found: dict[str, ast.AST]) -> None:
+    name = classify(node, chain)
     if name:
         found.setdefault(name, node)
 
@@ -183,7 +183,7 @@ class _ImportTimeNodes(ast.NodeVisitor):
 
 def _spread_findings(path: Path, tree: ast.Module, rule: LoadedRule, phrases: dict[int, str]) -> list:
     index = _index_callables(tree)
-    edges = _call_edges(index)
+    edges = _call_edges(index, _parent_map(tree))
     actions = _action_ids(phrases, edges)
     findings = []
     for caller_id, sites in edges.items():
@@ -287,7 +287,7 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
     )
 
 
-def _call_edges(index: _CallableIndex) -> dict[int, list[_CallSite]]:
+def _call_edges(index: _CallableIndex, parents: dict[int, ast.AST]) -> dict[int, list[_CallSite]]:
     from .analyzer import _evaluated_nodes
 
     edges: dict[int, list[_CallSite]] = {}
@@ -296,7 +296,7 @@ def _call_edges(index: _CallableIndex) -> dict[int, list[_CallSite]]:
         for child in _evaluated_nodes(node):
             if not isinstance(child, ast.Call):
                 continue
-            callee_id = _resolved_callee(index, caller_id, child)
+            callee_id = _resolved_callee(index, caller_id, child, parents)
             if callee_id is None or callee_id in seen:
                 continue
             seen.add(callee_id)
@@ -306,13 +306,55 @@ def _call_edges(index: _CallableIndex) -> dict[int, list[_CallSite]]:
     return edges
 
 
-def _resolved_callee(index: _CallableIndex, caller_id: int, call: ast.Call) -> int | None:
+def _resolved_callee(
+    index: _CallableIndex, caller_id: int, call: ast.Call, parents: dict[int, ast.AST]
+) -> int | None:
     func = call.func
     if isinstance(func, ast.Name):
+        if func.id in _comprehension_targets(call, parents):
+            return None
         return _resolve_bare_name(index, caller_id, func.id)
     if isinstance(func, ast.Attribute):
         return _resolve_receiver_call(index, caller_id, func)
     return None
+
+
+def _comprehension_targets(call: ast.Call, parents: dict[int, ast.AST]) -> set[str]:
+    targets: set[str] = set()
+    current: ast.AST = call
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)):
+            break
+        if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            _add_comprehension_targets(call, current, parents, targets)
+    return targets
+
+
+def _add_comprehension_targets(
+    call: ast.Call,
+    comp: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    parents: dict[int, ast.AST],
+    targets: set[str],
+) -> None:
+    if _in_outer_iterable(call, comp, parents):
+        return
+    for generator in comp.generators:
+        targets.update(_stored_names(generator.target))
+
+
+def _in_outer_iterable(
+    call: ast.Call,
+    comp: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    parents: dict[int, ast.AST],
+) -> bool:
+    outer_iter = comp.generators[0].iter
+    current: ast.AST = call
+    while id(current) in parents and current is not comp:
+        if current is outer_iter:
+            return True
+        current = parents[id(current)]
+    return False
 
 
 def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
@@ -524,22 +566,23 @@ def _outer_import_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> li
     layers = _property_items(rule, "outer-layers")
     findings = []
     for node in ast.walk(tree):
-        match = _matched_import(path, node, layers)
-        if match is None:
-            continue
-        module, layer = match
-        findings.append(_import_finding(path, node, rule, module, layer))
+        for module, layer in _matched_imports(path, node, layers):
+            findings.append(_import_finding(path, node, rule, module, layer))
     return findings
 
 
-def _matched_import(path: Path, node: ast.AST, layers: Sequence[str]) -> tuple[str, str] | None:
+def _matched_imports(path: Path, node: ast.AST, layers: Sequence[str]) -> list[tuple[str, str]]:
     if not isinstance(node, (ast.Import, ast.ImportFrom)):
-        return None
+        return []
+    matches: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for module in _imported_module_names(path, node):
         layer = _matching_layer(module, layers)
-        if layer:
-            return module, layer
-    return None
+        if not layer or module in seen:
+            continue
+        seen.add(module)
+        matches.append((module, layer))
+    return matches
 
 
 def _imported_module_names(path: Path, node: ast.Import | ast.ImportFrom) -> list[str]:
@@ -548,7 +591,7 @@ def _imported_module_names(path: Path, node: ast.Import | ast.ImportFrom) -> lis
     base = _absolute_module(path, node)
     if not base:
         return []
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
+    return [base]
 
 
 def _absolute_module(path: Path, node: ast.ImportFrom) -> str:
@@ -558,7 +601,7 @@ def _absolute_module(path: Path, node: ast.ImportFrom) -> str:
     if package is None:
         return ""
     climb = node.level - 1
-    if climb > len(package):
+    if climb >= len(package):
         return ""
     kept = package[: len(package) - climb]
     if node.module:

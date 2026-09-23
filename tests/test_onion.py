@@ -388,6 +388,46 @@ class OnionAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_a_comprehension_target_does_not_spread_to_the_outer_function(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout(items):\n"
+            "    save_report()\n"
+            "    return [save_report() for save_report in items]\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function checkout() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_one_import_statement_reports_each_outer_layer(self) -> None:
+        status, report, errors = _analyze_source(
+            "import requests, sqlalchemy\n"
+            "from myapp import infra\n",
+            _ruleset(outer_layers="myapp.infra, requests, sqlalchemy"),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainOuterImport [priority 2] The module imports requests, which belongs to the outer layer "
+                "requests. The domain layer must not know about the interaction layer.",
+                "1: DomainOuterImport [priority 2] The module imports sqlalchemy, which belongs to the outer layer "
+                "sqlalchemy. The domain layer must not know about the interaction layer.",
+            ],
+            report,
+        )
+
     def test_unresolved_and_imported_calls_do_not_spread(self) -> None:
         status, report, errors = _analyze_source(
             "from myapp.pricing import save\n"
@@ -447,10 +487,13 @@ class OnionAcceptanceTests(unittest.TestCase):
                 project / "src/myapp/domain/loose.py",
                 "from .helpers import tax\n",
             )
-            # loose.py sits in a package too. A file outside any package:
             unpackaged = _write(
                 project / "pkg/myapp/domain/script.py",
                 "from ..infra import db\n",
+            )
+            beyond = _write(
+                project / "src/myapp/domain/beyond.py",
+                "from ...infra import db\n",
             )
             ruleset = _write_ruleset(project)
             status, stdout, errors = _run([str(project), "text", str(ruleset)])
@@ -467,6 +510,7 @@ class OnionAcceptanceTests(unittest.TestCase):
         )
         self.assertNotIn(loose.resolve().as_posix(), stdout)
         self.assertNotIn(unpackaged.resolve().as_posix(), stdout)
+        self.assertNotIn(beyond.resolve().as_posix(), stdout)
 
     def test_type_checking_imports_count(self) -> None:
         status, report, errors = _analyze_source(
