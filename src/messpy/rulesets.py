@@ -305,7 +305,7 @@ def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
     loaded: dict[str, LoadedRule] = {}
     for reference in references:
         try:
-            _merge(loaded, _load_reference(reference, Path.cwd(), ()))
+            loaded = _merge(loaded, _load_reference(reference, Path.cwd(), ()))
         except RulesetError as error:
             if str(error) == f"Unknown ruleset reference '{reference}'.":
                 raise RulesetError(f"Unknown ruleset '{reference}'.") from error
@@ -385,7 +385,7 @@ def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[LoadedRule]:
 
     loaded: dict[str, LoadedRule] = {}
     for element in root:
-        _merge_ruleset_element(loaded, element, path, ancestry)
+        loaded = _merge_ruleset_element(loaded, element, path, ancestry)
     return list(loaded.values())
 
 
@@ -394,12 +394,11 @@ def _merge_ruleset_element(
     element: ElementTree.Element,
     path: Path,
     ancestry: tuple[Path, ...],
-) -> None:
+) -> dict[str, LoadedRule]:
     if _tag(element) == "exclude":
-        _exclude(loaded, _required_name(element, path))
-        return
+        return _exclude(loaded, _required_name(element, path))
     if _tag(element) != "rule":
-        return
+        return loaded
     reference = element.get("ref")
     if not reference:
         raise RulesetError(f"Rule reference in '{path}' is missing ref.")
@@ -407,7 +406,7 @@ def _merge_ruleset_element(
     referenced = _without_rule_exclusions(referenced, element, path)
     properties = _properties(element, path)
     _validate_property_names(properties, referenced, reference)
-    _merge_reference(loaded, referenced, element, path, properties)
+    return _merge_reference(loaded, referenced, element, path, properties)
 
 
 def _without_rule_exclusions(
@@ -484,28 +483,33 @@ def _validate_property_names(
         raise RulesetError(f"Unknown property '{name}' for {target}.")
 
 
-def _merge(target: dict[str, LoadedRule], rules: Iterable[LoadedRule]) -> None:
+def _merge(current: dict[str, LoadedRule], rules: Iterable[LoadedRule]) -> dict[str, LoadedRule]:
+    merged = dict(current)
     for rule in rules:
-        target[_identity(rule.name)] = rule
+        merged[_identity(rule.name)] = rule
+    return merged
 
 
 def _merge_reference(
-    target: dict[str, LoadedRule],
+    current: dict[str, LoadedRule],
     referenced: Iterable[LoadedRule],
     element: ElementTree.Element,
     path: Path,
     properties: dict[str, str],
-) -> None:
+) -> dict[str, LoadedRule]:
+    merged = dict(current)
     for rule in referenced:
-        existing = target.get(_identity(rule.name), rule)
-        target[_identity(rule.name)] = _overrides([existing], element, path, properties)[0]
+        identity = _identity(rule.name)
+        existing = merged.get(identity, rule)
+        merged[identity] = _overrides([existing], element, path, properties)[0]
+    return merged
 
 
-def _exclude(rules: dict[str, LoadedRule], name: str) -> None:
+def _exclude(rules: dict[str, LoadedRule], name: str) -> dict[str, LoadedRule]:
     identity = _identity(name)
     if identity not in rules:
         raise RulesetError(f"Unknown rule exclusion '{name}'.")
-    rules.pop(identity)
+    return {key: rule for key, rule in rules.items() if key != identity}
 
 
 def _built_in_rule(reference: str | BuiltInRuleReference) -> LoadedRule:

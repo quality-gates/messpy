@@ -11,7 +11,7 @@ def verify(executable: Path) -> None:
             executable,
             "src/messpy",
             "text",
-            "codesize,design,unusedcode",
+            "rulesets/messpy-onion.xml,explicitness,codesize,design,unusedcode",
             "--ignore-tests",
             "--strict",
             "--color",

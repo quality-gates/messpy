@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import ast
 import fnmatch
-import sys
+import importlib.util
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -119,18 +119,19 @@ def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> lis
     reads: dict[str, ast.AST] = {}
     writes: dict[str, ast.AST] = {}
     for node in _import_time_nodes(tree):
-        _record_ambient(node, chain, _ambient_read, reads)
-        _record_ambient(node, chain, _ambient_write, writes)
+        reads = _with_ambient(node, chain, _ambient_read, reads)
+        writes = _with_ambient(node, chain, _ambient_write, writes)
     return [
         *_ambient_findings(path, rule, reads, "reads the implicit input"),
         *_ambient_findings(path, rule, writes, "writes the implicit output"),
     ]
 
 
-def _record_ambient(node: ast.AST, chain, classify, found: dict[str, ast.AST]) -> None:
+def _with_ambient(node: ast.AST, chain, classify, found: dict[str, ast.AST]) -> dict[str, ast.AST]:
     name = classify(node, chain)
-    if name:
-        found.setdefault(name, node)
+    if not name or name in found:
+        return found
+    return {**found, name: node}
 
 
 def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], action: str) -> list:
@@ -146,14 +147,15 @@ def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], a
 
 
 def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
-    collector = _ImportTimeNodes(_annotations_are_deferred(tree))
+    deferred = _annotations_are_deferred(tree)
+    nodes: list[ast.AST] = []
     for statement in tree.body:
-        collector.visit(statement)
-    return collector.nodes
+        nodes.extend(_import_time_node(statement, deferred))
+    return nodes
 
 
 def _annotations_are_deferred(tree: ast.Module) -> bool:
-    if sys.version_info >= (3, 14):
+    if _running_python_defers_annotations():
         return True
     return any(
         isinstance(statement, ast.ImportFrom)
@@ -163,55 +165,70 @@ def _annotations_are_deferred(tree: ast.Module) -> bool:
     )
 
 
-class _ImportTimeNodes(ast.NodeVisitor):
-    def __init__(self, deferred_annotations: bool) -> None:
-        self.nodes: list[ast.AST] = []
-        self._deferred_annotations = deferred_annotations
+def _running_python_defers_annotations() -> bool:
+    # annotationlib ships with the Python release that defers annotations.
+    return importlib.util.find_spec("annotationlib") is not None
 
-    def generic_visit(self, node: ast.AST) -> None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            self._visit_signature(node)
-            return
-        if isinstance(node, ast.Lambda):
-            self._visit_defaults(node)
-            return
-        if isinstance(node, ast.ClassDef):
-            self._visit_class(node)
-            return
-        self.nodes.append(node)
-        super().generic_visit(node)
 
-    def _visit_signature(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        for child in (*node.decorator_list, *node.args.defaults, *node.args.kw_defaults):
-            if child is not None:
-                self.visit(child)
-        if self._deferred_annotations:
-            return
-        for child in _signature_annotations(node):
-            self.visit(child)
+def _import_time_node(node: ast.AST, deferred: bool) -> list[ast.AST]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return _import_time_signature(node, deferred)
+    if isinstance(node, ast.Lambda):
+        return _import_time_defaults(node, deferred)
+    if isinstance(node, ast.ClassDef):
+        return _import_time_class(node, deferred)
+    if isinstance(node, ast.AnnAssign):
+        return _import_time_annotation(node, deferred)
+    if _is_type_alias(node):
+        return []
+    found = [node]
+    for child in ast.iter_child_nodes(node):
+        found.extend(_import_time_node(child, deferred))
+    return found
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        self.nodes.append(node)
-        self.visit(node.target)
-        if node.value is not None:
-            self.visit(node.value)
-        if self._deferred_annotations or node.annotation is None:
-            return
-        self.visit(node.annotation)
 
-    def visit_TypeAlias(self, _node: ast.TypeAlias) -> None:
-        return
+def _is_type_alias(node: ast.AST) -> bool:
+    type_alias = getattr(ast, "TypeAlias", None)
+    return type_alias is not None and isinstance(node, type_alias)
 
-    def _visit_defaults(self, node: ast.Lambda) -> None:
-        for child in (*node.args.defaults, *node.args.kw_defaults):
-            if child is not None:
-                self.visit(child)
 
-    def _visit_class(self, node: ast.ClassDef) -> None:
-        for child in (*node.decorator_list, *node.bases, *(item.value for item in node.keywords)):
-            self.visit(child)
-        for statement in node.body:
-            self.visit(statement)
+def _import_time_signature(node: ast.FunctionDef | ast.AsyncFunctionDef, deferred: bool) -> list[ast.AST]:
+    found = _import_time_present((*node.decorator_list, *node.args.defaults, *node.args.kw_defaults), deferred)
+    if deferred:
+        return found
+    return [*found, *_import_time_present(_signature_annotations(node), deferred)]
+
+
+def _import_time_defaults(node: ast.Lambda, deferred: bool) -> list[ast.AST]:
+    return _import_time_present((*node.args.defaults, *node.args.kw_defaults), deferred)
+
+
+def _import_time_class(node: ast.ClassDef, deferred: bool) -> list[ast.AST]:
+    found = _import_time_present(
+        (*node.decorator_list, *node.bases, *(item.value for item in node.keywords)),
+        deferred,
+    )
+    for statement in node.body:
+        found.extend(_import_time_node(statement, deferred))
+    return found
+
+
+def _import_time_annotation(node: ast.AnnAssign, deferred: bool) -> list[ast.AST]:
+    found = [node, *_import_time_node(node.target, deferred)]
+    if node.value is not None:
+        found.extend(_import_time_node(node.value, deferred))
+    if deferred or node.annotation is None:
+        return found
+    found.extend(_import_time_node(node.annotation, deferred))
+    return found
+
+
+def _import_time_present(nodes: Sequence[ast.AST | None], deferred: bool) -> list[ast.AST]:
+    found: list[ast.AST] = []
+    for node in nodes:
+        if node is not None:
+            found.extend(_import_time_node(node, deferred))
+    return found
 
 
 def _signature_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
@@ -320,22 +337,21 @@ class _CallableIndex:
 
 
 def _index_callables(tree: ast.Module) -> _CallableIndex:
-    binder = _CallableBinder()
-    binder.visit(tree)
+    state = _visit_module(_BindState(), tree)
     return _CallableIndex(
-        nodes=binder.nodes,
-        labels=binder.labels,
-        bindings=binder.bindings,
-        shadows=binder.shadows,
-        enclosing=binder.enclosing,
-        class_methods=binder.class_methods,
-        callable_class=binder.callable_class,
-        receivers=binder.receivers,
-        owners=binder.owners,
-        class_ids=frozenset(binder.class_ids),
-        module_id=binder.module_id,
-        declared_global=binder.declared_global,
-        declared_nonlocal=binder.declared_nonlocal,
+        nodes=state.nodes,
+        labels=state.labels,
+        bindings=state.bindings,
+        shadows=state.shadows,
+        enclosing=state.enclosing,
+        class_methods=state.class_methods,
+        callable_class=state.callable_class,
+        receivers=state.receivers,
+        owners=state.owners,
+        class_ids=state.class_ids,
+        module_id=state.module_id,
+        declared_global=state.declared_global,
+        declared_nonlocal=state.declared_nonlocal,
     )
 
 
@@ -390,20 +406,21 @@ def _comprehension_targets(call: ast.Call, parents: dict[int, ast.AST]) -> set[s
         if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
             break
         if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            _add_comprehension_targets(call, current, parents, targets)
+            targets.update(_comprehension_target_names(call, current, parents))
     return targets
 
 
-def _add_comprehension_targets(
+def _comprehension_target_names(
     call: ast.Call,
     comp: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
     parents: dict[int, ast.AST],
-    targets: set[str],
-) -> None:
+) -> set[str]:
     if _in_outer_iterable(call, comp, parents):
-        return
+        return set()
+    names: set[str] = set()
     for generator in comp.generators:
-        targets.update(_stored_names(generator.target))
+        names.update(_stored_names(generator.target))
+    return names
 
 
 def _in_outer_iterable(
@@ -474,206 +491,281 @@ def _class_for_receiver(index: _CallableIndex, caller_id: int, receiver_name: st
     return None
 
 
-class _CallableBinder(ast.NodeVisitor):
-    def __init__(self) -> None:
-        self.nodes: dict[int, ast.AST] = {}
-        self.labels: dict[int, str] = {}
-        self.bindings: dict[int, dict[str, int]] = {}
-        self.shadows: dict[int, set[str]] = {}
-        self.enclosing: dict[int, tuple[int, ...]] = {}
-        self.class_methods: dict[int, dict[str, int]] = {}
-        self.callable_class: dict[int, int] = {}
-        self.receivers: dict[int, str] = {}
-        self.owners: dict[int, str] = {}
-        self.class_ids: set[int] = set()
-        self.module_id = 0
-        self.declared_global: dict[int, set[str]] = {}
-        self.declared_nonlocal: dict[int, set[str]] = {}
-        self._scopes: list[ast.AST] = []
-        self._classes: list[ast.ClassDef] = []
-
-    def visit_Module(self, node: ast.Module) -> None:
-        self.module_id = id(node)
-        self._scopes.append(node)
-        for statement in node.body:
-            self.visit(statement)
-        self._scopes.pop()
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self._shadow(node.name)
-        self.class_ids.add(id(node))
-        for child in (*node.decorator_list, *node.bases):
-            self.visit(child)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-        self._classes.append(node)
-        self._scopes.append(node)
-        for statement in node.body:
-            self.visit(statement)
-        self._scopes.pop()
-        self._classes.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        self._define_function(node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._define_function(node)
-
-    def visit_Assign(self, node: ast.Assign) -> None:
-        if _bind_lambda_assignment(self, node):
-            return
-        for target in node.targets:
-            self._shadow_target(target)
-        self.generic_visit(node)
-
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        if isinstance(node.target, ast.Name) and isinstance(node.value, ast.Lambda):
-            _bind_lambda(self, node.target.id, node.value)
-            return
-        self._shadow_target(node.target)
-        self.generic_visit(node)
-
-    def visit_Import(self, node: ast.Import) -> None:
-        for alias in node.names:
-            self._shadow(alias.asname or alias.name.split(".", 1)[0])
-
-    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        for alias in node.names:
-            self._shadow(alias.asname or alias.name)
-
-    def generic_visit(self, node: ast.AST) -> None:
-        if isinstance(node, (ast.Lambda, ast.Global, ast.Nonlocal, ast.Match)):
-            _record_runtime_binding(self, node)
-            if isinstance(node, ast.Match):
-                super().generic_visit(node)
-            return
-        _shadow_statement(self, node)
-        super().generic_visit(node)
-
-    def _define_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        self._bind_callable(node.name, node)
-        self._record_method(node)
-        self.enclosing[id(node)] = tuple(id(scope) for scope in reversed(self._scopes))
-        _visit_enclosing_expressions(self, node.decorator_list, node.args)
-        self._scopes.append(node)
-        self._shadow_arguments(node)
-        for statement in node.body:
-            self.visit(statement)
-        self._scopes.pop()
-
-    def _enter_lambda(self, node: ast.Lambda) -> None:
-        self.enclosing[id(node)] = tuple(id(scope) for scope in reversed(self._scopes))
-        _visit_enclosing_expressions(self, (), node.args)
-        self._scopes.append(node)
-        self._shadow_arguments(node)
-        self.visit(node.body)
-        self._scopes.pop()
-
-    def _bind_callable(self, name: str, node: ast.AST) -> None:
-        self._register_callable(node)
-        self._bind_name(name, node)
-
-    def _register_callable(self, node: ast.AST) -> None:
-        self.nodes[id(node)] = node
-        self.labels[id(node)] = "<lambda>" if isinstance(node, ast.Lambda) else node.name
-
-    def _bind_name(self, name: str, node: ast.AST) -> None:
-        scope = self._scopes[-1]
-        self.bindings.setdefault(id(scope), {})[name] = id(node)
-        self.shadows.setdefault(id(scope), set()).discard(name)
-
-    def _record_method(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        if not self._classes or self._scopes[-1] is not self._classes[-1]:
-            return
-        class_node = self._classes[-1]
-        self.class_methods.setdefault(id(class_node), {})[node.name] = id(node)
-        self.callable_class[id(node)] = id(class_node)
-        self.owners[id(node)] = class_node.name
-        receiver = _receiver_name(node)
-        if receiver:
-            self.receivers[id(node)] = receiver
-
-    def _shadow_arguments(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> None:
-        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
-            self._shadow(argument.arg)
-        if node.args.vararg is not None:
-            self._shadow(node.args.vararg.arg)
-        if node.args.kwarg is not None:
-            self._shadow(node.args.kwarg.arg)
-
-    def _shadow(self, name: str) -> None:
-        scope = self._scopes[-1]
-        self.shadows.setdefault(id(scope), set()).add(name)
-        self.bindings.setdefault(id(scope), {}).pop(name, None)
-
-    def _shadow_target(self, node: ast.AST) -> None:
-        for name in _stored_names(node):
-            self._shadow(name)
+@dataclass(frozen=True)
+class _BindState:
+    nodes: dict[int, ast.AST] = field(default_factory=dict)
+    labels: dict[int, str] = field(default_factory=dict)
+    bindings: dict[int, dict[str, int]] = field(default_factory=dict)
+    shadows: dict[int, set[str]] = field(default_factory=dict)
+    enclosing: dict[int, tuple[int, ...]] = field(default_factory=dict)
+    class_methods: dict[int, dict[str, int]] = field(default_factory=dict)
+    callable_class: dict[int, int] = field(default_factory=dict)
+    receivers: dict[int, str] = field(default_factory=dict)
+    owners: dict[int, str] = field(default_factory=dict)
+    class_ids: frozenset[int] = frozenset()
+    module_id: int = 0
+    declared_global: dict[int, set[str]] = field(default_factory=dict)
+    declared_nonlocal: dict[int, set[str]] = field(default_factory=dict)
+    scopes: tuple[ast.AST, ...] = ()
+    classes: tuple[ast.ClassDef, ...] = ()
 
 
-def _bind_lambda_assignment(binder: _CallableBinder, node: ast.Assign) -> bool:
+def _visit_module(state: _BindState, node: ast.Module) -> _BindState:
+    state = replace(state, module_id=id(node))
+    state = _push_scope(state, node)
+    for statement in node.body:
+        state = _visit_binding(state, statement)
+    return _pop_scope(state)
+
+
+def _visit_binding(state: _BindState, node: ast.AST) -> _BindState:
+    defined = _visit_definition(state, node)
+    if defined is not None:
+        return defined
+    return _visit_binding_statement(state, node)
+
+
+def _visit_definition(state: _BindState, node: ast.AST) -> _BindState | None:
+    if isinstance(node, ast.ClassDef):
+        return _visit_class(state, node)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return _define_function(state, node)
+    return None
+
+
+def _visit_binding_statement(state: _BindState, node: ast.AST) -> _BindState:
+    if isinstance(node, ast.Assign):
+        return _visit_assign(state, node)
+    if isinstance(node, ast.AnnAssign):
+        return _visit_annotated_assignment(state, node)
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return _visit_import(state, node)
+    if isinstance(node, (ast.Lambda, ast.Global, ast.Nonlocal, ast.Match)):
+        return _visit_runtime_binding(state, node)
+    return _visit_binding_children(_shadow_statement(state, node), node)
+
+
+def _visit_class(state: _BindState, node: ast.ClassDef) -> _BindState:
+    state = _shadow(state, node.name)
+    state = replace(state, class_ids=frozenset({*state.class_ids, id(node)}))
+    for child in (*node.decorator_list, *node.bases):
+        state = _visit_binding(state, child)
+    for keyword in node.keywords:
+        state = _visit_binding(state, keyword.value)
+    state = replace(state, classes=(*state.classes, node))
+    state = _push_scope(state, node)
+    for statement in node.body:
+        state = _visit_binding(state, statement)
+    state = _pop_scope(state)
+    return replace(state, classes=state.classes[:-1])
+
+
+def _define_function(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _BindState:
+    state = _bind_callable(state, node.name, node)
+    state = _record_method(state, node)
+    state = replace(
+        state,
+        enclosing={**state.enclosing, id(node): tuple(id(scope) for scope in reversed(state.scopes))},
+    )
+    state = _visit_enclosing_expressions(state, node.decorator_list, node.args)
+    state = _push_scope(state, node)
+    state = _shadow_arguments(state, node)
+    for statement in node.body:
+        state = _visit_binding(state, statement)
+    return _pop_scope(state)
+
+
+def _visit_assign(state: _BindState, node: ast.Assign) -> _BindState:
+    bound = _bind_lambda_assignment(state, node)
+    if bound is not None:
+        return bound
+    for target in node.targets:
+        state = _shadow_target(state, target)
+    return _visit_binding_children(state, node)
+
+
+def _visit_annotated_assignment(state: _BindState, node: ast.AnnAssign) -> _BindState:
+    if isinstance(node.target, ast.Name) and isinstance(node.value, ast.Lambda):
+        return _bind_lambda(state, node.target.id, node.value)
+    state = _shadow_target(state, node.target)
+    return _visit_binding_children(state, node)
+
+
+def _visit_import(state: _BindState, node: ast.Import | ast.ImportFrom) -> _BindState:
+    for alias in node.names:
+        bound_name = alias.asname or (alias.name.split(".", 1)[0] if isinstance(node, ast.Import) else alias.name)
+        state = _shadow(state, bound_name)
+    return state
+
+
+def _visit_runtime_binding(state: _BindState, node: ast.AST) -> _BindState:
+    state = _record_runtime_binding(state, node)
+    if isinstance(node, ast.Match):
+        return _visit_binding_children(state, node)
+    return state
+
+
+def _visit_binding_children(state: _BindState, node: ast.AST) -> _BindState:
+    for child in ast.iter_child_nodes(node):
+        state = _visit_binding(state, child)
+    return state
+
+
+def _bind_callable(state: _BindState, name: str, node: ast.AST) -> _BindState:
+    return _bind_name(_register_callable(state, node), name, node)
+
+
+def _register_callable(state: _BindState, node: ast.AST) -> _BindState:
+    label = "<lambda>" if isinstance(node, ast.Lambda) else node.name
+    return replace(state, nodes={**state.nodes, id(node): node}, labels={**state.labels, id(node): label})
+
+
+def _bind_name(state: _BindState, name: str, node: ast.AST) -> _BindState:
+    scope_id = id(state.scopes[-1])
+    scope_bindings = dict(state.bindings.get(scope_id, {}))
+    scope_bindings[name] = id(node)
+    scope_shadows = set(state.shadows.get(scope_id, ()))
+    scope_shadows.discard(name)
+    return replace(
+        state,
+        bindings={**state.bindings, scope_id: scope_bindings},
+        shadows={**state.shadows, scope_id: scope_shadows},
+    )
+
+
+def _record_method(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _BindState:
+    if not state.classes or state.scopes[-1] is not state.classes[-1]:
+        return state
+    class_node = state.classes[-1]
+    methods = dict(state.class_methods.get(id(class_node), {}))
+    methods[node.name] = id(node)
+    receiver = _receiver_name(node)
+    receivers = {**state.receivers, id(node): receiver} if receiver else state.receivers
+    return replace(
+        state,
+        class_methods={**state.class_methods, id(class_node): methods},
+        callable_class={**state.callable_class, id(node): id(class_node)},
+        owners={**state.owners, id(node): class_node.name},
+        receivers=receivers,
+    )
+
+
+def _enter_lambda(state: _BindState, node: ast.Lambda) -> _BindState:
+    state = replace(
+        state,
+        enclosing={**state.enclosing, id(node): tuple(id(scope) for scope in reversed(state.scopes))},
+    )
+    state = _visit_enclosing_expressions(state, (), node.args)
+    state = _push_scope(state, node)
+    state = _shadow_arguments(state, node)
+    state = _visit_binding(state, node.body)
+    return _pop_scope(state)
+
+
+def _shadow_arguments(
+    state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+) -> _BindState:
+    for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+        state = _shadow(state, argument.arg)
+    if node.args.vararg is not None:
+        state = _shadow(state, node.args.vararg.arg)
+    if node.args.kwarg is not None:
+        state = _shadow(state, node.args.kwarg.arg)
+    return state
+
+
+def _shadow(state: _BindState, name: str) -> _BindState:
+    scope_id = id(state.scopes[-1])
+    scope_shadows = set(state.shadows.get(scope_id, ()))
+    scope_shadows.add(name)
+    scope_bindings = dict(state.bindings.get(scope_id, {}))
+    scope_bindings.pop(name, None)
+    return replace(
+        state,
+        shadows={**state.shadows, scope_id: scope_shadows},
+        bindings={**state.bindings, scope_id: scope_bindings},
+    )
+
+
+def _shadow_target(state: _BindState, node: ast.AST) -> _BindState:
+    for name in _stored_names(node):
+        state = _shadow(state, name)
+    return state
+
+
+def _push_scope(state: _BindState, node: ast.AST) -> _BindState:
+    return replace(state, scopes=(*state.scopes, node))
+
+
+def _pop_scope(state: _BindState) -> _BindState:
+    return replace(state, scopes=state.scopes[:-1])
+
+
+def _bind_lambda_assignment(state: _BindState, node: ast.Assign) -> _BindState | None:
     names = _lambda_target_names(node)
     if not names or not isinstance(node.value, ast.Lambda):
-        return False
-    binder._register_callable(node.value)
+        return None
+    state = _register_callable(state, node.value)
     for name in names:
-        binder._bind_name(name, node.value)
-    binder._enter_lambda(node.value)
-    return True
+        state = _bind_name(state, name, node.value)
+    return _enter_lambda(state, node.value)
 
 
-def _bind_lambda(binder: _CallableBinder, name: str, node: ast.Lambda) -> None:
-    binder._register_callable(node)
-    binder._bind_name(name, node)
-    binder._enter_lambda(node)
+def _bind_lambda(state: _BindState, name: str, node: ast.Lambda) -> _BindState:
+    state = _register_callable(state, node)
+    state = _bind_name(state, name, node)
+    return _enter_lambda(state, node)
 
 
-def _record_runtime_binding(binder: _CallableBinder, node: ast.AST) -> None:
+def _record_runtime_binding(state: _BindState, node: ast.AST) -> _BindState:
     if isinstance(node, ast.Lambda):
-        binder._register_callable(node)
-        binder._enter_lambda(node)
-        return
+        return _enter_lambda(_register_callable(state, node), node)
     if isinstance(node, ast.Global):
-        scope_id = id(binder._scopes[-1])
-        binder.declared_global.setdefault(scope_id, set()).update(node.names)
-        return
+        return _declare_names(state, "declared_global", node.names)
     if isinstance(node, ast.Nonlocal):
-        scope_id = id(binder._scopes[-1])
-        binder.declared_nonlocal.setdefault(scope_id, set()).update(node.names)
-        return
+        return _declare_names(state, "declared_nonlocal", node.names)
     if isinstance(node, ast.Match):
         for case in node.cases:
             for name in _pattern_bindings(case.pattern):
-                binder._shadow(name)
+                state = _shadow(state, name)
+    return state
+
+
+def _declare_names(state: _BindState, field_name: str, names: list[str]) -> _BindState:
+    scope_id = id(state.scopes[-1])
+    declared = dict(getattr(state, field_name))
+    declared[scope_id] = set(declared.get(scope_id, ())) | set(names)
+    return replace(state, **{field_name: declared})
 
 
 def _visit_enclosing_expressions(
-    binder: _CallableBinder,
+    state: _BindState,
     decorators: Sequence[ast.expr],
     arguments: ast.arguments,
-) -> None:
+) -> _BindState:
     for decorator in decorators:
-        binder.visit(decorator)
+        state = _visit_binding(state, decorator)
     for child in (*arguments.defaults, *arguments.kw_defaults):
         if child is not None:
-            binder.visit(child)
+            state = _visit_binding(state, child)
+    return state
 
 
-def _shadow_statement(binder: _CallableBinder, node: ast.AST) -> None:
+def _shadow_statement(state: _BindState, node: ast.AST) -> _BindState:
     if isinstance(node, (ast.For, ast.AsyncFor, ast.NamedExpr)):
-        binder._shadow_target(node.target)
-        return
+        return _shadow_target(state, node.target)
     if isinstance(node, (ast.With, ast.AsyncWith)):
-        _shadow_context_targets(binder, node)
-        return
+        return _shadow_context_targets(state, node)
     if isinstance(node, ast.ExceptHandler) and node.name is not None:
-        binder._shadow(node.name)
+        return _shadow(state, node.name)
+    return state
 
 
-def _shadow_context_targets(binder: _CallableBinder, node: ast.With | ast.AsyncWith) -> None:
+def _shadow_context_targets(state: _BindState, node: ast.With | ast.AsyncWith) -> _BindState:
     for item in node.items:
         if item.optional_vars is not None:
-            binder._shadow_target(item.optional_vars)
+            state = _shadow_target(state, item.optional_vars)
+    return state
 
 
 def _lambda_target_names(node: ast.Assign) -> list[str] | None:
