@@ -50,6 +50,10 @@ BEHAVIOR = {
     "CamelCasePropertyName": "Flags non-private property names that are not Python snake_case.",
     "CamelCaseParameterName": "Flags non-private parameter names that are not Python snake_case, after ordinary receiver and short-name exemptions.",
     "CamelCaseVariableName": "Flags non-private, non-constant variable names that are not Python snake_case.",
+    "ImplicitInput": "Flags functions that read data from outside their argument list: variables from the module or an enclosing function, and ambient sources such as `input`, `open` for reading, `os.environ`, `sys.argv`, the clock, and `random` / `secrets` calls.",
+    "ImplicitOutput": "Flags functions that send data out other than by `return`: `global` / `nonlocal` writes, changes to outer or argument objects, and ambient sinks such as `print`, `open` for writing, `sys.stdout`, `logging`, and `subprocess` or file-system calls.",
+    "ImplicitInstanceInput": "Flags methods that read instance or class state through `self` / `cls`. Calls to other methods on the receiver stay quiet.",
+    "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__` and `__post_init__` stay quiet. `__new__` does not, because its receiver is the class.",
 }
 
 
@@ -88,6 +92,16 @@ NOTES = {
         "Rule id is historical; the check is snake_case for variables. "
         "Keyword trailing underscores and conventional short names stay quiet."
     ),
+    "ImplicitInput": (
+        "Definitions, imports, builtins, and constants (`UPPER_CASE`, `Final`, `TypeAlias`) stay quiet. "
+        "A name that is both imported and assigned, such as an `ImportError` fallback, counts as an import. "
+        "Each callable is checked on its own; calls to other functions are not followed."
+    ),
+    "ImplicitOutput": (
+        "Mutation is recognized by assignment, `del`, and common mutator methods such as `append` and `update`. "
+        "Changes to local objects, `*args`, `**kwargs`, and a parameter that the function rebinds stay quiet. "
+        "The method receiver is left to `ImplicitInstanceOutput`."
+    ),
 }
 
 
@@ -98,6 +112,8 @@ COMPONENT_BLURBS = {
     "cleancode": "Small structural smells that make code harder to read and change.",
     "design": "Module and class design hazards: exits, empties, coupling, globals, cohesion.",
     "controversial": "Strict CapWords classes and snake_case identifiers.",
+    "explicitness": "Implicit inputs and outputs: data that enters a function other than by its arguments, or leaves it other than by its return value.",
+    "strictexplicitness": "`explicitness` plus instance and class state, so methods count `self` / `cls` data as implicit too.",
     "python": "Recommended low-noise default for ordinary projects.",
     "opinionated": "Stricter checks left out of `python`; combine as `python,opinionated`.",
 }
@@ -106,7 +122,17 @@ COMPONENT_BLURBS = {
 def render() -> str:
     component_for = {
         name: component
-        for component in ["codesize", "naming", "unusedcode", "cleancode", "design", "controversial"]
+        for component in [
+            "codesize",
+            "naming",
+            "unusedcode",
+            "cleancode",
+            "design",
+            "controversial",
+            # A later component overwrites an earlier one. ImplicitInput and ImplicitOutput must show as explicitness.
+            "strictexplicitness",
+            "explicitness",
+        ]
         for reference in _BUILT_IN_RULESETS[component]
         for name in [_reference_name(reference)]
     }

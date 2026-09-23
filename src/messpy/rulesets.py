@@ -178,6 +178,10 @@ _CATALOG = {
     "camelcasevariablename": LoadedRule(
         name="CamelCaseVariableName", priority=1, properties={"allow-underscore": "false"}
     ),
+    "implicitinput": LoadedRule(name="ImplicitInput", priority=3, properties={}),
+    "implicitoutput": LoadedRule(name="ImplicitOutput", priority=3, properties={}),
+    "implicitinstanceinput": LoadedRule(name="ImplicitInstanceInput", priority=3, properties={}),
+    "implicitinstanceoutput": LoadedRule(name="ImplicitInstanceOutput", priority=3, properties={}),
 }
 _BUILT_IN_RULESETS = {
     "naming": (
@@ -273,7 +277,17 @@ _BUILT_IN_RULESETS = {
         "TooManyMethods",
         "TooManyPublicMethods",
         "ExcessiveClassComplexity",
-    )
+    ),
+    "explicitness": (
+        "ImplicitInput",
+        "ImplicitOutput",
+    ),
+    "strictexplicitness": (
+        "ImplicitInput",
+        "ImplicitOutput",
+        "ImplicitInstanceInput",
+        "ImplicitInstanceOutput",
+    ),
 }
 
 
