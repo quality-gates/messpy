@@ -66,6 +66,10 @@ CAMEL_CASE_METHOD_RULE_NAME = "CamelCaseMethodName"
 CAMEL_CASE_PROPERTY_RULE_NAME = "CamelCasePropertyName"
 CAMEL_CASE_PARAMETER_RULE_NAME = "CamelCaseParameterName"
 CAMEL_CASE_VARIABLE_RULE_NAME = "CamelCaseVariableName"
+IMPLICIT_INPUT_RULE_NAME = "ImplicitInput"
+IMPLICIT_OUTPUT_RULE_NAME = "ImplicitOutput"
+IMPLICIT_INSTANCE_INPUT_RULE_NAME = "ImplicitInstanceInput"
+IMPLICIT_INSTANCE_OUTPUT_RULE_NAME = "ImplicitInstanceOutput"
 REPORT_FORMATS = frozenset(
     {"text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"}
 )
@@ -196,6 +200,94 @@ DESIGN_RULE_NAMES = frozenset(
         LACK_OF_COHESION_RULE_NAME,
     }
 )
+EXPLICITNESS_RULE_NAMES = frozenset(
+    {
+        IMPLICIT_INPUT_RULE_NAME,
+        IMPLICIT_OUTPUT_RULE_NAME,
+        IMPLICIT_INSTANCE_INPUT_RULE_NAME,
+        IMPLICIT_INSTANCE_OUTPUT_RULE_NAME,
+    }
+)
+CONSTRUCTOR_METHOD_NAMES = frozenset({"__init__", "__new__", "__post_init__"})
+MUTATOR_METHOD_NAMES = frozenset(
+    {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
+)
+IMPLICIT_INPUT_NAMES = frozenset(
+    {
+        "builtins.input",
+        "datetime.date.today",
+        "datetime.datetime.now",
+        "datetime.datetime.today",
+        "datetime.datetime.utcnow",
+        "os.environ",
+        "os.getcwd",
+        "os.getenv",
+        "os.listdir",
+        "os.urandom",
+        "random.choice",
+        "random.choices",
+        "random.gauss",
+        "random.getrandbits",
+        "random.randint",
+        "random.random",
+        "random.randrange",
+        "random.sample",
+        "random.shuffle",
+        "random.uniform",
+        "secrets.choice",
+        "secrets.randbelow",
+        "secrets.randbits",
+        "secrets.token_bytes",
+        "secrets.token_hex",
+        "secrets.token_urlsafe",
+        "sys.argv",
+        "sys.stdin",
+        "time.monotonic",
+        "time.perf_counter",
+        "time.time",
+        "time.time_ns",
+        "uuid.uuid1",
+        "uuid.uuid4",
+    }
+)
+IMPLICIT_OUTPUT_NAMES = frozenset(
+    {
+        "builtins.print",
+        "logging.critical",
+        "logging.debug",
+        "logging.error",
+        "logging.exception",
+        "logging.info",
+        "logging.log",
+        "logging.warning",
+        "os.makedirs",
+        "os.mkdir",
+        "os.putenv",
+        "os.remove",
+        "os.rename",
+        "os.replace",
+        "os.rmdir",
+        "os.system",
+        "os.unlink",
+        "os.unsetenv",
+        "shutil.copy",
+        "shutil.copy2",
+        "shutil.copyfile",
+        "shutil.copytree",
+        "shutil.move",
+        "shutil.rmtree",
+        "subprocess.Popen",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+        "subprocess.run",
+        "sys.stderr",
+        "sys.stdout",
+    }
+)
+OPEN_CALL_NAMES = frozenset({"builtins.open", "io.open"})
 
 
 @dataclass(frozen=True)
@@ -1052,6 +1144,7 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_unused_private_method_findings(path, classes, rules, private_member_usage),
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables),
+        *_selected_explicitness_findings(path, tree, rules, rule_names),
     ]
 
 
@@ -1733,11 +1826,10 @@ def _mutated_global_names(
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
 ) -> set[str]:
-    mutators = {"add", "append", "clear", "discard", "extend", "insert", "pop", "remove", "reverse", "sort", "update"}
     return {
         name
         for node in ast.walk(tree)
-        if (name := _mutated_global_name(node, candidates, initial_targets, parents, bindings, mutators))
+        if (name := _mutated_global_name(node, candidates, initial_targets, parents, bindings, MUTATOR_METHOD_NAMES))
     }
 
 
@@ -1747,7 +1839,7 @@ def _mutated_global_name(
     initial_targets: set[int],
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
-    mutators: set[str],
+    mutators: frozenset[str],
 ) -> str:
     if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return node.id if _is_mutated_module_name(node, candidates, initial_targets, parents) else ""
@@ -2252,6 +2344,398 @@ def _is_shadowed(
             if name in bindings[id(current)]:
                 return True
     return name in bindings[id(tree)]
+
+
+def _selected_explicitness_findings(
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule], rule_names: AbstractSet[str]
+) -> list[Finding]:
+    if not _has_any_rule(rule_names, EXPLICITNESS_RULE_NAMES):
+        return []
+    return _explicitness_findings(path, tree, rules)
+
+
+def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+    finders = [
+        (rule, finder)
+        for rule, finder in (
+            (_rule(rules, IMPLICIT_INPUT_RULE_NAME), _implicit_input_findings),
+            (_rule(rules, IMPLICIT_OUTPUT_RULE_NAME), _implicit_output_findings),
+            (_rule(rules, IMPLICIT_INSTANCE_INPUT_RULE_NAME), _implicit_instance_input_findings),
+            (_rule(rules, IMPLICIT_INSTANCE_OUTPUT_RULE_NAME), _implicit_instance_output_findings),
+        )
+        if rule is not None
+    ]
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    name_scopes = _name_scopes(tree)
+    findings: list[Finding] = []
+    for callable_info in _clean_code_callables(tree):
+        chain = _ScopeChain(
+            (callable_info.node, *_enclosing_scopes(callable_info.node, tree, parents)), name_scopes
+        )
+        for rule, finder in finders:
+            findings.extend(finder(path, callable_info, rule, chain))
+    return findings
+
+
+def _implicit_input_findings(
+    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
+) -> list[Finding]:
+    first_reads: dict[str, ast.AST] = {}
+    for node in _read_nodes(callable_info.node):
+        name = _free_variable_read(node, chain) or _ambient_read(node, chain)
+        if name:
+            first_reads.setdefault(name, node)
+    return _explicitness_report(
+        path, callable_info, rule, first_reads, "reads the implicit input", "Pass it as an argument instead."
+    )
+
+
+def _implicit_output_findings(
+    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
+) -> list[Finding]:
+    nodes = _executable_nodes(callable_info.node)
+    parameters = _caller_owned_parameters(callable_info, nodes)
+    first_writes: dict[str, ast.AST] = {}
+    for node in nodes:
+        name = _state_write(node, chain, parameters) or _ambient_write(node, chain)
+        if name:
+            first_writes.setdefault(name, node)
+    return _explicitness_report(
+        path, callable_info, rule, first_writes, "writes the implicit output", "Return it instead."
+    )
+
+
+def _implicit_instance_input_findings(
+    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, _chain: _ScopeChain
+) -> list[Finding]:
+    receiver = _method_receiver(callable_info)
+    if receiver is None:
+        return []
+    nodes = _read_nodes(callable_info.node)
+    called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
+    first_reads: dict[str, ast.AST] = {}
+    for node in nodes:
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and id(node) not in called:
+            name = _receiver_attribute(node, receiver)
+            if name:
+                first_reads.setdefault(name, node)
+    return _explicitness_report(
+        path, callable_info, rule, first_reads, "reads the implicit input", "Pass it as an argument instead."
+    )
+
+
+def _implicit_instance_output_findings(
+    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, _chain: _ScopeChain
+) -> list[Finding]:
+    receiver = _method_receiver(callable_info)
+    if receiver is None or _clean_code_callable_name(callable_info.node) in CONSTRUCTOR_METHOD_NAMES:
+        return []
+    first_writes: dict[str, ast.AST] = {}
+    for node in _executable_nodes(callable_info.node):
+        expression = _mutated_expression(node)
+        name = _receiver_attribute(expression, receiver) if expression is not None else ""
+        if name:
+            first_writes.setdefault(name, node)
+    return _explicitness_report(
+        path, callable_info, rule, first_writes, "writes the implicit output", "Return it instead."
+    )
+
+
+def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
+    # This finds the receiver attribute that holds the accessed value, for example self.items in self.items[0].
+    current = expression
+    while isinstance(current, (ast.Attribute, ast.Subscript)):
+        if isinstance(current, ast.Attribute) and isinstance(current.value, ast.Name) and current.value.id == receiver:
+            return f"{receiver}.{current.attr}"
+        current = current.value
+    return ""
+
+
+def _method_receiver(callable_info: CleanCodeCallable) -> str | None:
+    # Python gives the receiver to each method that is not static, for example cls in __new__ and mcls in a metaclass.
+    node = callable_info.node
+    if callable_info.owner_name is None or isinstance(node, ast.Lambda) or _has_decorator(node, "staticmethod"):
+        return None
+    positional = [*node.args.posonlyargs, *node.args.args]
+    return positional[0].arg if positional else None
+
+
+def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
+    # An augmented assignment reads its target before it writes it.
+    nodes: list[ast.AST] = []
+    for child in _executable_nodes(node):
+        nodes.append(child)
+        if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
+            nodes.append(ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target))
+        elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Attribute):
+            loaded = ast.Attribute(child.target.value, child.target.attr, ast.Load())
+            nodes.append(ast.copy_location(loaded, child.target))
+    return nodes
+
+
+def _caller_owned_parameters(callable_info: CleanCodeCallable, nodes: Sequence[ast.AST]) -> set[str]:
+    # A parameter that the function rebinds is a local copy. The method receiver is instance state.
+    # Python makes new *args and **kwargs containers on each call.
+    arguments = callable_info.node.args
+    rebound = {node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+    packed = {argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument is not None}
+    parameters = {argument.arg for argument in _arguments(arguments)} - rebound - packed
+    parameters.discard(_method_receiver(callable_info) or "")
+    return parameters
+
+
+def _explicitness_report(
+    path: Path,
+    callable_info: CleanCodeCallable,
+    rule: LoadedRule,
+    first_nodes: dict[str, ast.AST],
+    action: str,
+    remedy: str,
+) -> list[Finding]:
+    context = _clean_code_context(callable_info)
+    kind = "function" if callable_info.owner_name is None else "method"
+    return [
+        Finding(
+            path,
+            node.lineno,
+            rule.name,
+            rule.priority,
+            f"The {kind} {context}() {action} {name}. {remedy}",
+            context=context,
+        )
+        for name, node in first_nodes.items()
+    ]
+
+
+def _state_write(node: ast.AST, chain: _ScopeChain, parameters: AbstractSet[str]) -> str:
+    # A plain name write leaves the function only when the name belongs to an outer scope.
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return node.id if chain.binding(node.id)[1] is not chain.scopes[0] else ""
+    changed = _changed_object(node, chain)
+    if changed is None:
+        return ""
+    root = _root_name(changed)
+    return _dotted_prefix(changed) if root in parameters or not _is_local_object(root, chain) else ""
+
+
+def _is_local_object(name: str, chain: _ScopeChain) -> bool:
+    # A local object stays in the function. A local import is shared module state.
+    scope = chain.scopes[0]
+    return chain.binding(name)[1] is scope and name not in chain.name_scopes[id(scope)].imports
+
+
+def _changed_object(node: ast.AST, chain: _ScopeChain) -> ast.expr | None:
+    # This finds what the node changes: sys.stdout in sys.stdout = value, sys.modules in sys.modules[key] = value.
+    expression = _mutated_expression(node)
+    if expression is None:
+        return None
+    if isinstance(expression, ast.Subscript):
+        return expression.value
+    if not isinstance(node, ast.Call):
+        return expression
+    # A call such as os.remove() or dict.clear(self) runs a function. It does not change the module or the builtin.
+    if isinstance(expression, ast.Name) and (
+        chain.is_module(expression.id) or chain.binding(expression.id)[0] == "unbound"
+    ):
+        return None
+    return expression
+
+
+def _dotted_prefix(expression: ast.expr) -> str:
+    current = expression
+    while not _dotted_name(current) and isinstance(current, (ast.Attribute, ast.Subscript)):
+        current = current.value
+    return _dotted_name(current)
+
+
+def _mutated_expression(node: ast.AST) -> ast.expr | None:
+    if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return node
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in MUTATOR_METHOD_NAMES:
+        return node.func.value
+    return None
+
+
+def _free_variable_read(node: ast.AST, chain: _ScopeChain) -> str:
+    if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
+        return ""
+    kind, scope = chain.binding(node.id)
+    return node.id if kind == "variable" and scope is not chain.scopes[0] else ""
+
+
+def _ambient_read(node: ast.AST, chain: _ScopeChain) -> str:
+    if isinstance(node, ast.Call) and chain.qualified_name(node.func) in OPEN_CALL_NAMES:
+        return "open" if _open_mode_reads(_open_mode(node)) else ""
+    return _ambient_name(node, chain, IMPLICIT_INPUT_NAMES)
+
+
+def _ambient_write(node: ast.AST, chain: _ScopeChain) -> str:
+    if isinstance(node, ast.Call) and chain.qualified_name(node.func) in OPEN_CALL_NAMES:
+        return "open" if _open_mode_writes(_open_mode(node)) else ""
+    return _ambient_name(node, chain, IMPLICIT_OUTPUT_NAMES)
+
+
+def _ambient_name(node: ast.AST, chain: _ScopeChain, names: AbstractSet[str]) -> str:
+    if not isinstance(node, (ast.Name, ast.Attribute)) or not isinstance(node.ctx, ast.Load):
+        return ""
+    qualified = chain.qualified_name(node)
+    return qualified.removeprefix("builtins.") if qualified in names else ""
+
+
+def _open_mode(call: ast.Call) -> str | None:
+    # A missing mode is the read mode. A mode that is not a literal is unknown.
+    mode = call.args[1] if len(call.args) > 1 else next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "mode"), ast.Constant("r")
+    )
+    return mode.value if isinstance(mode, ast.Constant) and isinstance(mode.value, str) else None
+
+
+def _open_mode_reads(mode: str | None) -> bool:
+    return mode is None or "+" in mode or not set(mode) & set("wax")
+
+
+def _open_mode_writes(mode: str | None) -> bool:
+    return mode is not None and bool(set(mode) & set("wax+"))
+
+
+@dataclass(frozen=True)
+class _ScopeChain:
+    """The scopes that a callable reads free names from, from the callable out to the module."""
+
+    scopes: tuple[ast.AST, ...]
+    name_scopes: dict[int, _NameScope]
+
+    def binding(self, name: str) -> tuple[str, ast.AST]:
+        # This follows the order in which Python resolves a free name. Class scopes are not in the chain.
+        for scope in self.scopes[:-1]:
+            name_scope = self.name_scopes[id(scope)]
+            if name in name_scope.global_names:
+                break
+            if name in name_scope.nonlocal_names:
+                continue
+            kind = _binding_kind(name, name_scope)
+            if kind:
+                return kind, scope
+        module = self.scopes[-1]
+        return _binding_kind(name, self.name_scopes[id(module)]) or "unbound", module
+
+    def qualified_name(self, node: ast.expr) -> str:
+        dotted = _dotted_name(node)
+        if not dotted:
+            return ""
+        root, separator, member = dotted.partition(".")
+        kind, scope = self.binding(root)
+        if kind == "unbound":
+            base = f"builtins.{root}"
+        elif kind == "definition":
+            base = self.name_scopes[id(scope)].imports.get(root, "")
+        else:
+            base = ""
+        return f"{base}{separator}{member}" if base else ""
+
+    def is_module(self, name: str) -> bool:
+        kind, scope = self.binding(name)
+        return kind == "definition" and name in self.name_scopes[id(scope)].modules
+
+
+@dataclass(frozen=True)
+class _NameScope:
+    """The names that one scope binds, split into variables and fixed definitions."""
+
+    variables: frozenset[str]
+    definitions: frozenset[str]
+    global_names: frozenset[str]
+    nonlocal_names: frozenset[str]
+    imports: dict[str, str]
+    modules: frozenset[str]
+
+
+def _name_scopes(tree: ast.Module) -> dict[int, _NameScope]:
+    declared_globals = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
+    name_scopes: dict[int, _NameScope] = {}
+    for scope in _binding_scopes(tree):
+        collector = _ScopeNameCollector()
+        if isinstance(scope, ast.Module):
+            collector.variables.update(declared_globals)
+        else:
+            collector.variables.update(argument.arg for argument in _arguments(scope.args))
+        for statement in _scope_statements(scope):
+            collector.visit(statement)
+        name_scopes[id(scope)] = collector.name_scope()
+    return name_scopes
+
+
+class _ScopeNameCollector(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.variables: set[str] = set()
+        self.definitions: set[str] = set()
+        self.constants: set[str] = set()
+        self.global_names: set[str] = set()
+        self.nonlocal_names: set[str] = set()
+        self.imports: dict[str, str] = {}
+        self.modules: set[str] = set()
+
+    def name_scope(self) -> _NameScope:
+        constants = {name for name in self.variables if re.fullmatch(r"_*[A-Z][A-Z0-9_]*", name)} | self.constants
+        return _NameScope(
+            variables=frozenset(self.variables - constants),
+            definitions=frozenset(self.definitions | constants),
+            global_names=frozenset(self.global_names),
+            nonlocal_names=frozenset(self.nonlocal_names),
+            imports=self.imports,
+            modules=frozenset(self.modules),
+        )
+
+    def visit_Global(self, node: ast.Global) -> None:
+        self.global_names.update(node.names)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocal_names.update(node.names)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        self.modules.update(_import_binding_names(node))
+        self._record_import(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        self._record_import(node)
+
+    def _record_import(self, node: ast.Import | ast.ImportFrom) -> None:
+        _record_scope_binding(self.definitions, node)
+        self.imports.update(_import_qualified_names(node))
+
+    def generic_visit(self, node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _record_scope_binding(self.definitions, node)
+        else:
+            _record_scope_binding(self.variables, node)
+        if isinstance(node, ast.AnnAssign) and _is_constant_annotation(node.annotation):
+            self.constants.update(name.id for name in _target_names(node.target))
+        if not isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            super().generic_visit(node)
+
+
+def _import_qualified_names(node: ast.Import | ast.ImportFrom) -> dict[str, str]:
+    if isinstance(node, ast.ImportFrom):
+        module = _import_from_module(node)
+        return {item.asname or item.name: _imported_name(module, item.name) for item in node.names}
+    names: dict[str, str] = {}
+    for item in node.names:
+        package = item.name.split(".", 1)[0]
+        names[item.asname or package] = item.name if item.asname else package
+    return names
+
+
+def _is_constant_annotation(annotation: ast.expr) -> bool:
+    return _is_final_annotation(annotation) or _is_type_alias_annotation(annotation)
+
+
+def _binding_kind(name: str, name_scope: _NameScope) -> str:
+    # A name that is both imported and assigned, for example a fallback after an ImportError, is a definition.
+    if name in name_scope.definitions:
+        return "definition"
+    if name in name_scope.variables:
+        return "variable"
+    return ""
 
 
 def _clean_code_findings(

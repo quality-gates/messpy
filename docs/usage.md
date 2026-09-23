@@ -43,6 +43,8 @@ Field-level shapes for every format are in [reports.md](reports.md).
 | `cleancode` | Boolean flags, dead `else`, static access, walrus-in-condition, duplicate dict keys. |
 | `design` | Exits, empty handlers, coupling, globals, cohesion, development leftovers. |
 | `controversial` | CapWords classes and snake_case identifiers. |
+| `explicitness` | Implicit inputs and outputs: data that enters a function other than by its arguments, or leaves it other than by its return value. |
+| `strictexplicitness` | `explicitness` plus instance and class state read or written through `self` / `cls`. |
 
 Comma-separated values may mix built-ins and custom XML paths:
 
