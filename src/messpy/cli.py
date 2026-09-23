@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import json
 import os
@@ -165,29 +165,33 @@ def _run_analysis(parsed_arguments: ParsedArguments, stdout: TextIO, stderr: Tex
     )
 
 
-def main() -> None:
-    raise SystemExit(run(sys.argv[1:], sys.stdout, sys.stderr))
+def main(
+    argv: Sequence[str] = sys.argv,
+    stdout: TextIO = sys.stdout,
+    stderr: TextIO = sys.stderr,
+) -> None:
+    raise SystemExit(run(argv[1:], stdout, stderr))
 
 
 def _messpy_version() -> str:
     return __version__
 
 
-@dataclass
+@dataclass(frozen=True)
 class _RuleSelectionState:
-    only: list[str] = dataclass_field(default_factory=list)
-    enable: list[str] = dataclass_field(default_factory=list)
-    disable: list[str] = dataclass_field(default_factory=list)
+    only: tuple[str, ...] = ()
+    enable: tuple[str, ...] = ()
+    disable: tuple[str, ...] = ()
     minimum_priority: int = 1
     maximum_priority: int = 5
 
 
-@dataclass
+@dataclass(frozen=True)
 class _ArgumentParseState:
-    positionals: list[str] = dataclass_field(default_factory=list)
-    suffixes: set[str] = dataclass_field(default_factory=lambda: set(DEFAULT_SUFFIXES))
+    positionals: tuple[str, ...] = ()
+    suffixes: frozenset[str] = frozenset(DEFAULT_SUFFIXES)
     suffixes_provided: bool = False
-    exclusions: list[str] = dataclass_field(default_factory=list)
+    exclusions: tuple[str, ...] = ()
     report_file: Path | None = None
     ignore_tests: bool = False
     ignore_errors_on_exit: bool = False
@@ -205,95 +209,98 @@ def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
     index = 0
     argument_count = len(arguments)
     while index < argument_count:
-        argument = arguments[index]
-        if argument in {"-h", "--help"}:
-            state.show_help = True
-            index += 1
-            continue
-        if argument in {"-v", "--version"}:
-            state.show_version = True
-            index += 1
-            continue
-        if not argument.startswith("-"):
-            state.positionals.append(argument)
-            index += 1
-            continue
-
-        option_name, option_value = _split_option(argument)
-        if option_name in VALUE_OPTIONS:
-            index = _apply_value_option(state, arguments, index, option_name, option_value)
-            continue
-        if option_name in BOOLEAN_OPTIONS:
-            _apply_boolean_option(state, option_name, option_value)
-            index += 1
-            continue
-        raise CliError(f"Unknown option: {option_name}", state.ignore_errors_on_exit)
-
+        state, index = _consume_argument(state, arguments, index)
     if state.show_help or state.show_version:
         return _finish_help_or_version_parsing(state)
     return _finish_analysis_parsing(state)
 
 
+def _consume_argument(
+    state: _ArgumentParseState, arguments: Sequence[str], index: int
+) -> tuple[_ArgumentParseState, int]:
+    argument = arguments[index]
+    if argument in {"-h", "--help"}:
+        return replace(state, show_help=True), index + 1
+    if argument in {"-v", "--version"}:
+        return replace(state, show_version=True), index + 1
+    if not argument.startswith("-"):
+        return replace(state, positionals=(*state.positionals, argument)), index + 1
+    option_name, option_value = _split_option(argument)
+    if option_name in VALUE_OPTIONS:
+        return _apply_value_option(state, arguments, index, option_name, option_value)
+    if option_name in BOOLEAN_OPTIONS:
+        return _apply_boolean_option(state, option_name, option_value), index + 1
+    raise CliError(f"Unknown option: {option_name}", state.ignore_errors_on_exit)
+
+
 def _apply_value_option(
     state: _ArgumentParseState, arguments: Sequence[str], index: int, option_name: str, option_value: str | None
-) -> int:
+) -> tuple[_ArgumentParseState, int]:
     if option_value is None:
         if index + 1 == len(arguments) or arguments[index + 1].startswith("-"):
             raise CliError(f"Missing value for option: {option_name}", state.ignore_errors_on_exit)
         option_value = arguments[index + 1]
         index += 1
-    _dispatch_value_option(state, option_name, option_value)
-    return index + 1
+    return _dispatch_value_option(state, option_name, option_value), index + 1
 
 
-def _dispatch_value_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
+def _dispatch_value_option(state: _ArgumentParseState, option_name: str, option_value: str) -> _ArgumentParseState:
     if option_name in {"--report-file", "--reportfile"}:
-        state.report_file = Path(option_value)
-    elif option_name == "--suffixes":
-        state.suffixes = _merged_suffixes(state, option_value)
-        state.suffixes_provided = True
-    elif option_name == "--exclude":
-        state.exclusions.extend(_split_nonempty(option_value))
-    elif option_name == "--color":
-        state.color = _parse_color(option_value, state.ignore_errors_on_exit)
-    elif option_name in {"--only", "--enable", "--disable"}:
-        _apply_rule_selection_option(state, option_name, option_value)
-    elif option_name in {"--minimum-priority", "--minimumpriority"}:
-        state.rules.minimum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
-    else:
-        state.rules.maximum_priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+        return replace(state, report_file=Path(option_value))
+    if option_name == "--suffixes":
+        return replace(
+            state,
+            suffixes=_merged_suffixes(state, option_value),
+            suffixes_provided=True,
+        )
+    if option_name == "--exclude":
+        return replace(state, exclusions=(*state.exclusions, *_split_nonempty(option_value)))
+    if option_name == "--color":
+        return replace(state, color=_parse_color(option_value, state.ignore_errors_on_exit))
+    if option_name in {"--only", "--enable", "--disable"}:
+        return _apply_rule_selection_option(state, option_name, option_value)
+    if option_name in {"--minimum-priority", "--minimumpriority"}:
+        priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+        return replace(state, rules=replace(state.rules, minimum_priority=priority))
+    priority = _parse_priority(option_name, option_value, state.ignore_errors_on_exit)
+    return replace(state, rules=replace(state.rules, maximum_priority=priority))
 
 
-def _merged_suffixes(state: _ArgumentParseState, option_value: str) -> set[str]:
-    normalized_suffixes = _normalized_suffixes(option_value)
+def _merged_suffixes(state: _ArgumentParseState, option_value: str) -> frozenset[str]:
+    normalized_suffixes = frozenset(_normalized_suffixes(option_value))
     if not state.suffixes_provided:
         return normalized_suffixes
     return state.suffixes | normalized_suffixes
 
 
-def _apply_rule_selection_option(state: _ArgumentParseState, option_name: str, option_value: str) -> None:
-    values = _split_nonempty(option_value)
+def _apply_rule_selection_option(
+    state: _ArgumentParseState, option_name: str, option_value: str
+) -> _ArgumentParseState:
+    values = tuple(_split_nonempty(option_value))
+    rules = state.rules
     if option_name == "--only":
-        state.rules.only.extend(values)
+        rules = replace(rules, only=(*rules.only, *values))
     elif option_name == "--enable":
-        state.rules.enable.extend(values)
+        rules = replace(rules, enable=(*rules.enable, *values))
     else:
-        state.rules.disable.extend(values)
+        rules = replace(rules, disable=(*rules.disable, *values))
+    return replace(state, rules=rules)
 
 
-def _apply_boolean_option(state: _ArgumentParseState, option_name: str, option_value: str | None) -> None:
+def _apply_boolean_option(
+    state: _ArgumentParseState, option_name: str, option_value: str | None
+) -> _ArgumentParseState:
     if option_value is not None:
         raise CliError(f"Option does not accept a value: {option_name}", state.ignore_errors_on_exit)
     if option_name == "--ignore-tests":
-        state.ignore_tests = True
-    elif option_name == "--ignore-errors-on-exit":
-        state.ignore_errors_on_exit = True
-    elif option_name == "--verbose":
-        state.verbose = True
-    elif option_name == "--strict":
-        state.strict = True
-    else:
-        state.ignore_violations_on_exit = True
+        return replace(state, ignore_tests=True)
+    if option_name == "--ignore-errors-on-exit":
+        return replace(state, ignore_errors_on_exit=True)
+    if option_name == "--verbose":
+        return replace(state, verbose=True)
+    if option_name == "--strict":
+        return replace(state, strict=True)
+    return replace(state, ignore_violations_on_exit=True)
 
 
 def _finish_help_or_version_parsing(state: _ArgumentParseState) -> ParsedArguments:
@@ -402,15 +409,17 @@ def _render_report(
     color: bool,
 ) -> str:
     renderer = {
-        "text": lambda: _text_report_with_color(findings, processing_errors, color),
-        "xml": lambda: _xml_report(findings, processing_errors),
-        "json": lambda: _json_report(findings, processing_errors),
-        "html": lambda: _html_report(findings, processing_errors),
-        "ansi": lambda: _text_report_with_color(findings, processing_errors, True),
-        "github": lambda: _github_report(findings, processing_errors),
-        "gitlab": lambda: _gitlab_report(findings, processing_errors),
-        "checkstyle": lambda: _checkstyle_report(findings, processing_errors),
-        "sarif": lambda: _sarif_report(findings, processing_errors),
+        "text": lambda findings=findings, errors=processing_errors, color=color: _text_report_with_color(
+            findings, errors, color
+        ),
+        "xml": lambda findings=findings, errors=processing_errors: _xml_report(findings, errors),
+        "json": lambda findings=findings, errors=processing_errors: _json_report(findings, errors),
+        "html": lambda findings=findings, errors=processing_errors: _html_report(findings, errors),
+        "ansi": lambda findings=findings, errors=processing_errors: _text_report_with_color(findings, errors, True),
+        "github": lambda findings=findings, errors=processing_errors: _github_report(findings, errors),
+        "gitlab": lambda findings=findings, errors=processing_errors: _gitlab_report(findings, errors),
+        "checkstyle": lambda findings=findings, errors=processing_errors: _checkstyle_report(findings, errors),
+        "sarif": lambda findings=findings, errors=processing_errors: _sarif_report(findings, errors),
     }
     return renderer[report_format.casefold()]()
 
