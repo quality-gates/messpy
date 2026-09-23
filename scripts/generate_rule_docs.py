@@ -116,9 +116,10 @@ NOTES = {
         "Calls into other files are not followed. "
         "A callback or repository passed as an argument is judged only by the name-based mutator list: "
         "`repo.add(order)` is an action, while `notify(order)` and `repo.save(order)` stay quiet. "
-        "Signature annotations on a module-level function or method run at import time. "
-        "They stay quiet under `from __future__ import annotations`, and on Python 3.14 or later, "
-        "where annotations are deferred. "
+        "Annotations that Python evaluates at import time are included: module and class variable annotations, "
+        "and signature annotations on module-level functions and methods. "
+        "`from __future__ import annotations` and Python 3.14 defer those expressions, so they stay quiet. "
+        "A `type` alias value is not evaluated at import time. "
         "Annotations on a nested function are not import-time actions."
     ),
     "DomainOuterImport": (

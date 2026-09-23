@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 import os
+import sys
 import tempfile
 import unittest
 
@@ -388,6 +389,29 @@ class OnionAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_a_comprehension_target_does_not_spread_into_a_nested_lambda(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout(items):\n"
+            "    return [(lambda: save_report())() for save_report in items]\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "5: DomainAction [priority 2] The function <lambda>() reads the implicit input save_report. "
+                "Pass it as an argument instead.",
+                "5: DomainAction [priority 2] The function checkout() calls <lambda>(), "
+                "which reads the implicit input save_report. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
     def test_a_comprehension_target_does_not_spread_to_the_outer_function(self) -> None:
         status, report, errors = _analyze_source(
             "def save_report():\n"
@@ -457,6 +481,68 @@ class OnionAcceptanceTests(unittest.TestCase):
                 "10: DomainAction [priority 2] The function checkout() calls inner(), "
                 "which calls save_report(), which writes the implicit output print. "
                 "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_global_in_an_enclosing_function_reaches_the_nested_call(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save_report():\n"
+            "    print('saved')\n"
+            "\n"
+            "def checkout():\n"
+            "    def save_report():\n"
+            "        return 1\n"
+            "    def middle():\n"
+            "        global save_report\n"
+            "        def inner():\n"
+            "            save_report()\n"
+            "        inner()\n"
+            "    middle()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "10: DomainAction [priority 2] The function inner() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "11: DomainAction [priority 2] The function middle() calls inner(), "
+                "which calls save_report(), which writes the implicit output print. "
+                "Move the action to the interaction layer.",
+                "12: DomainAction [priority 2] The function checkout() calls middle(), "
+                "which calls inner(), which calls save_report(), which writes the implicit output print. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_a_nonlocal_name_reaches_the_enclosing_function(self) -> None:
+        status, report, errors = _analyze_source(
+            "def checkout():\n"
+            "    def save_report():\n"
+            "        print('saved')\n"
+            "    def inner():\n"
+            "        nonlocal save_report\n"
+            "        save_report()\n"
+            "        save_report = lambda: None\n"
+            "    inner()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "3: DomainAction [priority 2] The function save_report() writes the implicit output print. "
+                "Return it instead.",
+                "6: DomainAction [priority 2] The function inner() calls save_report(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "7: DomainAction [priority 2] The function inner() writes the implicit output save_report. "
+                "Return it instead.",
+                "8: DomainAction [priority 2] The function checkout() calls inner(), "
+                "which writes the implicit output save_report. Move the action to the interaction layer.",
             ],
             report,
         )
@@ -608,6 +694,10 @@ class OnionAcceptanceTests(unittest.TestCase):
             _ruleset(),
         )
 
+        if sys.version_info >= (3, 14):
+            self.assertEqual((0, ""), (status, errors))
+            self.assertEqual([], report)
+            return
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(
             [
@@ -616,6 +706,40 @@ class OnionAcceptanceTests(unittest.TestCase):
             ],
             report,
         )
+
+    def test_a_module_annotation_that_opens_a_file_is_an_import_time_action(self) -> None:
+        status, report, errors = _analyze_source("config: open('config.json') = 1\n", _ruleset())
+
+        if sys.version_info >= (3, 14):
+            self.assertEqual((0, ""), (status, errors))
+            self.assertEqual([], report)
+            return
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainAction [priority 2] The module reads the implicit input open at import time. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_future_annotations_keep_variable_annotations_quiet(self) -> None:
+        status, report, errors = _analyze_source(
+            "from __future__ import annotations\n"
+            "\n"
+            "config: open('config.json') = 1\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type aliases require Python 3.12")
+    def test_a_type_alias_value_is_not_an_import_time_action(self) -> None:
+        status, report, errors = _analyze_source("type Config = open('config.json')\n", _ruleset())
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
 
     def test_future_annotations_keep_signature_expressions_quiet(self) -> None:
         status, report, errors = _analyze_source(

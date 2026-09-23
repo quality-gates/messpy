@@ -190,6 +190,18 @@ class _ImportTimeNodes(ast.NodeVisitor):
         for child in _signature_annotations(node):
             self.visit(child)
 
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.nodes.append(node)
+        self.visit(node.target)
+        if node.value is not None:
+            self.visit(node.value)
+        if self._deferred_annotations or node.annotation is None:
+            return
+        self.visit(node.annotation)
+
+    def visit_TypeAlias(self, _node: ast.TypeAlias) -> None:
+        return
+
     def _visit_defaults(self, node: ast.Lambda) -> None:
         for child in (*node.args.defaults, *node.args.kw_defaults):
             if child is not None:
@@ -304,6 +316,7 @@ class _CallableIndex:
     class_ids: frozenset[int]
     module_id: int
     declared_global: dict[int, set[str]]
+    declared_nonlocal: dict[int, set[str]]
 
 
 def _index_callables(tree: ast.Module) -> _CallableIndex:
@@ -322,6 +335,7 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
         class_ids=frozenset(binder.class_ids),
         module_id=binder.module_id,
         declared_global=binder.declared_global,
+        declared_nonlocal=binder.declared_nonlocal,
     )
 
 
@@ -373,7 +387,7 @@ def _comprehension_targets(call: ast.Call, parents: dict[int, ast.AST]) -> set[s
     current: ast.AST = call
     while id(current) in parents:
         current = parents[id(current)]
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)):
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)):
             break
         if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             _add_comprehension_targets(call, current, parents, targets)
@@ -407,11 +421,13 @@ def _in_outer_iterable(
 
 
 def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
-    if name in index.declared_global.get(caller_id, ()):
-        return _bound_callable(index, index.module_id, name)
     scopes = (caller_id, *index.enclosing.get(caller_id, ()))
     for scope_id in scopes:
         if scope_id in index.class_ids:
+            continue
+        if name in index.declared_global.get(scope_id, ()):
+            return _bound_callable(index, index.module_id, name)
+        if name in index.declared_nonlocal.get(scope_id, ()):
             continue
         resolved, callee_id = _lookup_scope(index, scope_id, name)
         if resolved:
@@ -472,6 +488,7 @@ class _CallableBinder(ast.NodeVisitor):
         self.class_ids: set[int] = set()
         self.module_id = 0
         self.declared_global: dict[int, set[str]] = {}
+        self.declared_nonlocal: dict[int, set[str]] = {}
         self._scopes: list[ast.AST] = []
         self._classes: list[ast.ClassDef] = []
 
@@ -525,7 +542,7 @@ class _CallableBinder(ast.NodeVisitor):
             self._shadow(alias.asname or alias.name)
 
     def generic_visit(self, node: ast.AST) -> None:
-        if isinstance(node, (ast.Lambda, ast.Global, ast.Match)):
+        if isinstance(node, (ast.Lambda, ast.Global, ast.Nonlocal, ast.Match)):
             _record_runtime_binding(self, node)
             if isinstance(node, ast.Match):
                 super().generic_visit(node)
@@ -619,6 +636,10 @@ def _record_runtime_binding(binder: _CallableBinder, node: ast.AST) -> None:
     if isinstance(node, ast.Global):
         scope_id = id(binder._scopes[-1])
         binder.declared_global.setdefault(scope_id, set()).update(node.names)
+        return
+    if isinstance(node, ast.Nonlocal):
+        scope_id = id(binder._scopes[-1])
+        binder.declared_nonlocal.setdefault(scope_id, set()).update(node.names)
         return
     if isinstance(node, ast.Match):
         for case in node.cases:
