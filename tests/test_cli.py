@@ -990,7 +990,8 @@ class CommandAcceptanceTests(unittest.TestCase):
             project = Path(temporary_directory)
             deep = project / "deep.py"
             messy = project / "messy.py"
-            deep.write_text("def compute_total():\n    value = " + "+".join(["1"] * 500) + "\n    return value\n", encoding="utf-8")
+            # The sum chain is deep enough to exceed the recursion limit during analysis.
+            deep.write_text("def compute_total():\n    value = " + "+".join(["1"] * 2000) + "\n    return value\n", encoding="utf-8")
             messy.write_text("def unused_example():\n    leftover = 1\n    return 0\n", encoding="utf-8")
 
             stdout = StringIO()
