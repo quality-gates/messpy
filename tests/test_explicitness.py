@@ -427,6 +427,101 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_class_body_nested_in_function_reading_global_has_implicit_input(self) -> None:
+        status, report, errors = _analyze(
+            "counter = 0\n"
+            "\n"
+            "\n"
+            "def build():\n"
+            "    class Local:\n"
+            "        value = counter\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitInput [priority 3] The function build() reads the implicit input counter. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
+    def test_class_body_nested_in_function_reading_ambient_input_has_implicit_input(self) -> None:
+        status, report, errors = _analyze(
+            "def build():\n"
+            "    class Local:\n"
+            "        data = open('config.json')\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "3: ImplicitInput [priority 3] The function build() reads the implicit input open. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
+    def test_class_attribute_assignments_in_nested_class_do_not_emit_implicit_output(self) -> None:
+        status, report, errors = _analyze(
+            "def build(default):\n"
+            "    class Local:\n"
+            "        value = default\n"
+            "        count = 1\n"
+            "        alias = count\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    def test_nested_class_method_bodies_are_not_evaluated_at_class_definition_time(self) -> None:
+        status, report, errors = _analyze(
+            "counter = 0\n"
+            "\n"
+            "def build():\n"
+            "    class Local:\n"
+            "        def method(self):\n"
+            "            return counter\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitInput [priority 3] The method Local.method() reads the implicit input counter. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
+    def test_nested_class_method_default_argument_reading_global_is_implicit_input_of_function(self) -> None:
+        status, report, errors = _analyze(
+            "counter = 0\n"
+            "\n"
+            "def build():\n"
+            "    class Local:\n"
+            "        def method(self, val=counter):\n"
+            "            return val\n"
+            "    return Local\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "5: ImplicitInput [priority 3] The function build() reads the implicit input counter. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
 
 def _analyze(source: str, ruleset: str) -> tuple[int, list[str], str]:
     with tempfile.TemporaryDirectory() as temporary_directory:

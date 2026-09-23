@@ -711,7 +711,7 @@ def _selected_design_bindings(tree: ast.Module, rule_names: AbstractSet[str]) ->
     return _scope_bindings(tree)
 
 
-_BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+_BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
 
 
 @dataclass(frozen=True)
@@ -1736,7 +1736,7 @@ def _binding_scopes(tree: ast.Module) -> list[_BindingScope]:
     scopes.extend(
         node
         for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
     )
     return scopes
 
@@ -1751,7 +1751,7 @@ def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
 
 def _direct_bindings(scope: _BindingScope) -> set[str]:
     names: set[str] = set()
-    if not isinstance(scope, ast.Module):
+    if not isinstance(scope, (ast.Module, ast.ClassDef)):
         names.update(argument.arg for argument in _arguments(scope.args))
     for statement in _scope_statements(scope):
         names.update(_scope_binding_names(statement))
@@ -1759,6 +1759,7 @@ def _direct_bindings(scope: _BindingScope) -> set[str]:
 
 
 def _scope_binding_names(node: ast.AST) -> set[str]:
+
     found = _recorded_binding_names(node)
     if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return found
@@ -1857,8 +1858,12 @@ def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedR
     name_scopes = _name_scopes(tree)
     findings: list[Finding] = []
     for callable_info in _clean_code_callables(tree):
+        enclosing = tuple(_enclosing_scopes(callable_info.node, tree, parents))
         chain = _ScopeChain(
-            (callable_info.node, *_enclosing_scopes(callable_info.node, tree, parents)), name_scopes
+            (callable_info.node, *enclosing),
+            name_scopes,
+            parents=parents,
+            enclosing=enclosing,
         )
         for rule, finder in finders:
             findings.extend(finder(path, callable_info, rule, chain))
@@ -1870,7 +1875,8 @@ def _implicit_input_findings(
 ) -> list[Finding]:
     first_reads: dict[str, ast.AST] = {}
     for node in _read_nodes(callable_info.node):
-        name = _free_variable_read(node, chain) or _ambient_read(node, chain)
+        node_chain = chain.for_node(node)
+        name = _free_variable_read(node, node_chain) or _ambient_read(node, node_chain)
         if name:
             first_reads.setdefault(name, node)
     return _explicitness_report(
@@ -1879,18 +1885,21 @@ def _implicit_input_findings(
 
 
 def _implicit_output_findings(
+
     path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
     nodes = _evaluated_nodes(callable_info.node)
-    parameters = _caller_owned_parameters(callable_info, nodes)
+    parameters = _caller_owned_parameters(callable_info, nodes, chain.parents)
     first_writes: dict[str, ast.AST] = {}
     for node in nodes:
-        name = _state_write(node, chain, parameters) or _ambient_write(node, chain)
+        node_chain = chain.for_node(node)
+        name = _state_write(node, node_chain, parameters) or _ambient_write(node, node_chain)
         if name:
             first_writes.setdefault(name, node)
     return _explicitness_report(
         path, callable_info, rule, first_writes, "writes the implicit output", "Return it instead."
     )
+
 
 
 def _implicit_instance_input_findings(
@@ -1954,18 +1963,33 @@ def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> li
     for child in _evaluated_nodes(node):
         nodes.append(child)
         if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
-            nodes.append(ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target))
+            loaded = ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target)
+            loaded._parent = child
+            nodes.append(loaded)
         elif isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Attribute):
-            loaded = ast.Attribute(child.target.value, child.target.attr, ast.Load())
-            nodes.append(ast.copy_location(loaded, child.target))
+            loaded = ast.copy_location(ast.Attribute(child.target.value, child.target.attr, ast.Load()), child.target)
+            loaded._parent = child
+            nodes.append(loaded)
     return nodes
 
 
-def _caller_owned_parameters(callable_info: CleanCodeCallable, nodes: Sequence[ast.AST]) -> set[str]:
+def _is_rebound_parameter(
+    node: ast.AST, callable_node: ast.AST, parents: dict[int, ast.AST] | None
+) -> bool:
+    if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Store):
+        return False
+    return parents is None or _node_class_scope(node, callable_node, parents) is None
+
+
+def _caller_owned_parameters(
+    callable_info: CleanCodeCallable,
+    nodes: Sequence[ast.AST],
+    parents: dict[int, ast.AST] | None = None,
+) -> set[str]:
     # A parameter that the function rebinds is a local copy. The method receiver is instance state.
     # Python makes new *args and **kwargs containers on each call.
     arguments = callable_info.node.args
-    rebound = {node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)}
+    rebound = {node.id for node in nodes if _is_rebound_parameter(node, callable_info.node, parents)}
     packed = {argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument is not None}
     parameters = {argument.arg for argument in _arguments(arguments)} - rebound - packed
     parameters.discard(_method_receiver(callable_info) or "")
@@ -1998,7 +2022,7 @@ def _explicitness_report(
 def _state_write(node: ast.AST, chain: _ScopeChain, parameters: AbstractSet[str]) -> str:
     # A plain name write leaves the function only when the name belongs to an outer scope.
     if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-        return node.id if chain.binding(node.id)[1] is not chain.scopes[0] else ""
+        return node.id if chain.binding(node.id)[1] in chain.enclosing else ""
     changed = _changed_object(node, chain)
     if changed is None:
         return ""
@@ -2008,8 +2032,8 @@ def _state_write(node: ast.AST, chain: _ScopeChain, parameters: AbstractSet[str]
 
 def _is_local_object(name: str, chain: _ScopeChain) -> bool:
     # A local object stays in the function. A local import is shared module state.
-    scope = chain.scopes[0]
-    return chain.binding(name)[1] is scope and name not in chain.name_scopes[id(scope)].imports
+    _, scope = chain.binding(name)
+    return scope not in chain.enclosing and name not in chain.name_scopes[id(scope)].imports
 
 
 def _changed_object(node: ast.AST, chain: _ScopeChain) -> ast.expr | None:
@@ -2048,7 +2072,7 @@ def _free_variable_read(node: ast.AST, chain: _ScopeChain) -> str:
     if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
         return ""
     kind, scope = chain.binding(node.id)
-    return node.id if kind == "variable" and scope is not chain.scopes[0] else ""
+    return node.id if kind == "variable" and scope in chain.enclosing else ""
 
 
 def _ambient_read(node: ast.AST, chain: _ScopeChain) -> str:
@@ -2092,6 +2116,29 @@ class _ScopeChain:
 
     scopes: tuple[ast.AST, ...]
     name_scopes: dict[int, _NameScope]
+    parents: dict[int, ast.AST] | None = None
+    enclosing: tuple[ast.AST, ...] = ()
+    callable_node: ast.AST | None = None
+
+    def __post_init__(self) -> None:
+        if not self.enclosing and len(self.scopes) > 1:
+            object.__setattr__(self, "enclosing", self.scopes[1:])
+        if self.callable_node is None and self.scopes:
+            object.__setattr__(self, "callable_node", self.scopes[0])
+
+    def for_node(self, node: ast.AST) -> _ScopeChain:
+        if self.parents is None or self.callable_node is None:
+            return self
+        class_scope = _node_class_scope(node, self.callable_node, self.parents)
+        if class_scope is None or class_scope is self.scopes[0]:
+            return self
+        return _ScopeChain(
+            (class_scope, *self.scopes),
+            self.name_scopes,
+            self.parents,
+            enclosing=self.enclosing,
+            callable_node=self.callable_node,
+        )
 
     def binding(self, name: str) -> tuple[str, ast.AST]:
         # This follows the order in which Python resolves a free name. Class scopes are not in the chain.
@@ -2126,6 +2173,21 @@ class _ScopeChain:
         return kind == "definition" and name in self.name_scopes[id(scope)].modules
 
 
+def _node_class_scope(
+    node: ast.AST, callable_node: ast.AST, parents: dict[int, ast.AST]
+) -> ast.ClassDef | None:
+    current = getattr(node, "_parent", node)
+    prev = current
+    while id(current) in parents:
+        prev = current
+        current = parents[id(current)]
+        if current is callable_node:
+            return None
+        if isinstance(current, ast.ClassDef) and prev in current.body:
+            return current
+    return None
+
+
 @dataclass(frozen=True)
 class _NameScope:
     """The names that one scope binds, split into variables and fixed definitions."""
@@ -2142,7 +2204,9 @@ def _name_scopes(tree: ast.Module) -> dict[int, _NameScope]:
     declared_globals = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
     name_scopes: dict[int, _NameScope] = {}
     for scope in _binding_scopes(tree):
-        extra = declared_globals if isinstance(scope, ast.Module) else {argument.arg for argument in _arguments(scope.args)}
+        extra = declared_globals if isinstance(scope, ast.Module) else (
+            set() if isinstance(scope, ast.ClassDef) else {argument.arg for argument in _arguments(scope.args)}
+        )
         name_scopes[id(scope)] = _scope_name_record(_scope_statements(scope), extra)
     return name_scopes
 
@@ -2670,8 +2734,8 @@ def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) 
 
 
 def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
-    # Python evaluates decorators, defaults, and class bases of a nested definition here.
-    # It does not evaluate a local annotation, a nested body, or a nested class body.
+    # Python evaluates decorators, defaults, class bases, and nested class bodies here.
+    # It does not evaluate a local annotation or a nested function body.
     if isinstance(node, ast.AnnAssign):
         return [node, *_evaluated_present([node.target, node.value])]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -2679,7 +2743,7 @@ def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
     if isinstance(node, ast.Lambda):
         return _evaluated_present([*node.args.defaults, *node.args.kw_defaults])
     if isinstance(node, ast.ClassDef):
-        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords])
+        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *node.body])
     found = [node]
     for child in ast.iter_child_nodes(node):
         found.extend(_evaluated_node_list(child))
