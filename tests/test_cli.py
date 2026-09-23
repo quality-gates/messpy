@@ -14,7 +14,8 @@ import xml.etree.ElementTree as ElementTree
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.cli import run, _direct_bindings, _is_protocol, _protocol_base_names
+from messpy.analyzer import _direct_bindings, _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.cli import run
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -1001,6 +1002,162 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_parser_stack_overflow_reports_processing_error_without_aborting_scan(self) -> None:
+        depth = 200
+        inner = f"print(a{depth - 1})"
+        for index in range(depth - 1, 0, -1):
+            inner = f"(print(a{index}), lambda a{index + 1}: {inner})"
+        overflow_source = f"x = lambda a0: {inner}\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            overflow = project / "overflow.py"
+            messy = project / "messy.py"
+            overflow.write_text(overflow_source, encoding="utf-8")
+            messy.write_text("def unused_example():\n    leftover = 1\n    return 0\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([f"{overflow},{messy}", "text", "unusedcode"], stdout, stderr)
+
+        self.assertEqual(1, status)
+        self.assertIn(f"{overflow.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
+        self.assertIn("UnusedLocalVariable [priority 3] Avoid unused local variables such as 'leftover'.", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+
+    def test_scope_usage_is_computed_once_per_table_across_sibling_callables(self) -> None:
+        # Regression for GH #175: _scope_usage used to re-walk every descendant
+        # table once per ancestor callable, making analysis time quadratic in
+        # lambda nesting depth. Count actual usage computations (ScopeUsage
+        # constructions), so per-ancestor cache hits do not count as work.
+        import messpy.analyzer as engine_module
+
+        created: list[engine_module.ScopeUsage] = []
+        original_usage_class = engine_module.ScopeUsage
+
+        class CountingScopeUsage(original_usage_class):
+            def __init__(self, used_names: frozenset[str], free_names: frozenset[str]) -> None:
+                created.append(self)
+                super().__init__(used_names, free_names)
+
+        engine_module.ScopeUsage = CountingScopeUsage
+        try:
+            source = "x = " + "lambda:" * 60 + "f()\n"
+            _function_scopes(source, ast.parse(source))
+        finally:
+            engine_module.ScopeUsage = original_usage_class
+
+        self.assertEqual(60, len(created))
+
+    def test_design_call_resolution_walks_nested_calls_once(self) -> None:
+        # Regression for GH #176: the two call-based design rules used to
+        # resolve every call independently, walking all enclosing scopes for
+        # each resolution.
+        import messpy.analyzer as engine_module
+
+        source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
+        original_parents = engine_module._selected_design_parents
+        original_aliases = engine_module._imported_call_aliases
+        parent_maps: list[dict[int, ast.AST]] = []
+        alias_call_count = 0
+
+        class CountingParents(dict[int, ast.AST]):
+            def __init__(self, values: dict[int, ast.AST]) -> None:
+                super().__init__(values)
+                self.lookups = 0
+
+            def __contains__(self, key: object) -> bool:
+                self.lookups += 1
+                return super().__contains__(key)
+
+        def selected_parents(tree: ast.Module, rule_names: object) -> CountingParents:
+            parents = CountingParents(original_parents(tree, rule_names))
+            parent_maps.append(parents)
+            return parents
+
+        def imported_call_aliases(tree: ast.Module) -> dict[int, object]:
+            nonlocal alias_call_count
+            alias_call_count += 1
+            return original_aliases(tree)
+
+        engine_module._selected_design_parents = selected_parents
+        engine_module._imported_call_aliases = imported_call_aliases
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = Path(temporary_directory) / "nested_calls.py"
+                source_path.write_text(source, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [
+                        str(source_path),
+                        "text",
+                        "design",
+                        "--only",
+                        "ExitExpression,DevelopmentCodeFragment",
+                    ],
+                    stdout,
+                    stderr,
+                )
+        finally:
+            engine_module._selected_design_parents = original_parents
+            engine_module._imported_call_aliases = original_aliases
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual(1, alias_call_count)
+        self.assertEqual(1, len(parent_maps))
+        node_count = len(list(ast.walk(ast.parse(source))))
+        self.assertLess(parent_maps[0].lookups, 2 * node_count)
+
+    def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
+        # Regression for GH #178: the column lookup used to split the whole
+        # source for every finding, so analysis cost grew with findings
+        # times file length.
+        import messpy.analyzer as engine_module
+
+        source = "".join(
+            [
+                "é = \"café\"\n",
+                "".join(f"if (a{i} := {i}):\n    pass\n" for i in range(50)),
+            ]
+        )
+        original_findings = engine_module._if_statement_assignment_findings
+        split_counts: list[int] = []
+
+        class CountingSource(str):
+            def splitlines(self, keepends: bool = False) -> list[str]:
+                split_counts.append(1)
+                return str.splitlines(self, keepends)
+
+        def counting(path: Path, source_text: str, tree: ast.Module, rules: object) -> object:
+            return original_findings(path, CountingSource(source_text), tree, rules)
+
+        engine_module._if_statement_assignment_findings = counting
+        try:
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                source_path = Path(temporary_directory) / "many_walrus.py"
+                source_path.write_text(source, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run(
+                    [
+                        str(source_path),
+                        "text",
+                        "cleancode",
+                        "--only",
+                        "IfStatementAssignment",
+                    ],
+                    stdout,
+                    stderr,
+                )
+        finally:
+            engine_module._if_statement_assignment_findings = original_findings
+
+        self.assertEqual(2, status)
+        self.assertEqual(50, stdout.getvalue().count("IfStatementAssignment"))
+        self.assertIn("column '5'", stdout.getvalue())
+        self.assertEqual(1, len(split_counts))
 
     def test_embedded_null_byte_in_path_reports_error_cleanly(self) -> None:
         stdout = StringIO()

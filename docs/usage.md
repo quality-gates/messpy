@@ -87,6 +87,25 @@ Wire these into CI the same way you would any other quality gate.
 
 Ignore-on-exit flags change only the process status. They never remove rows from the report.
 
+## Package API
+
+Python code can run the same analysis without a command line. `analyze` resolves and walks the paths, loads nothing itself, and returns findings and processing errors as values:
+
+```python
+from messpy.analyzer import analyze
+from messpy.rulesets import filter_rules, load_rulesets
+
+rules = filter_rules(load_rulesets(["python"]), [], [], [], 1, 5)
+analysis = analyze(["src"], rules=rules, ignore_tests=True)
+
+for finding in analysis.findings:
+    print(finding.path, finding.line, finding.rule_name, finding.message)
+for error in analysis.errors:
+    print(error.path, error.line, error.message)
+```
+
+Suppression directives are applied and recorded on each finding through its `suppressed` flag; reports omit those findings unless `--strict` is set. `analyze` accepts `Path` objects or strings for `paths`, and optional `suffixes`, `exclusions`, and `ignore_tests` mirror the command-line options with the same defaults.
+
 ## What gets scanned
 
 - Paths are resolved, walked recursively, normalized to `/`, sorted, and deduplicated so repeated inputs do not double findings.
