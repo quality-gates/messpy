@@ -31,6 +31,28 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_local_variable_annotations_are_not_reads(self) -> None:
+        status, report, errors = _analyze(
+            "Vector = list\n"
+            "settings = {}\n"
+            "default = []\n"
+            "\n"
+            "def build():\n"
+            "    result: Vector = default\n"
+            "    pending: settings\n"
+            "    return result\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitInput [priority 3] The function build() reads the implicit input default. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
     def test_function_that_uses_only_arguments_definitions_and_constants_is_explicit(self) -> None:
         status, report, errors = _analyze(
             "import math\n"

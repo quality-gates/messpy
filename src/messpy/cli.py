@@ -2394,7 +2394,7 @@ def _implicit_input_findings(
 def _implicit_output_findings(
     path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
-    nodes = _executable_nodes(callable_info.node)
+    nodes = _evaluated_nodes(callable_info.node)
     parameters = _caller_owned_parameters(callable_info, nodes)
     first_writes: dict[str, ast.AST] = {}
     for node in nodes:
@@ -2432,7 +2432,7 @@ def _implicit_instance_output_findings(
     if receiver is None or _clean_code_callable_name(callable_info.node) in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
-    for node in _executable_nodes(callable_info.node):
+    for node in _evaluated_nodes(callable_info.node):
         expression = _mutated_expression(node)
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
@@ -2464,7 +2464,7 @@ def _method_receiver(callable_info: CleanCodeCallable) -> str | None:
 def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
     # An augmented assignment reads its target before it writes it.
     nodes: list[ast.AST] = []
-    for child in _executable_nodes(node):
+    for child in _evaluated_nodes(node):
         nodes.append(child)
         if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
             nodes.append(ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target))
@@ -3186,6 +3186,27 @@ class _ExecutableNodeCollector(ast.NodeVisitor):
 
     def visit_ClassDef(self, _node: ast.ClassDef) -> None:
         return
+
+
+def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
+    collector = _EvaluatedNodeCollector()
+    if isinstance(node, ast.Lambda):
+        collector.visit(node.body)
+    else:
+        for statement in node.body:
+            collector.visit(statement)
+    return collector.nodes
+
+
+class _EvaluatedNodeCollector(_ExecutableNodeCollector):
+    """The nodes that Python evaluates when the function runs."""
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        # Python does not evaluate the annotation of a local variable.
+        self.nodes.append(node)
+        self.visit(node.target)
+        if node.value is not None:
+            self.visit(node.value)
 
 
 def _exception_names(rule: LoadedRule) -> set[str]:
