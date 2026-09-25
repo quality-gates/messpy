@@ -6,6 +6,7 @@ import builtins
 from collections import defaultdict
 from collections.abc import Callable, Sequence, Set as AbstractSet
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from functools import cache, partial
 import keyword
 import re
@@ -501,6 +502,12 @@ def _analyze(
     return findings, processing_errors
 
 
+@lru_cache(maxsize=1)
+def _module_nodes(tree: ast.Module) -> tuple[ast.AST, ...]:
+    """Return ``ast.walk(tree)`` once per module; rules walk the same tree many times."""
+    return tuple(ast.walk(tree))
+
+
 def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     from .onion import onion_findings
 
@@ -705,7 +712,7 @@ def _selected_design_parents(tree: ast.Module, rule_names: AbstractSet[str]) -> 
     }
     if not _has_any_rule(rule_names, parent_rules):
         return {}
-    return {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    return {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
 
 
 def _selected_design_contexts(
@@ -750,7 +757,7 @@ def _exit_expression_findings(
         return []
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if not isinstance(node, ast.Call) or graph.qualified_name(node) not in EXIT_CALL_NAMES:
             continue
         scope, context = _design_scope(node, parents, contexts)
@@ -782,7 +789,7 @@ def _count_in_loop_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for loop in ast.walk(tree):
+    for loop in _module_nodes(tree):
         if not isinstance(loop, ast.While):
             continue
         calls = _expression_calls(loop.test)
@@ -838,7 +845,7 @@ def _development_call_findings(
     graph: CallGraph,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted_name(node.func)
@@ -901,7 +908,7 @@ def _empty_catch_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for handler in ast.walk(tree):
+    for handler in _module_nodes(tree):
         if not isinstance(handler, ast.ExceptHandler) or not _is_empty_handler(handler):
             continue
         _, context = _design_scope(handler, parents, contexts)
@@ -1251,7 +1258,7 @@ def _mutated_global_names(
 ) -> set[str]:
     return {
         name
-        for node in ast.walk(tree)
+        for node in _module_nodes(tree)
         if (name := _mutated_global_name(node, candidates, initial_targets, parents, bindings, MUTATOR_METHOD_NAMES))
     }
 
@@ -1757,7 +1764,7 @@ def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedR
         )
         if rule is not None
     ]
-    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    parents = {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
     name_scopes = _name_scopes(tree)
     findings: list[Finding] = []
     for callable_info in _clean_code_callables(tree):
@@ -2138,7 +2145,7 @@ class _NameScope:
 
 
 def _name_scopes(tree: ast.Module) -> dict[int, _NameScope]:
-    declared_globals = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
+    declared_globals = {name for node in _module_nodes(tree) if isinstance(node, ast.Global) for name in node.names}
     name_scopes: dict[int, _NameScope] = {}
     for scope in _binding_scopes(tree):
         extra = declared_globals if isinstance(scope, ast.Module) else (
@@ -2510,7 +2517,7 @@ def _if_statement_assignment_findings(
         return []
     lines = source.splitlines()
     findings: list[Finding] = []
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if not isinstance(node, (ast.If, ast.While)):
             continue
         findings.extend(
@@ -2549,7 +2556,7 @@ def _duplicated_array_key_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for dictionary in ast.walk(tree):
+    for dictionary in _module_nodes(tree):
         if not isinstance(dictionary, ast.Dict):
             continue
         keys: dict[object, ast.expr] = {}
@@ -2620,7 +2627,7 @@ def _clean_code_callables(tree: ast.Module) -> list[CleanCodeCallable]:
     return sorted(
         [
             CleanCodeCallable(node, owners.get(id(node)))
-            for node in ast.walk(tree)
+            for node in _module_nodes(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
         ],
         key=lambda callable_info: (callable_info.node.lineno, callable_info.node.col_offset),
@@ -2889,7 +2896,7 @@ def _protocol_method_ids(tree: ast.Module) -> set[int]:
     protocol_names = _protocol_base_names(tree)
     return {
         id(method)
-        for node in ast.walk(tree)
+        for node in _module_nodes(tree)
         if isinstance(node, ast.ClassDef) and _is_protocol(node, protocol_names)
         for method in _class_member_statements(node.body)
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -3540,7 +3547,7 @@ def _private_member_usage(tree: ast.Module) -> PrivateMemberUsage:
     dynamic_names, has_unknown_dynamic_access = _dynamic_attribute_accesses(tree, _dynamic_access_aliases(tree))
     exported_names, has_unknown_exports = _exported_names(tree)
     loads = {
-        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+        node.attr for node in _module_nodes(tree) if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
     } | dynamic_names
     return PrivateMemberUsage(
         frozenset(loads),
@@ -3562,7 +3569,7 @@ def _dynamic_access_aliases(tree: ast.Module) -> set[str]:
 def _exported_names(tree: ast.Module) -> tuple[set[str], bool]:
     names: set[str] = set()
     has_unknown_exports = False
-    for statement in ast.walk(tree):
+    for statement in _module_nodes(tree):
         targets, value, augmented = _export_assignment(statement)
         if augmented:
             has_unknown_exports = True
@@ -4185,7 +4192,7 @@ def _callables(tree: ast.Module) -> list[CallableInfo]:
         *_callable_statements(tree.body, in_class_body=False),
         *(
             CallableInfo(node, "<lambda>", "lambda", _parameter_count(node.args))
-            for node in ast.walk(tree)
+            for node in _module_nodes(tree)
             if isinstance(node, ast.Lambda)
         ),
     ]
@@ -4237,7 +4244,7 @@ def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCall
 
 def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
     targets: list[NamingTarget] = []
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if isinstance(node, ast.ExceptHandler) and node.name is not None:
             targets.append(NamingTarget(node.name, node.lineno, "variable"))
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
@@ -4790,7 +4797,7 @@ def _classes(tree: ast.Module) -> list[ClassInfo]:
     protocol_names = _protocol_base_names(tree)
     visitor_ids = _ast_visitor_class_ids(tree)
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
         classes.append(
@@ -4804,7 +4811,7 @@ def _classes(tree: ast.Module) -> list[ClassInfo]:
 
 
 def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
-    class_nodes = [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+    class_nodes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
     visitor_ids = _direct_ast_visitor_class_ids(class_nodes, _class_import_aliases(tree))
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     inherited_ids = _inherited_ast_visitor_class_ids(
@@ -5044,7 +5051,7 @@ def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
     visitor_ids = _ast_visitor_class_ids(tree)
     return {
         id(statement)
-        for node in ast.walk(tree)
+        for node in _module_nodes(tree)
         if isinstance(node, ast.ClassDef) and id(node) in visitor_ids
         for statement in _class_member_statements(node.body)
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -5324,7 +5331,7 @@ def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Findin
 
 def _definition_header_lines(tree: ast.Module) -> dict[int, range]:
     header_lines: dict[int, range] = {}
-    for node in ast.walk(tree):
+    for node in _module_nodes(tree):
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         header = range(node.lineno, _signature_end_line(node) + 1)
