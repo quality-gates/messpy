@@ -5753,6 +5753,87 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
 
+    def test_global_variable_ignores_comprehension_targets_and_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "comprehensions.py"
+            source.write_text(
+                "x = []\n"
+                "y = set()\n"
+                "z = {}\n"
+                "g = []\n"
+                "target_only = []\n"
+                "tuple_target = []\n"
+                "\n"
+                "[x.append(1) for x in [[], []]]\n"
+                "{y.add(1) for y in [set(), set()]}\n"
+                "{z.setdefault(1, 2): 1 for z in [{}, {}]}\n"
+                "list(g.append(1) for g in [[], []])\n"
+                "[None for target_only in [[], []]]\n"
+                "[None for (tuple_target, _) in [[[], 1]]]\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "design", "--only", "GlobalVariable"], stdout, stderr)
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_global_variable_ignores_class_body_member_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "class_member_mutations.py"
+            source.write_text(
+                "data = {}\n"
+                "items = []\n"
+                "state = object()\n"
+                "\n"
+                "class Container:\n"
+                "    data = []\n"
+                "    data.append(1)\n"
+                "    items = {}\n"
+                "    items[\"key\"] = 1\n"
+                "    state = type('State', (), {'active': False})()\n"
+                "    state.active = True\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "design", "--only", "GlobalVariable"], stdout, stderr)
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_global_variable_reports_actual_class_body_and_comprehension_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "actual_mutations.py"
+            source.write_text(
+                "mutated_in_iter = []\n"
+                "unbound_class_mutated = []\n"
+                "unbound_subscript_mutated = {}\n"
+                "class_method_mutated = []\n"
+                "\n"
+                "[None for _ in [mutated_in_iter.append(1)]]\n"
+                "\n"
+                "class Unbound:\n"
+                "    unbound_class_mutated.append(1)\n"
+                "    unbound_subscript_mutated[\"key\"] = 1\n"
+                "\n"
+                "class MethodScope:\n"
+                "    class_method_mutated = []\n"
+                "    def mutate(self):\n"
+                "        class_method_mutated.append(1)\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "design", "--only", "GlobalVariable"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("mutated_in_iter", report)
+        self.assertIn("unbound_class_mutated", report)
+        self.assertIn("unbound_subscript_mutated", report)
+        self.assertIn("class_method_mutated", report)
+
     def test_global_variable_reports_explicit_global_assignments_in_class_bodies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "class_globals.py"
