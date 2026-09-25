@@ -834,6 +834,11 @@ def _outer_import_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> li
 def _matched_imports(path: Path, node: ast.AST, layers: Sequence[str]) -> list[tuple[str, str]]:
     if not isinstance(node, (ast.Import, ast.ImportFrom)):
         return []
+    if isinstance(node, ast.ImportFrom):
+        base = _absolute_module(path, node)
+        layer = _matching_layer(base, layers)
+        if layer:
+            return [(base, layer)]
     matches: list[tuple[str, str]] = []
     seen: set[str] = set()
     for module in _imported_module_names(path, node):
@@ -849,9 +854,13 @@ def _imported_module_names(path: Path, node: ast.Import | ast.ImportFrom) -> lis
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
     base = _absolute_module(path, node)
-    if not base:
-        return []
-    return [base]
+    names = [base] if base else []
+    names.extend(
+        f"{base}.{alias.name}" if base else alias.name
+        for alias in node.names
+        if alias.name != "*"
+    )
+    return names
 
 
 def _absolute_module(path: Path, node: ast.ImportFrom) -> str:
@@ -886,7 +895,8 @@ def _package_parts(path: Path) -> tuple[str, ...] | None:
 
 def _matching_layer(module: str, layers: Sequence[str]) -> str:
     for layer in layers:
-        if module == layer or module.startswith(f"{layer}."):
+        module_prefix = layer.removesuffix(".*")
+        if module_prefix and (module == module_prefix or module.startswith(f"{module_prefix}.")):
             return layer
     return ""
 

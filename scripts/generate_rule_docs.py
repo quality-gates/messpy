@@ -55,7 +55,7 @@ BEHAVIOR = {
     "ImplicitInstanceInput": "Flags methods that read instance or class state through `self` / `cls`. Calls to other methods on the receiver stay quiet.",
     "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__` and `__post_init__` stay quiet. `__new__` does not, because its receiver is the class.",
     "DomainAction": "Flags an action in a domain-layer module: an implicit input, an implicit output, a write to `self` / `cls` outside a constructor, ambient I/O at import time, or a call to another action in the same module.",
-    "DomainOuterImport": "Flags an import, in a domain-layer module, of a module named in `outer-layers`. A name matches that module and its submodules.",
+    "DomainOuterImport": "Flags an import, in a domain-layer module, of a module named in `outer-layers`. A name matches that module and its submodules; a trailing `.*` is shorthand for the module and its submodules.",
 }
 
 
@@ -127,8 +127,8 @@ NOTES = {
         "such as `myapp.infra,requests`. "
         "`import`, `from ... import`, and relative imports are checked, including imports inside functions and under "
         "`if TYPE_CHECKING:`. A type-only import still couples the domain layer to that outer layer. "
-        "A relative import is resolved by walking parent directories that contain `__init__.py`. "
-        "A relative import that cannot be resolved this way stays quiet. "
+        "A relative import is resolved by walking parent directories that contain `__init__.py`; "
+        "when it cannot be resolved, the imported names are matched as written. "
         "An empty `domain`, or an empty `outer-layers` on this rule, is a ruleset error."
     ),
 }
@@ -228,7 +228,7 @@ def render() -> str:
             "</ruleset>",
             "```",
             "",
-            "`domain` matches the file's absolute path. `outer-layers` matches a module and its submodules, so `myapp.infra` covers `myapp.infra.db`.",
+            "`domain` matches the file's absolute path. `outer-layers` matches a module and its submodules, so `myapp.infra` covers `myapp.infra.db`. A trailing `.*` is accepted as shorthand for the same root and its submodules.",
             "",
             "A clean report is not proof that the domain layer is pure. The check has three blind spots:",
             "",
