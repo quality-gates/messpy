@@ -159,7 +159,7 @@ References are case-insensitive and may name a built-in, one rule, `rulesets/nam
 messpy src text path/to/team.xml
 ```
 
-`domain` is a comma-separated list of shell patterns. Each pattern is matched against the file's absolute path, and `*` matches across directories, so `messpy .` and `messpy src` report the same domain files. `outer-layers` is a comma-separated list of module names. A module matches an entry when it is that module or a submodule (`myapp.infra` covers `myapp.infra.db`).
+`domain` is a comma-separated list of shell patterns. Each pattern is matched against the file's absolute path, and `*` matches across directories, so `messpy .` and `messpy src` report the same domain files. `outer-layers` is a comma-separated list of module names. A module matches an entry when it is that module or a submodule (`myapp.infra` covers `myapp.infra.db`). A trailing `.*` is accepted as shorthand for the same root and its submodules.
 
 `DomainAction` reports an action in a domain module: an implicit input, an implicit output, a write to `self` or `cls` outside a constructor, ambient I/O at import time, or a call to another action in the same module. Import-time I/O includes annotations Python evaluates while loading the module: module and class variables, and signatures of module-level functions and methods. Those expressions stay quiet under `from __future__ import annotations`, and on Python 3.14 or later, where annotations are deferred. A `type` alias value stays quiet. The spread finding names the chain and points at the call. `DomainOuterImport` reports an import of an outer layer, including `import`, `from ... import`, relative imports, imports inside functions, and imports under `if TYPE_CHECKING:`.
 

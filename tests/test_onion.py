@@ -778,6 +778,48 @@ class OnionAcceptanceTests(unittest.TestCase):
                 "requests. The domain layer must not know about the interaction layer.",
                 "1: DomainOuterImport [priority 2] The module imports sqlalchemy, which belongs to the outer layer "
                 "sqlalchemy. The domain layer must not know about the interaction layer.",
+                "2: DomainOuterImport [priority 2] The module imports myapp.infra, which belongs to the outer layer "
+                "myapp.infra. The domain layer must not know about the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_from_import_matches_a_trailing_submodule_pattern(self) -> None:
+        status, report, errors = _analyze_source(
+            "from myapp import infra\nimport myapp.infra.db\n",
+            _ruleset(outer_layers="myapp.infra.*"),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainOuterImport [priority 2] The module imports myapp.infra, which belongs to the outer layer "
+                "myapp.infra.*. The domain layer must not know about the interaction layer.",
+                "2: DomainOuterImport [priority 2] The module imports myapp.infra.db, which belongs to the outer "
+                "layer myapp.infra.*. The domain layer must not know about the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_empty_relative_module_does_not_match_a_wildcard_layer(self) -> None:
+        status, report, errors = _analyze_source(
+            "from .. import *\n",
+            _ruleset(outer_layers=".*"),
+        )
+
+        self.assertEqual((0, [], ""), (status, report, errors))
+
+    def test_unresolved_relative_import_checks_imported_names_as_written(self) -> None:
+        status, report, errors = _analyze_source(
+            "from .. import infra\n",
+            _ruleset(outer_layers="infra"),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainOuterImport [priority 2] The module imports infra, which belongs to the outer layer infra. "
+                "The domain layer must not know about the interaction layer."
             ],
             report,
         )
@@ -835,7 +877,7 @@ class OnionAcceptanceTests(unittest.TestCase):
             _write(project / "src/myapp/infra/__init__.py", "")
             packaged = _write(
                 project / "src/myapp/domain/orders.py",
-                "from ..infra import db\nfrom ..infra.db import connect\n",
+                "from ..infra import db\nfrom ..infra.db import connect\nfrom .. import infra\n",
             )
             loose = _write(
                 project / "src/myapp/domain/loose.py",
@@ -858,6 +900,8 @@ class OnionAcceptanceTests(unittest.TestCase):
                 "1: DomainOuterImport [priority 2] The module imports myapp.infra, which belongs to the outer "
                 "layer myapp.infra. The domain layer must not know about the interaction layer.",
                 "2: DomainOuterImport [priority 2] The module imports myapp.infra.db, which belongs to the outer "
+                "layer myapp.infra. The domain layer must not know about the interaction layer.",
+                "3: DomainOuterImport [priority 2] The module imports myapp.infra, which belongs to the outer "
                 "layer myapp.infra. The domain layer must not know about the interaction layer.",
             ],
             _finding_lines(stdout, packaged),
