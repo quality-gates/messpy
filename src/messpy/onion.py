@@ -255,11 +255,14 @@ def _spread_findings(path: Path, graph: CallGraph, rule: LoadedRule, phrases: di
 
 
 def _action_ids(graph: CallGraph, phrases: dict[int, str]) -> set[int]:
-    return {
-        id(node)
-        for node in graph.callables
-        if id(node) in phrases or any(id(reached) in phrases for reached in graph.reachable_from(node))
-    }
+    actions = set(phrases)
+    pending = [node for node in graph.callables if id(node) in phrases]
+    while pending:
+        for site in graph.callers(pending.pop()):
+            if id(site.caller) not in actions:
+                actions.add(id(site.caller))
+                pending.append(site.caller)
+    return actions
 
 
 def _chain_phrase(callee: ast.AST, phrases: dict[int, str], graph: CallGraph, seen: set[int]) -> str:

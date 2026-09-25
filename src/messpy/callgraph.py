@@ -55,6 +55,7 @@ class CallGraph:
 
     def qualified_name(self, call: ast.Call) -> str:
         """The dotted name the call calls after import aliases; empty when a local binding hides it."""
+        # Filled on first use: only ExitExpression and DevelopmentCodeFragment need names.
         names = self._links.qualified_names
         if not names:
             names.update(_resolved_call_names(self._links.tree, self._links.masks))
