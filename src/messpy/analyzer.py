@@ -6,7 +6,6 @@ import builtins
 from collections import defaultdict
 from collections.abc import Callable, Sequence, Set as AbstractSet
 from dataclasses import dataclass, replace
-from functools import lru_cache
 from functools import cache, partial
 import keyword
 import re
@@ -25,6 +24,7 @@ from .callgraph import (
     _dotted_name,
     _evaluated_nodes,
     _import_binding_names,
+    _module_nodes,
     _recorded_binding_names,
     _scope_bindings,
     _scope_statements,
@@ -500,12 +500,6 @@ def _analyze(
                 ProcessingError(source_file, 1, f"Could not process {source_file}: {error}")
             )
     return findings, processing_errors
-
-
-@lru_cache(maxsize=1)
-def _module_nodes(tree: ast.Module) -> tuple[ast.AST, ...]:
-    """Return ``ast.walk(tree)`` once per module; rules walk the same tree many times."""
-    return tuple(ast.walk(tree))
 
 
 def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
