@@ -1,12 +1,12 @@
 <?xml version="1.0"?>
 <!--
-The domain is the calculation layer: analyzer, onion, and rulesets.
+The domain is the calculation layer: analyzer, callgraph, onion, and rulesets.
 cli is the interaction layer. explicitness still checks cli.
 -->
 <ruleset name="messpy onion">
     <rule ref="onion">
         <properties>
-            <property name="domain" value="*/src/messpy/analyzer.py,*/src/messpy/onion.py,*/src/messpy/rulesets.py" />
+            <property name="domain" value="*/src/messpy/analyzer.py,*/src/messpy/callgraph.py,*/src/messpy/onion.py,*/src/messpy/rulesets.py" />
             <property name="outer-layers" value="os,sys,tempfile,subprocess,messpy.cli" />
         </properties>
     </rule>

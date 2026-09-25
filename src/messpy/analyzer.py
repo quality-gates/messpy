@@ -4,8 +4,9 @@ import ast
 from bisect import bisect_right
 import builtins
 from collections import defaultdict
-from collections.abc import Sequence, Set as AbstractSet
+from collections.abc import Callable, Sequence, Set as AbstractSet
 from dataclasses import dataclass, replace
+from functools import cache, partial
 import keyword
 import re
 import symtable
@@ -14,6 +15,20 @@ import tokenize
 from io import StringIO
 from pathlib import Path
 
+from .callgraph import (
+    CallGraph,
+    _arguments,
+    _binding_scopes,
+    _BindingScope,
+    _direct_bindings,
+    _dotted_name,
+    _evaluated_nodes,
+    _import_binding_names,
+    _recorded_binding_names,
+    _scope_bindings,
+    _scope_statements,
+    build_call_graph,
+)
 from .rulesets import LoadedRule, RulesetError
 
 __all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "analyze"]
@@ -497,6 +512,7 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
     comprehension_scopes = _selected_comprehension_scopes(source, tree, rule_names)
     private_member_usage = _selected_private_member_usage(tree, rule_names)
     clean_code_callables = _selected_clean_code_callables(tree, rule_names)
+    call_graph = cache(partial(build_call_graph, tree))
     return [
         *_cyclomatic_complexity_findings(path, callables, rules),
         *_npath_complexity_findings(path, callables, rules),
@@ -509,9 +525,9 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_unused_private_field_findings(path, tree, classes, rules, private_member_usage),
         *_unused_private_method_findings(path, classes, rules, private_member_usage),
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
-        *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables),
+        *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables, call_graph),
         *_selected_explicitness_findings(path, tree, rules, rule_names),
-        *onion_findings(path, tree, rules),
+        *onion_findings(path, tree, rules, call_graph),
     ]
 
 
@@ -636,10 +652,11 @@ def _selected_design_findings(
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
     clean_code_callables: Sequence[CleanCodeCallable],
+    call_graph: Callable[[], CallGraph],
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, DESIGN_RULE_NAMES):
         return []
-    return _design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables)
+    return _design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables, call_graph)
 
 
 def _design_findings(
@@ -650,24 +667,32 @@ def _design_findings(
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
     clean_code_callables: Sequence[CleanCodeCallable],
+    call_graph: Callable[[], CallGraph],
 ) -> list[Finding]:
     parents = _selected_design_parents(tree, rule_names)
     contexts = _selected_design_contexts(clean_code_callables, rule_names)
     bindings = _selected_design_bindings(tree, rule_names)
-    resolved_calls = (
-        _resolved_call_names(tree, bindings)
-        if _has_any_rule(rule_names, {EXIT_EXPRESSION_RULE_NAME, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME})
-        else {}
-    )
+    graph = _selected_call_graph(call_graph, rule_names)
     return [
-        *_exit_expression_findings(path, tree, rules, parents, contexts, resolved_calls),
+        *_exit_expression_findings(path, tree, rules, parents, contexts, graph),
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
-        *_development_fragment_findings(path, source, tree, rules, parents, contexts, resolved_calls),
+        *_development_fragment_findings(path, source, tree, rules, parents, contexts, graph),
         *_empty_catch_findings(path, tree, rules, parents, contexts),
         *_coupling_findings(path, tree, classes, rules),
         *_global_variable_findings(path, tree, rules, parents, bindings),
-        *_cohesion_findings(path, classes, rules),
+        *_cohesion_findings(path, classes, rules, graph),
     ]
+
+
+def _selected_call_graph(call_graph: Callable[[], CallGraph], rule_names: AbstractSet[str]) -> CallGraph:
+    graph_rules = {
+        EXIT_EXPRESSION_RULE_NAME,
+        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
+        LACK_OF_COHESION_RULE_NAME,
+    }
+    if not _has_any_rule(rule_names, graph_rules):
+        return build_call_graph(ast.Module(body=[], type_ignores=[]))
+    return call_graph()
 
 
 def _selected_design_parents(tree: ast.Module, rule_names: AbstractSet[str]) -> dict[int, ast.AST]:
@@ -712,24 +737,13 @@ def _selected_design_bindings(tree: ast.Module, rule_names: AbstractSet[str]) ->
     return _scope_bindings(tree)
 
 
-_BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
-
-
-@dataclass(frozen=True)
-class _ScopeCallImports:
-    """The call-relevant imports and the other name bindings of one scope."""
-
-    call_modules: dict[str, str]
-    rebound: set[str]
-
-
 def _exit_expression_findings(
     path: Path,
     tree: ast.Module,
     rules: Sequence[LoadedRule],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    resolved_calls: dict[int, str],
+    graph: CallGraph,
 ) -> list[Finding]:
     rule = _rule(rules, EXIT_EXPRESSION_RULE_NAME)
     if rule is None:
@@ -737,7 +751,7 @@ def _exit_expression_findings(
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_exit_call(node, resolved_calls):
+        if not isinstance(node, ast.Call) or graph.qualified_name(node) not in EXIT_CALL_NAMES:
             continue
         scope, context = _design_scope(node, parents, contexts)
         if id(scope) in reported_scopes:
@@ -754,82 +768,6 @@ def _exit_expression_findings(
             )
         )
     return findings
-
-
-def _is_exit_call(
-    node: ast.Call, resolved_calls: dict[int, str]
-) -> bool:
-    return resolved_calls.get(id(node), "") in EXIT_CALL_NAMES
-
-
-def _resolved_call_names(
-    tree: ast.Module,
-    bindings: dict[int, set[str]],
-) -> dict[int, str]:
-    aliases = _imported_call_aliases(tree)
-    resolved_calls: dict[int, str] = {}
-    active_names, changes = _call_scope_entered({}, [], tree, aliases, bindings)
-    pending: list[tuple[ast.AST, bool]] = [(tree, False)]
-    while pending:
-        node, leaving_scope = pending.pop()
-        if leaving_scope:
-            active_names, changes = _call_scope_left(active_names, changes)
-            continue
-        if isinstance(node, ast.Call):
-            resolved_calls[id(node)] = _resolve_call_name(_dotted_name(node.func), active_names)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            active_names, changes = _call_scope_entered(active_names, changes, node, aliases, bindings)
-            pending.append((node, True))
-        children = list(ast.iter_child_nodes(node))
-        pending.extend((child, False) for child in reversed(children))
-    return resolved_calls
-
-
-def _call_scope_entered(
-    active_names: dict[str, str],
-    changes: list[list[tuple[str, str | None]]],
-    scope: _BindingScope,
-    aliases: dict[int, _ScopeCallImports],
-    bindings: dict[int, set[str]],
-) -> tuple[dict[str, str], list[list[tuple[str, str | None]]]]:
-    imports = aliases[id(scope)]
-    scope_bindings = bindings[id(scope)]
-    recorded: list[tuple[str, str | None]] = []
-    updated = dict(active_names)
-    for name in imports.rebound | set(imports.call_modules) | scope_bindings:
-        recorded.append((name, active_names.get(name)))
-        if name in imports.rebound or name not in imports.call_modules:
-            updated[name] = ""
-        else:
-            updated[name] = imports.call_modules[name]
-    return updated, [*changes, recorded]
-
-
-def _call_scope_left(
-    active_names: dict[str, str],
-    changes: list[list[tuple[str, str | None]]],
-) -> tuple[dict[str, str], list[list[tuple[str, str | None]]]]:
-    updated = dict(active_names)
-    for name, previous in reversed(changes[-1]):
-        if previous is None:
-            updated.pop(name, None)
-        else:
-            updated[name] = previous
-    return updated, changes[:-1]
-
-
-def _resolve_call_name(
-    original_name: str,
-    active_names: dict[str, str],
-) -> str:
-    root_name = original_name.split(".", 1)[0]
-    attributes = original_name[len(root_name):]
-    resolved_name = active_names.get(root_name)
-    if resolved_name is None:
-        return original_name
-    if not resolved_name:
-        return ""
-    return f"{resolved_name}{attributes}"
 
 
 def _count_in_loop_findings(
@@ -875,7 +813,7 @@ def _development_fragment_findings(
     rules: Sequence[LoadedRule],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    resolved_calls: dict[int, str],
+    graph: CallGraph,
 ) -> list[Finding]:
     rule = _rule(rules, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME)
     if rule is None:
@@ -885,7 +823,7 @@ def _development_fragment_findings(
         for name in rule.properties.get("unwanted-functions", "").split(",")
         if name.strip()
     }
-    findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, resolved_calls)
+    findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, graph)
     findings.extend(_development_marker_findings(path, source, rule))
     return findings
 
@@ -897,14 +835,14 @@ def _development_call_findings(
     unwanted: set[str],
     parents: dict[int, ast.AST],
     contexts: dict[int, str],
-    resolved_calls: dict[int, str],
+    graph: CallGraph,
 ) -> list[Finding]:
     findings: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _dotted_name(node.func)
-        resolved = resolved_calls.get(id(node), "")
+        resolved = graph.qualified_name(node)
         if resolved in DEVELOPMENT_CALL_NAMES:
             name = resolved
         elif name not in unwanted or name == "breakpoint":
@@ -1447,7 +1385,7 @@ def _root_name(node: ast.AST) -> str:
 
 
 def _cohesion_findings(
-    path: Path, classes: Sequence[ClassInfo], rules: Sequence[LoadedRule]
+    path: Path, classes: Sequence[ClassInfo], rules: Sequence[LoadedRule], graph: CallGraph
 ) -> list[Finding]:
     rule = _rule(rules, LACK_OF_COHESION_RULE_NAME)
     if rule is None:
@@ -1455,7 +1393,7 @@ def _cohesion_findings(
     maximum = _integer_property(rule, "maximum")
     findings: list[Finding] = []
     for class_info in classes:
-        lcom = _lcom4(class_info)
+        lcom = _lcom4(class_info, graph)
         if lcom <= maximum:
             continue
         findings.append(
@@ -1470,9 +1408,9 @@ def _cohesion_findings(
     return findings
 
 
-def _lcom4(class_info: ClassInfo) -> int:
+def _lcom4(class_info: ClassInfo, graph: CallGraph) -> int:
     accessor_fields = _accessor_fields(class_info)
-    methods = _method_relationships(class_info, accessor_fields)
+    methods = _method_relationships(class_info, accessor_fields, graph)
     active = _active_methods(methods)
     if not active:
         return 1
@@ -1480,7 +1418,7 @@ def _lcom4(class_info: ClassInfo) -> int:
 
 
 def _method_relationships(
-    class_info: ClassInfo, accessor_fields: dict[str, str]
+    class_info: ClassInfo, accessor_fields: dict[str, str], graph: CallGraph
 ) -> dict[str, _MethodRelationships]:
     methods: dict[str, _MethodRelationships] = {}
     for method in class_info.methods:
@@ -1490,11 +1428,23 @@ def _method_relationships(
         if receiver is None:
             continue
         fields: frozenset[str] = frozenset()
-        calls: frozenset[str] = frozenset()
         for statement in method.body:
-            fields, calls = _method_relationship(statement, receiver, accessor_fields, fields, calls)
-        methods[method.name] = _MethodRelationships(fields, calls)
+            fields = _method_fields(statement, receiver, accessor_fields, fields)
+        methods[method.name] = _MethodRelationships(fields, _method_calls(class_info, method, accessor_fields, graph))
     return methods
+
+
+def _method_calls(
+    class_info: ClassInfo,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    accessor_fields: dict[str, str],
+    graph: CallGraph,
+) -> frozenset[str]:
+    return frozenset(
+        site.callee.name
+        for site in graph.callees(method)
+        if graph.method_class(site.callee) is class_info.node and site.callee.name not in accessor_fields
+    )
 
 
 def _excluded_from_cohesion(
@@ -1569,67 +1519,41 @@ class _MethodRelationships:
     calls: frozenset[str]
 
 
-def _method_relationship(
+def _method_fields(
     node: ast.AST,
     receiver: str,
     accessor_fields: dict[str, str],
     fields: frozenset[str],
-    calls: frozenset[str],
-) -> tuple[frozenset[str], frozenset[str]]:
+) -> frozenset[str]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        return fields, calls
+        return fields
     if isinstance(node, ast.Call) and _direct_receiver_attribute(node.func, receiver):
-        return _receiver_call_relationship(node, receiver, accessor_fields, fields, calls)
+        return _receiver_call_fields(node, receiver, accessor_fields, fields)
     if _direct_receiver_attribute(node, receiver):
-        return fields | {accessor_fields.get(node.attr, node.attr)}, calls
-    return _method_relationship_children(node, receiver, accessor_fields, fields, calls)
+        return fields | {accessor_fields.get(node.attr, node.attr)}
+    for child in ast.iter_child_nodes(node):
+        fields = _method_fields(child, receiver, accessor_fields, fields)
+    return fields
 
 
-def _receiver_call_relationship(
+def _receiver_call_fields(
     node: ast.Call,
     receiver: str,
     accessor_fields: dict[str, str],
     fields: frozenset[str],
-    calls: frozenset[str],
-) -> tuple[frozenset[str], frozenset[str]]:
-    attribute = _called_attribute_name(node)
+) -> frozenset[str]:
+    attribute = node.func.attr
     if attribute in accessor_fields:
         fields = fields | {accessor_fields[attribute]}
-    else:
-        calls = calls | {attribute}
     for argument in [*node.args, *node.keywords]:
-        fields, calls = _method_relationship(
-            _call_argument_value(argument),
-            receiver,
-            accessor_fields,
-            fields,
-            calls,
-        )
-    return fields, calls
-
-
-def _called_attribute_name(node: ast.Call) -> str:
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
-    return ""
+        fields = _method_fields(_call_argument_value(argument), receiver, accessor_fields, fields)
+    return fields
 
 
 def _call_argument_value(argument: ast.expr | ast.keyword) -> ast.expr:
     if isinstance(argument, ast.keyword):
         return argument.value
     return argument
-
-
-def _method_relationship_children(
-    node: ast.AST,
-    receiver: str,
-    accessor_fields: dict[str, str],
-    fields: frozenset[str],
-    calls: frozenset[str],
-) -> tuple[frozenset[str], frozenset[str]]:
-    for child in ast.iter_child_nodes(node):
-        fields, calls = _method_relationship(child, receiver, accessor_fields, fields, calls)
-    return fields, calls
 
 
 def _direct_receiver_attribute(node: ast.AST, receiver: str) -> bool:
@@ -1703,130 +1627,6 @@ def _expression_call_nodes(node: ast.AST) -> list[ast.Call]:
     for child in ast.iter_child_nodes(node):
         found.extend(_expression_call_nodes(child))
     return found
-
-
-def _dotted_name(node: ast.expr) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else ""
-    return ""
-
-
-def _imported_call_aliases(tree: ast.Module) -> dict[int, _ScopeCallImports]:
-    return {id(scope): _scope_call_imports(scope) for scope in _binding_scopes(tree)}
-
-
-def _scope_call_imports(scope: _BindingScope) -> _ScopeCallImports:
-    call_modules: dict[str, str] = {}
-    rebound: set[str] = set()
-    for statement in _scope_statements(scope):
-        call_modules.update(_call_import_map(statement))
-        rebound.update(_rebound_names(statement))
-    return _ScopeCallImports(call_modules=call_modules, rebound=rebound)
-
-
-def _call_import_map(node: ast.AST) -> dict[str, str]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-        return {}
-    if isinstance(node, ast.Import):
-        return _call_import_aliases(node)
-    if isinstance(node, ast.ImportFrom) and node.module in {"sys", "os", "builtins", "pdb"}:
-        return _call_import_from_aliases(node)
-    if isinstance(node, (ast.ImportFrom,)):
-        return {}
-    found: dict[str, str] = {}
-    for child in ast.iter_child_nodes(node):
-        found.update(_call_import_map(child))
-    return found
-
-
-def _rebound_names(node: ast.AST) -> set[str]:
-    if isinstance(node, (ast.Import, ast.ImportFrom, ast.Lambda)):
-        return set()
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return {node.name}
-    found = _pattern_binding_names(node)
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-        found.add(node.id)
-    for child in ast.iter_child_nodes(node):
-        found.update(_rebound_names(child))
-    return found
-
-
-def _call_import_aliases(statement: ast.Import) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: imported.name
-        for imported in statement.names
-        if imported.name in {"sys", "os", "builtins", "pdb"}
-    }
-
-
-def _call_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: f"{statement.module}.{imported.name}"
-        for imported in statement.names
-    }
-
-
-def _binding_scopes(tree: ast.Module) -> list[_BindingScope]:
-    scopes: list[_BindingScope] = [tree]
-    scopes.extend(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
-    )
-    return scopes
-
-
-def _scope_statements(scope: _BindingScope) -> list[ast.AST]:
-    return [scope.body] if isinstance(scope, ast.Lambda) else list(scope.body)
-
-
-def _scope_bindings(tree: ast.Module) -> dict[int, set[str]]:
-    return {id(scope): _direct_bindings(scope) for scope in _binding_scopes(tree)}
-
-
-def _direct_bindings(scope: _BindingScope) -> set[str]:
-    names: set[str] = set()
-    if not isinstance(scope, (ast.Module, ast.ClassDef)):
-        names.update(argument.arg for argument in _arguments(scope.args))
-    for statement in _scope_statements(scope):
-        names.update(_scope_binding_names(statement))
-    return names
-
-
-def _scope_binding_names(node: ast.AST) -> set[str]:
-
-    found = _recorded_binding_names(node)
-    if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return found
-    for child in ast.iter_child_nodes(node):
-        found.update(_scope_binding_names(child))
-    return found
-
-
-def _recorded_binding_names(node: ast.AST) -> set[str]:
-    if isinstance(node, ast.Name):
-        return {node.id} if isinstance(node.ctx, ast.Store) else set()
-    if isinstance(node, (ast.Import, ast.ImportFrom)):
-        return set(_import_binding_names(node))
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return {node.name}
-    return _pattern_binding_names(node)
-
-
-def _import_binding_names(node: ast.Import | ast.ImportFrom) -> list[str]:
-    return [imported.asname or imported.name.split(".", 1)[0] for imported in node.names]
-
-
-def _pattern_binding_names(node: ast.AST) -> set[str]:
-    if isinstance(node, (ast.MatchAs, ast.MatchStar, ast.ExceptHandler)) and node.name is not None:
-        return {node.name}
-    if isinstance(node, ast.MatchMapping) and node.rest is not None:
-        return {node.rest}
-    return set()
 
 
 def _is_first_generator_iter(
@@ -2002,7 +1802,6 @@ def _implicit_output_findings(
     return _explicitness_report(
         path, callable_info, rule, first_writes, "writes the implicit output", "Return it instead."
     )
-
 
 
 def _implicit_instance_input_findings(
@@ -2870,39 +2669,6 @@ def _executable_node_list(node: ast.AST) -> list[ast.AST]:
     found = [node]
     for child in ast.iter_child_nodes(node):
         found.extend(_executable_node_list(child))
-    return found
-
-
-def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
-    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
-    found: list[ast.AST] = []
-    for root in roots:
-        found.extend(_evaluated_node_list(root))
-    return found
-
-
-def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
-    # Python evaluates decorators, defaults, class bases, and nested class bodies here.
-    # It does not evaluate a local annotation or a nested function body.
-    if isinstance(node, ast.AnnAssign):
-        return [node, *_evaluated_present([node.target, node.value])]
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return _evaluated_present([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])
-    if isinstance(node, ast.Lambda):
-        return _evaluated_present([*node.args.defaults, *node.args.kw_defaults])
-    if isinstance(node, ast.ClassDef):
-        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *node.body])
-    found = [node]
-    for child in ast.iter_child_nodes(node):
-        found.extend(_evaluated_node_list(child))
-    return found
-
-
-def _evaluated_present(nodes: Sequence[ast.AST | None]) -> list[ast.AST]:
-    found: list[ast.AST] = []
-    for node in nodes:
-        if node is not None:
-            found.extend(_evaluated_node_list(node))
     return found
 
 
@@ -4799,15 +4565,6 @@ def _naming_callable_role(node: ast.FunctionDef | ast.AsyncFunctionDef, direct_c
     if not direct_class_member:
         return "function"
     return "property" if _has_property_decorator(node) else "method"
-
-
-def _arguments(arguments: ast.arguments) -> list[ast.arg]:
-    values = [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
-    if arguments.vararg is not None:
-        values.append(arguments.vararg)
-    if arguments.kwarg is not None:
-        values.append(arguments.kwarg)
-    return values
 
 
 def _target_names(node: ast.AST) -> list[ast.Name]:
