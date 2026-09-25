@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
 
@@ -780,11 +781,17 @@ def _call_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
     }
 
 
+@lru_cache(maxsize=1)
+def _module_nodes(tree: ast.Module) -> tuple[ast.AST, ...]:
+    """Return ``ast.walk(tree)`` once per module; rules walk the same tree many times."""
+    return tuple(ast.walk(tree))
+
+
 def _binding_scopes(tree: ast.Module) -> list[_BindingScope]:
     scopes: list[_BindingScope] = [tree]
     scopes.extend(
         node
-        for node in ast.walk(tree)
+        for node in _module_nodes(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
     )
     return scopes

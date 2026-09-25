@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
 from io import StringIO
 from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -78,6 +80,22 @@ class FacadeAcceptanceTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(_parse_text_report(stdout.getvalue()), _analysis_entries(analysis))
+
+    def test_analyze_bounds_whole_module_walks_per_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            (project / "first.py").write_text(_long_function("first"), encoding="utf-8")
+            (project / "second.py").write_text(_long_function("second"), encoding="utf-8")
+            rules = load_rulesets(
+                ["codesize", "cleancode", "design", "naming", "unusedcode", "opinionated", "controversial"]
+            )
+
+            with mock.patch("ast.walk", wraps=ast.walk) as walk:
+                analysis = analyze([project], rules=rules)
+
+        module_walks = [call for call in walk.call_args_list if isinstance(call.args[0], ast.Module)]
+        # Ceiling, not target: rules once re-walked each module ~24 times per file.
+        self.assertLessEqual(len(module_walks), 4)
         self.assertTrue(analysis.findings)
         self.assertEqual((), analysis.errors)
 
