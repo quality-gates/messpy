@@ -1392,7 +1392,21 @@ def _module_bindings(node: ast.AST) -> list[tuple[ast.AST, ast.expr | None]]:
     return found
 
 
+def _is_comprehension_target(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    current = node
+    while id(current) in parents:
+        parent = parents[id(current)]
+        if isinstance(parent, ast.comprehension) and current is parent.target:
+            return True
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef, ast.Module)):
+            return False
+        current = parent
+    return False
+
+
 def _is_module_assignment(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    if _is_comprehension_target(node, parents):
+        return False
     current = node
     while id(current) in parents:
         current = parents[id(current)]
@@ -1401,13 +1415,17 @@ def _is_module_assignment(node: ast.AST, parents: dict[int, ast.AST]) -> bool:
     return True
 
 
-def _scope_declares_global(node: ast.AST, scope: ast.AST, parents: dict[int, ast.AST]) -> bool:
-    return isinstance(node, ast.Name) and any(
+def _scope_declares_name_global(name: str, scope: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    return any(
         isinstance(statement, ast.Global)
-        and node.id in statement.names
+        and name in statement.names
         and _same_scope(statement, scope, parents)
         for statement in ast.walk(scope)
     )
+
+
+def _scope_declares_global(node: ast.AST, scope: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    return isinstance(node, ast.Name) and _scope_declares_name_global(node.id, scope, parents)
 
 
 def _same_scope(node: ast.AST, scope: ast.AST, parents: dict[int, ast.AST]) -> bool:
@@ -1811,6 +1829,67 @@ def _pattern_binding_names(node: ast.AST) -> set[str]:
     return set()
 
 
+def _is_first_generator_iter(
+    node: ast.AST,
+    comp: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    parents: dict[int, ast.AST],
+) -> bool:
+    if not comp.generators:
+        return False
+    first_iter = comp.generators[0].iter
+    current: ast.AST | None = node
+    while current is not None:
+        if current is first_iter:
+            return True
+        if current is comp:
+            return False
+        current = parents.get(id(current))
+    return False
+
+
+def _scope_shadows_name(
+    scope: ast.AST,
+    name: str,
+    bindings: dict[int, set[str]],
+    parents: dict[int, ast.AST],
+) -> bool | None:
+    if _scope_declares_name_global(name, scope, parents):
+        return False
+    return True if name in bindings[id(scope)] else None
+
+
+def _comprehension_target_names(
+    comp: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+) -> set[str]:
+    return {
+        target.id
+        for generator in comp.generators
+        for target in _target_names(generator.target)
+    }
+
+
+def _scope_shadows_candidate(
+    current: ast.AST,
+    name: str,
+    node: ast.AST,
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+    allow_class: bool,
+) -> tuple[bool | None, bool]:
+    if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return _scope_shadows_name(current, name, bindings, parents), False
+    if isinstance(current, ast.ClassDef):
+        if not allow_class:
+            return None, False
+        return _scope_shadows_name(current, name, bindings, parents), False
+    if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        if _is_first_generator_iter(node, current, parents):
+            return None, allow_class
+        shadowed = True if name in _comprehension_target_names(current) else None
+        return shadowed, False
+    return None, allow_class
+
+
 def _is_function_shadowed(
     name: str,
     node: ast.AST,
@@ -1818,11 +1897,14 @@ def _is_function_shadowed(
     bindings: dict[int, set[str]],
 ) -> bool:
     current = node
+    allow_class = True
     while id(current) in parents:
         current = parents[id(current)]
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            if name in bindings[id(current)]:
-                return True
+        verdict, allow_class = _scope_shadows_candidate(
+            current, name, node, parents, bindings, allow_class
+        )
+        if verdict is not None:
+            return verdict
     return False
 
 
