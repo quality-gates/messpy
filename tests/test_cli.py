@@ -1054,12 +1054,15 @@ class CommandAcceptanceTests(unittest.TestCase):
         # resolve every call independently, walking all enclosing scopes for
         # each resolution.
         import messpy.analyzer as engine_module
+        import messpy.callgraph as callgraph_module
 
         source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
         original_parents = engine_module._selected_design_parents
-        original_aliases = engine_module._imported_call_aliases
+        original_aliases = callgraph_module._imported_call_aliases
+        original_masked_children = callgraph_module._masked_children
         parent_maps: list[dict[int, ast.AST]] = []
         alias_call_count = 0
+        masked_visits = 0
 
         class CountingParents(dict[int, ast.AST]):
             def __init__(self, values: dict[int, ast.AST]) -> None:
@@ -1080,8 +1083,14 @@ class CommandAcceptanceTests(unittest.TestCase):
             alias_call_count += 1
             return original_aliases(tree)
 
+        def masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
+            nonlocal masked_visits
+            masked_visits += 1
+            return original_masked_children(node, masked)
+
         engine_module._selected_design_parents = selected_parents
-        engine_module._imported_call_aliases = imported_call_aliases
+        callgraph_module._imported_call_aliases = imported_call_aliases
+        callgraph_module._masked_children = masked_children
         try:
             with tempfile.TemporaryDirectory() as temporary_directory:
                 source_path = Path(temporary_directory) / "nested_calls.py"
@@ -1101,7 +1110,8 @@ class CommandAcceptanceTests(unittest.TestCase):
                 )
         finally:
             engine_module._selected_design_parents = original_parents
-            engine_module._imported_call_aliases = original_aliases
+            callgraph_module._imported_call_aliases = original_aliases
+            callgraph_module._masked_children = original_masked_children
 
         self.assertEqual(0, status)
         self.assertEqual("", stdout.getvalue())
@@ -1110,6 +1120,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, len(parent_maps))
         node_count = len(list(ast.walk(ast.parse(source))))
         self.assertLess(parent_maps[0].lookups, 2 * node_count)
+        self.assertLessEqual(masked_visits, node_count)
 
     def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
         # Regression for GH #178: the column lookup used to split the whole
@@ -4696,6 +4707,40 @@ class CommandAcceptanceTests(unittest.TestCase):
                     self.assertEqual("", stdout.getvalue(), name)
                 else:
                     self.assertIn("ExitExpression", stdout.getvalue(), name)
+
+    def test_exit_expression_respects_comprehension_target_shadowing(self) -> None:
+        cases = [
+            (
+                "comprehension_target",
+                "import sys\n"
+                "def stop(modules):\n"
+                "    return [sys.exit() for sys in modules]\n",
+                0,
+            ),
+            (
+                "outermost_iterable",
+                "import sys\n"
+                "def stop():\n"
+                "    return [item for item in sys.exit()]\n",
+                2,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, source_text, expected_status in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", "ExitExpression"],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(expected_status, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
 
     def test_exit_expression_follows_function_local_exit_imports(self) -> None:
         cases = [
