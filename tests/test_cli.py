@@ -4155,8 +4155,41 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return 3\n",
                 7,
             ),
+            "if_else_in_loop_with_continue_and_break": (
+                "def check_all(items):\n"
+                "    for item in items:\n"
+                "        if valid(item):\n"
+                "            continue\n"
+                "        else:\n"
+                "            break\n"
+                "    else:\n"
+                "        return True\n"
+                "    return False\n",
+                6,
+            ),
         }
         quiet = {
+            "for_breaks": (
+                "def hunt(items):\n"
+                "    for item in items:\n"
+                "        break\n"
+                "    else:\n"
+                "        return None\n"
+            ),
+            "while_continues": (
+                "def wait_until_ready():\n"
+                "    while not ready():\n"
+                "        continue\n"
+                "    else:\n"
+                "        log('Finished waiting')\n"
+            ),
+            "async_for_continues": (
+                "async def scan(items):\n"
+                "    async for item in items:\n"
+                "        continue\n"
+                "    else:\n"
+                "        return None\n"
+            ),
             "if_assigns": (
                 "def choose(flag):\n"
                 "    if flag:\n"

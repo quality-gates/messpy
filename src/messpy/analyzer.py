@@ -2589,7 +2589,9 @@ def _elif_nodes(nodes: Sequence[ast.AST]) -> set[int]:
 def _dead_else_clause(elif_nodes: set[int], node: ast.AST) -> ast.stmt | None:
     if isinstance(node, ast.If):
         return None if id(node) in elif_nodes else _dead_else_after_if_chain(node)
-    if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.Try, ast.TryStar)):
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        return node.orelse[0] if node.orelse and _block_always_exits(node.body, allow_loop_jumps=False) else None
+    if isinstance(node, (ast.Try, ast.TryStar)):
         return node.orelse[0] if node.orelse and _block_always_exits(node.body) else None
     return None
 
@@ -2617,37 +2619,45 @@ def _if_chain(node: ast.If) -> tuple[list[list[ast.stmt]], list[ast.stmt]]:
     return branches, tail
 
 
-def _block_always_exits(body: Sequence[ast.stmt]) -> bool:
-    return any(_statement_always_exits(statement) for statement in body)
+def _block_always_exits(body: Sequence[ast.stmt], *, allow_loop_jumps: bool = True) -> bool:
+    return any(_statement_always_exits(statement, allow_loop_jumps=allow_loop_jumps) for statement in body)
 
 
-def _statement_always_exits(statement: ast.stmt) -> bool:
-    if isinstance(statement, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
+def _statement_always_exits(statement: ast.stmt, *, allow_loop_jumps: bool = True) -> bool:
+    if isinstance(statement, (ast.Return, ast.Raise)):
+        return True
+    if allow_loop_jumps and isinstance(statement, (ast.Continue, ast.Break)):
         return True
     if isinstance(statement, ast.If):
-        return _if_statement_always_exits(statement)
+        return _if_statement_always_exits(statement, allow_loop_jumps=allow_loop_jumps)
     if isinstance(statement, (ast.With, ast.AsyncWith)):
-        return _block_always_exits(statement.body)
+        return _block_always_exits(statement.body, allow_loop_jumps=allow_loop_jumps)
     if isinstance(statement, (ast.Try, ast.TryStar)):
-        return _try_statement_always_exits(statement)
+        return _try_statement_always_exits(statement, allow_loop_jumps=allow_loop_jumps)
     return False
 
 
-def _if_statement_always_exits(node: ast.If) -> bool:
+def _if_statement_always_exits(node: ast.If, *, allow_loop_jumps: bool = True) -> bool:
     branches, tail = _if_chain(node)
     if not tail:
         return False
-    return all(_block_always_exits(branch) for branch in branches) and _block_always_exits(tail)
+    return all(
+        _block_always_exits(branch, allow_loop_jumps=allow_loop_jumps) for branch in branches
+    ) and _block_always_exits(tail, allow_loop_jumps=allow_loop_jumps)
 
 
-def _try_statement_always_exits(node: ast.Try | ast.TryStar) -> bool:
+def _try_statement_always_exits(node: ast.Try | ast.TryStar, *, allow_loop_jumps: bool = True) -> bool:
     if not node.handlers:
         return False
-    if node.finalbody and _block_always_exits(node.finalbody):
+    if node.finalbody and _block_always_exits(node.finalbody, allow_loop_jumps=allow_loop_jumps):
         return True
-    if not _block_always_exits(node.body) or (node.orelse and not _block_always_exits(node.orelse)):
+    if not _block_always_exits(node.body, allow_loop_jumps=allow_loop_jumps) or (
+        node.orelse and not _block_always_exits(node.orelse, allow_loop_jumps=allow_loop_jumps)
+    ):
         return False
-    return all(_block_always_exits(handler.body) for handler in node.handlers)
+    return all(
+        _block_always_exits(handler.body, allow_loop_jumps=allow_loop_jumps) for handler in node.handlers
+    )
 
 
 def _static_access_findings(
