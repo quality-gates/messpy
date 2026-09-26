@@ -1,0 +1,1 @@
+<ruleset name="layer imports"><rule ref="DomainOuterImport"><properties><property name="domain" value="*/shop/domain/*" /><property name="outer-layers" value="shop.infra" /></properties></rule></ruleset>

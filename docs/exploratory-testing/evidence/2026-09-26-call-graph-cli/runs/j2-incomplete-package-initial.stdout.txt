@@ -1,0 +1,3 @@
+j2/shop/domain/orders.py:1: DomainOuterImport [priority 2] The module imports shop.infra.repository, which belongs to the outer layer shop.infra. The domain layer must not know about the interaction layer.
+j2/shop/domain/orders.py:2: DomainOuterImport [priority 2] The module imports shop.infra.repository, which belongs to the outer layer shop.infra. The domain layer must not know about the interaction layer.
+j2/shop/domain/orders.py:5: DomainOuterImport [priority 2] The module imports shop.infra.models, which belongs to the outer layer shop.infra. The domain layer must not know about the interaction layer.
