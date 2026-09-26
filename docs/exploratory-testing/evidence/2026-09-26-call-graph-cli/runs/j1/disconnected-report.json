@@ -1,0 +1,19 @@
+{
+  "tool": {
+    "name": "messpy",
+    "version": "0.1.15"
+  },
+  "findings": [
+    {
+      "path": "j1/disconnected.py",
+      "line": 1,
+      "column": 1,
+      "ruleName": "LackOfCohesionOfMethods",
+      "priority": 3,
+      "message": "The class FulfilmentDesk has a Lack of Cohesion Of Methods (LCOM4) value of 2. Consider to split this class into 2 smaller classes.",
+      "context": "FulfilmentDesk",
+      "suppressed": false
+    }
+  ],
+  "errors": []
+}

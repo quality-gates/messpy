@@ -173,6 +173,9 @@ A clean `onion` report is not proof of purity. Three blind spots remain:
 
 A user pass of this behavior is recorded in [exploratory testing: onion and explicitness](exploratory-testing/2026-09-23-onion-production.md).
 
+Follow-up feedback on call-based cohesion, aliased imports, and source
+non-execution is in [the 2026-09-26 exploratory report](exploratory-testing/2026-09-26-call-graph-cli.md).
+
 ## Suppressions in source
 
 Waive one intentional finding without weakening the whole gate:
