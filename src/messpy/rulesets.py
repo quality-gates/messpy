@@ -1,16 +1,49 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Iterable
+import re
+from typing import Iterable, Union, cast
 import xml.etree.ElementTree as ElementTree
+
+
+_INTEGER_PROPERTIES = frozenset({"minimum", "maximum", "reportlevel", "maxfields", "maxmethods"})
+_BOOLEAN_PROPERTIES = frozenset(
+    {"ignore-whitespace", "report-immutable", "allow-underscore", "allow-underscore-test"}
+)
+_PATTERN_PROPERTIES = frozenset({"ignorepattern"})
+_PropertyValue = Union[int, bool, "re.Pattern[str]", list[str]]
+_REQUIRED_ITEMS = {
+    "DomainAction": (("domain", "path pattern"),),
+    "DomainOuterImport": (("domain", "path pattern"), ("outer-layers", "module")),
+}
 
 
 @dataclass(frozen=True)
 class LoadedRule:
+    """A rule whose property values are parsed when it is built, so the typed
+    reads detectors use cannot fail."""
+
     name: str
     priority: int
     properties: dict[str, str]
+    _values: dict[str, _PropertyValue] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        values = {key: _parse(self.name, key, value) for key, value in self.properties.items()}
+        object.__setattr__(self, "_values", values)
+
+    def integer(self, property_name: str) -> int:
+        return cast(int, self._values[property_name])
+
+    def boolean(self, property_name: str) -> bool:
+        return cast(bool, self._values.get(property_name, False))
+
+    def pattern(self, property_name: str) -> re.Pattern[str]:
+        return cast(re.Pattern[str], self._values.get(property_name, _MATCH_NOTHING))
+
+    def items(self, property_name: str, default: str = "") -> list[str]:
+        return cast(list[str], self._values.get(property_name, _items(default)))
 
 
 @dataclass(frozen=True)
@@ -21,6 +54,51 @@ class BuiltInRuleReference:
 
 class RulesetError(Exception):
     pass
+
+
+_MATCH_NOTHING = re.compile(r"(?!)")
+
+
+def _parse(rule_name: str, property_name: str, value: str) -> _PropertyValue:
+    if property_name in _INTEGER_PROPERTIES:
+        return _integer(rule_name, property_name, value)
+    if property_name in _BOOLEAN_PROPERTIES:
+        return _boolean(rule_name, property_name, value)
+    if property_name in _PATTERN_PROPERTIES:
+        return _pattern(rule_name, property_name, value)
+    return _items(value)
+
+
+def _items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _integer(rule_name: str, property_name: str, value: str) -> int:
+    try:
+        return int(value)
+    except ValueError as error:
+        raise RulesetError(f"{rule_name} property '{property_name}' must be an integer.") from error
+
+
+def _boolean(rule_name: str, property_name: str, value: str) -> bool:
+    folded = value.casefold()
+    if folded not in ("true", "false"):
+        raise RulesetError(f"{rule_name} property '{property_name}' must be true or false.")
+    return folded == "true"
+
+
+def _pattern(rule_name: str, property_name: str, value: str) -> re.Pattern[str]:
+    stripped = value.strip()
+    ignore_case = stripped.endswith(")i")
+    pattern = stripped[:-1].strip() if ignore_case else stripped
+    if not pattern:
+        # An empty (or whitespace-only) pattern would match every name, so it
+        # excludes nothing: fall back to a pattern that never matches.
+        return _MATCH_NOTHING
+    try:
+        return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+    except re.error as error:
+        raise RulesetError(f"{rule_name} property '{property_name}' must be a valid regular expression.") from error
 
 
 _CATALOG = {
@@ -310,7 +388,16 @@ def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
             if str(error) == f"Unknown ruleset reference '{reference}'.":
                 raise RulesetError(f"Unknown ruleset '{reference}'.") from error
             raise
-    return list(loaded.values())
+    rules = list(loaded.values())
+    _validate_required_items(rules)
+    return rules
+
+
+def _validate_required_items(rules: Iterable[LoadedRule]) -> None:
+    for rule in rules:
+        for property_name, kind in _REQUIRED_ITEMS.get(rule.name, ()):
+            if not rule.items(property_name):
+                raise RulesetError(f"{rule.name} property '{property_name}' must name at least one {kind}.")
 
 
 def filter_rules(

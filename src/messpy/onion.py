@@ -8,22 +8,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .callgraph import CallGraph, CallSite, _parent_map
-from .rulesets import LoadedRule, RulesetError
+from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
     from .analyzer import Finding
 
 DOMAIN_ACTION_RULE_NAME = "DomainAction"
 DOMAIN_OUTER_IMPORT_RULE_NAME = "DomainOuterImport"
-
-
-def validate_onion_rules(rules: Sequence[LoadedRule]) -> None:
-    for rule in rules:
-        if rule.name == DOMAIN_ACTION_RULE_NAME:
-            _require_list(rule, "domain", "path pattern")
-        elif rule.name == DOMAIN_OUTER_IMPORT_RULE_NAME:
-            _require_list(rule, "domain", "path pattern")
-            _require_list(rule, "outer-layers", "module")
 
 
 def onion_findings(
@@ -39,24 +30,13 @@ def onion_findings(
     return findings
 
 
-def _require_list(rule: LoadedRule, property_name: str, kind: str) -> None:
-    if _property_items(rule, property_name):
-        return
-    raise RulesetError(f"{rule.name} property '{property_name}' must name at least one {kind}.")
-
-
 def _named_rule(rules: Sequence[LoadedRule], name: str) -> LoadedRule | None:
     return next((rule for rule in rules if rule.name == name), None)
 
 
-def _property_items(rule: LoadedRule, property_name: str) -> list[str]:
-    raw = rule.properties.get(property_name, "")
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
 def _in_domain(path: Path, rule: LoadedRule) -> bool:
     posix = path.resolve().as_posix()
-    for pattern in _property_items(rule, "domain"):
+    for pattern in rule.items("domain"):
         if fnmatch.fnmatchcase(posix, pattern):
             return True
     return False
@@ -297,7 +277,7 @@ def _caller_context(graph: CallGraph, caller: ast.AST) -> tuple[str, str]:
 
 
 def _outer_import_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> list:
-    layers = _property_items(rule, "outer-layers")
+    layers = rule.items("outer-layers")
     findings = []
     for node in ast.walk(tree):
         for module, layer in _matched_imports(path, node, layers):

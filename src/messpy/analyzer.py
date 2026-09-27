@@ -30,7 +30,7 @@ from .callgraph import (
     _scope_statements,
     build_call_graph,
 )
-from .rulesets import LoadedRule, RulesetError
+from .rulesets import LoadedRule
 
 __all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "analyze"]
 
@@ -51,9 +51,6 @@ def analyze(
     exclusions: Sequence[str] = (),
     ignore_tests: bool = False,
 ) -> Analysis:
-    from .onion import validate_onion_rules
-
-    validate_onion_rules(rules)
     input_paths = [Path(value).resolve() for value in paths]
     source_files = _source_files(input_paths, suffixes, exclusions, ignore_tests)
     findings, processing_errors = _analyze(source_files, rules)
@@ -819,11 +816,7 @@ def _development_fragment_findings(
     rule = _rule(rules, DEVELOPMENT_CODE_FRAGMENT_RULE_NAME)
     if rule is None:
         return []
-    unwanted = DEVELOPMENT_CALL_NAMES | {
-        name.strip()
-        for name in rule.properties.get("unwanted-functions", "").split(",")
-        if name.strip()
-    }
+    unwanted = DEVELOPMENT_CALL_NAMES | set(rule.items("unwanted-functions"))
     findings = _development_call_findings(path, tree, rule, unwanted, parents, contexts, graph)
     findings.extend(_development_marker_findings(path, source, rule))
     return findings
@@ -866,11 +859,7 @@ def _development_call_findings(
 
 
 def _development_marker_findings(path: Path, source: str, rule: LoadedRule) -> list[Finding]:
-    markers = [
-        marker.strip().casefold()
-        for marker in rule.properties.get("markers", "TODO,FIXME,HACK").split(",")
-        if marker.strip()
-    ]
+    markers = [marker.casefold() for marker in rule.items("markers", "TODO,FIXME,HACK")]
     if not markers:
         return []
     marker_pattern = re.compile(
@@ -939,7 +928,7 @@ def _coupling_findings(
     rule = _rule(rules, COUPLING_BETWEEN_OBJECTS_RULE_NAME)
     if rule is None:
         return []
-    maximum = _integer_property(rule, "maximum")
+    maximum = rule.integer("maximum")
     aliases = _module_import_aliases(tree)
     module_names = {
         node.name
@@ -1214,7 +1203,7 @@ def _global_variable_findings(
         return []
     candidates, immutable_candidates, initial_targets = _global_candidates(tree)
     mutated = _mutated_global_names(tree, candidates, initial_targets, parents, bindings)
-    selected = set(candidates) if _boolean_property(rule, "report-immutable") else mutated - immutable_candidates
+    selected = set(candidates) if rule.boolean("report-immutable") else mutated - immutable_candidates
     return [
         Finding(
             path,
@@ -1391,7 +1380,7 @@ def _cohesion_findings(
     rule = _rule(rules, LACK_OF_COHESION_RULE_NAME)
     if rule is None:
         return []
-    maximum = _integer_property(rule, "maximum")
+    maximum = rule.integer("maximum")
     findings: list[Finding] = []
     for class_info in classes:
         lcom = _lcom4(class_info, graph)
@@ -2266,7 +2255,7 @@ def _boolean_argument_flag_findings(
     if rule is None:
         return []
     exceptions = _exception_names(rule)
-    ignored = _ignore_pattern(rule)
+    ignored = rule.pattern("ignorepattern")
     findings: list[Finding] = []
     for callable_info in callables:
         if _ignore_boolean_flag_callable(callable_info, exceptions, ignored):
@@ -2467,7 +2456,7 @@ def _static_access_findings(
     if rule is None:
         return []
     exceptions = _exception_names(rule)
-    ignored = _ignore_pattern(rule)
+    ignored = rule.pattern("ignorepattern")
     findings: list[Finding] = []
     for callable_info in callables:
         name = _clean_code_callable_name(callable_info.node)
@@ -2674,7 +2663,7 @@ def _executable_node_list(node: ast.AST) -> list[ast.AST]:
 
 
 def _exception_names(rule: LoadedRule) -> set[str]:
-    return {name.strip() for name in rule.properties.get("exceptions", "").split(",") if name.strip()}
+    return set(rule.items("exceptions"))
 
 
 def _unused_local_variable_findings(
@@ -3694,7 +3683,7 @@ def _short_class_name_findings(path: Path, targets: Sequence[NamingTarget], rule
     rule = _rule(rules, SHORT_CLASS_NAME_RULE_NAME)
     if rule is None:
         return []
-    minimum = _integer_property(rule, "minimum")
+    minimum = rule.integer("minimum")
     return [
         _naming_finding(
             path,
@@ -3711,7 +3700,7 @@ def _long_class_name_findings(path: Path, targets: Sequence[NamingTarget], rules
     rule = _rule(rules, LONG_CLASS_NAME_RULE_NAME)
     if rule is None:
         return []
-    maximum = _integer_property(rule, "maximum")
+    maximum = rule.integer("maximum")
     return [
         _naming_finding(
             path,
@@ -3728,7 +3717,7 @@ def _short_variable_findings(path: Path, targets: Sequence[NamingTarget], rules:
     rule = _rule(rules, SHORT_VARIABLE_RULE_NAME)
     if rule is None:
         return []
-    minimum = _integer_property(rule, "minimum")
+    minimum = rule.integer("minimum")
     return _variable_length_findings(path, targets, rule, minimum, too_long=False)
 
 
@@ -3736,7 +3725,7 @@ def _long_variable_findings(path: Path, targets: Sequence[NamingTarget], rules: 
     rule = _rule(rules, LONG_VARIABLE_RULE_NAME)
     if rule is None:
         return []
-    maximum = _integer_property(rule, "maximum")
+    maximum = rule.integer("maximum")
     return _variable_length_findings(path, targets, rule, maximum, too_long=True)
 
 
@@ -3764,7 +3753,7 @@ def _short_method_name_findings(path: Path, targets: Sequence[NamingTarget], rul
     rule = _rule(rules, SHORT_METHOD_NAME_RULE_NAME)
     if rule is None:
         return []
-    minimum = _integer_property(rule, "minimum")
+    minimum = rule.integer("minimum")
     return [
         _naming_finding(
             path,
@@ -3955,10 +3944,7 @@ def _cyclomatic_complexity_findings(
     rule = next((candidate for candidate in rules if candidate.name == CYCLOMATIC_COMPLEXITY_RULE_NAME), None)
     if rule is None:
         return []
-    try:
-        threshold = int(rule.properties["reportlevel"])
-    except (KeyError, ValueError) as error:
-        raise RulesetError("CyclomaticComplexity property 'reportLevel' must be an integer.") from error
+    threshold = rule.integer("reportlevel")
     findings: list[Finding] = []
     for callable_info in callables:
         complexity = _cyclomatic_complexity(callable_info.node)
@@ -4015,10 +4001,7 @@ def _npath_complexity_findings(
     rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
     if rule is None:
         return []
-    try:
-        threshold = int(rule.properties["minimum"])
-    except (KeyError, ValueError) as error:
-        raise RulesetError("NPathComplexity property 'minimum' must be an integer.") from error
+    threshold = rule.integer("minimum")
     findings: list[Finding] = []
     for callable_info in callables:
         complexity = _npath_complexity(callable_info.node)
@@ -4146,10 +4129,7 @@ def _excessive_parameter_list_findings(
     rule = next((candidate for candidate in rules if candidate.name == EXCESSIVE_PARAMETER_LIST_RULE_NAME), None)
     if rule is None:
         return []
-    try:
-        threshold = int(rule.properties["minimum"])
-    except (KeyError, ValueError) as error:
-        raise RulesetError("ExcessiveParameterList property 'minimum' must be an integer.") from error
+    threshold = rule.integer("minimum")
     findings: list[Finding] = []
     for callable_info in callables:
         if callable_info.parameter_count < threshold:
@@ -4610,10 +4590,7 @@ def _excessive_method_length_findings(
     rule = next((candidate for candidate in rules if candidate.name == METHOD_LENGTH_RULE_NAME), None)
     if rule is None:
         return []
-    try:
-        method_length_limit = int(rule.properties["minimum"])
-    except (KeyError, ValueError) as error:
-        raise RulesetError("ExcessiveMethodLength property 'minimum' must be an integer.") from error
+    method_length_limit = rule.integer("minimum")
     findings: list[Finding] = []
     for callable_info in callables:
         node = callable_info.node
@@ -4660,8 +4637,8 @@ def _excessive_class_length_findings(
     rule = _rule(rules, EXCESSIVE_CLASS_LENGTH_RULE_NAME)
     if rule is None:
         return []
-    threshold = _integer_property(rule, "minimum")
-    ignore_whitespace = _boolean_property(rule, "ignore-whitespace")
+    threshold = rule.integer("minimum")
+    ignore_whitespace = rule.boolean("ignore-whitespace")
     start = class_info.node.lineno
     end = class_info.node.end_lineno or start
     lines = source_lines[start - 1 : end]
@@ -4685,7 +4662,7 @@ def _excessive_public_count_findings(
     rule = _rule(rules, EXCESSIVE_PUBLIC_COUNT_RULE_NAME)
     if rule is None:
         return []
-    threshold = _integer_property(rule, "minimum")
+    threshold = rule.integer("minimum")
     count = sum(_is_public(name) for name in class_info.fields) + sum(
         _is_public(method.name)
         for method in class_info.methods
@@ -4710,7 +4687,7 @@ def _too_many_fields_findings(
     rule = _rule(rules, TOO_MANY_FIELDS_RULE_NAME)
     if rule is None:
         return []
-    threshold = _integer_property(rule, "maxfields")
+    threshold = rule.integer("maxfields")
     count = len(class_info.fields)
     if count <= threshold:
         return []
@@ -4732,8 +4709,8 @@ def _too_many_methods_findings(
     rule = _rule(rules, name)
     if rule is None:
         return []
-    threshold = _integer_property(rule, "maxmethods")
-    ignore = _ignore_pattern(rule)
+    threshold = rule.integer("maxmethods")
+    ignore = rule.pattern("ignorepattern")
     methods = [
         method
         for method in class_info.methods
@@ -4767,7 +4744,7 @@ def _excessive_class_complexity_findings(
     rule = _rule(rules, EXCESSIVE_CLASS_COMPLEXITY_RULE_NAME)
     if rule is None:
         return []
-    threshold = _integer_property(rule, "maximum")
+    threshold = rule.integer("maximum")
     complexity = sum(
         _cyclomatic_complexity(method)
         for method in class_info.methods
@@ -5254,36 +5231,6 @@ def _rule(rules: Sequence[LoadedRule], name: str) -> LoadedRule | None:
 
 def _has_any_rule(rule_names: AbstractSet[str], names: AbstractSet[str]) -> bool:
     return bool(rule_names & names)
-
-
-def _integer_property(rule: LoadedRule, property_name: str) -> int:
-    try:
-        return int(rule.properties[property_name])
-    except (KeyError, ValueError) as error:
-        raise RulesetError(f"{rule.name} property '{property_name}' must be an integer.") from error
-
-
-def _boolean_property(rule: LoadedRule, property_name: str) -> bool:
-    value = rule.properties.get(property_name, "false").casefold()
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise RulesetError(f"{rule.name} property '{property_name}' must be true or false.")
-
-
-def _ignore_pattern(rule: LoadedRule) -> re.Pattern[str]:
-    value = rule.properties.get("ignorepattern", "").strip()
-    ignore_case = value.endswith(")i")
-    pattern = value[:-1].strip() if ignore_case else value
-    if not pattern:
-        # An empty (or whitespace-only) pattern would match every name, so it
-        # excludes nothing: fall back to a pattern that never matches.
-        return re.compile(r"(?!)")
-    try:
-        return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
-    except re.error as error:
-        raise RulesetError(f"{rule.name} property 'ignorepattern' must be a valid regular expression.") from error
 
 
 def _class_finding(path: Path, class_info: ClassInfo, rule: LoadedRule, message: str) -> Finding:
