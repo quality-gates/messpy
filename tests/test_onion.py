@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import ast
 from contextlib import contextmanager
+from functools import partial
 from io import StringIO
 from pathlib import Path
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).parent.parent
 import sys
 
 sys.path.insert(0, str(ROOT / "src"))
 
+from messpy.analyzer import SourceFile
+from messpy.callgraph import build_call_graph
 from messpy.cli import run
+from messpy.onion import onion_findings
+from messpy.rulesets import LoadedRule
 
 
 DOMAIN_PATTERN = " */myapp/domain/* "
@@ -891,6 +898,10 @@ class OnionAcceptanceTests(unittest.TestCase):
                 project / "src/myapp/domain/beyond.py",
                 "from ...infra import db\n",
             )
+            dotted = _write(
+                project / "src/myapp/domain/orders.v2.py",
+                "from ..infra import db\n",
+            )
             ruleset = _write_ruleset(project)
             status, stdout, errors = _run([str(project), "text", str(ruleset)])
 
@@ -906,6 +917,7 @@ class OnionAcceptanceTests(unittest.TestCase):
             ],
             _finding_lines(stdout, packaged),
         )
+        self.assertEqual(1, len(_finding_lines(stdout, dotted)))
         self.assertNotIn(loose.resolve().as_posix(), stdout)
         self.assertNotIn(unpackaged.resolve().as_posix(), stdout)
         self.assertNotIn(beyond.resolve().as_posix(), stdout)
@@ -1032,6 +1044,74 @@ class OnionAcceptanceTests(unittest.TestCase):
                 self.assertIn("DomainAction", stdout)
 
 
+class SourceFileIdentityTests(unittest.TestCase):
+
+    def test_a_module_name_resolves_relative_imports_without_a_package_tree(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+
+        messages = _onion_messages(source, "from ..infra import db\nfrom . import rules\n", domain="*/app/domain/*")
+
+        self.assertEqual([(1, "The module imports app.infra, which belongs to the outer layer app.infra. "
+                              "The domain layer must not know about the interaction layer.")], messages)
+
+    def test_a_package_module_resolves_relative_imports_from_itself(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/__init__.py"), "app.domain")
+
+        messages = _onion_messages(source, "from ..infra import db\n", domain="*/app/domain/*")
+
+        self.assertEqual([1], [line for line, _message in messages])
+        self.assertIn("imports app.infra,", messages[0][1])
+
+    def test_an_unknown_module_matches_relative_imports_as_written(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), None)
+
+        messages = _onion_messages(source, "from ..infra import db\n", domain="*/app/domain/*")
+
+        self.assertEqual([1], [line for line, _message in messages])
+        self.assertIn("imports db, which belongs to the outer layer db.", messages[0][1])
+
+    def test_a_relative_import_beyond_the_top_level_package_matches_as_written(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+
+        messages = _onion_messages(source, "from ...infra import db\n", domain="*/app/domain/*")
+
+        self.assertEqual([1], [line for line, _message in messages])
+        self.assertIn("imports db, which belongs to the outer layer db.", messages[0][1])
+
+    def test_a_dotted_file_name_keeps_its_package(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/orders.v2.py"), "app.domain.orders.v2")
+
+        messages = _onion_messages(source, "from ..infra import db\n", domain="*/app/domain/*")
+
+        self.assertEqual([1], [line for line, _message in messages])
+        self.assertIn("imports app.infra,", messages[0][1])
+
+    def test_domain_patterns_match_the_identity_path_as_given(self) -> None:
+        source = SourceFile(Path("app/domain/core.py"), "app.domain.core")
+
+        messages = _onion_messages(source, "import app.infra\n", domain="app/domain/*")
+
+        self.assertEqual([1], [line for line, _message in messages])
+
+    def test_onion_evaluation_does_not_touch_the_filesystem(self) -> None:
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+        forbidden = AssertionError("onion evaluation touched the filesystem")
+
+        with (
+            mock.patch.object(Path, "resolve", side_effect=forbidden),
+            mock.patch.object(Path, "is_file", side_effect=forbidden),
+            mock.patch.object(Path, "exists", side_effect=forbidden),
+            mock.patch.object(Path, "stat", side_effect=forbidden),
+        ):
+            messages = _onion_messages(
+                source,
+                "from ..infra import db\n\ndef checkout():\n    print('saved')\n",
+                domain="*/app/domain/*",
+            )
+
+        self.assertEqual([1, 4], sorted(line for line, _message in messages))
+
+
 def _analyze_source(source: str, ruleset_text: str) -> tuple[int, list[str], str]:
     with tempfile.TemporaryDirectory() as temporary_directory:
         project = Path(temporary_directory)
@@ -1039,6 +1119,16 @@ def _analyze_source(source: str, ruleset_text: str) -> tuple[int, list[str], str
         ruleset = _write(project / "team.xml", ruleset_text)
         status, stdout, errors = _run([str(path), "text", str(ruleset)])
     return status, _finding_lines(stdout, path), errors
+
+
+def _onion_messages(source: SourceFile, text: str, *, domain: str) -> list[tuple[int, str]]:
+    properties = {"domain": domain, "outer-layers": "app.infra,db"}
+    rules = [LoadedRule("DomainAction", 1, {"domain": domain}), LoadedRule("DomainOuterImport", 2, properties)]
+    tree = ast.parse(text)
+    findings = onion_findings(source, tree, rules, partial(build_call_graph, tree))
+    for finding in findings:
+        assert finding.path == source.path
+    return [(finding.line, finding.message) for finding in findings]
 
 
 def _write(path: Path, source: str) -> Path:

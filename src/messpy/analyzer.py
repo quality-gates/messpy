@@ -32,9 +32,18 @@ from .callgraph import (
 )
 from .rulesets import LoadedRule
 
-__all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "analyze"]
+__all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "SourceFile", "analyze"]
 
 DEFAULT_SUFFIXES = frozenset({".py", ".pyi"})
+
+
+@dataclass(frozen=True)
+class SourceFile:
+    """A discovered file's identity: its resolved path, and its dotted module
+    name, or None when the enclosing package cannot be determined."""
+
+    path: Path
+    module: str | None
 
 
 @dataclass(frozen=True)
@@ -470,6 +479,7 @@ def _analyze(
     processing_errors: list[ProcessingError] = []
     for source_file in source_files:
         try:
+            identity = SourceFile(source_file, _module_name(source_file))
             with tokenize.open(source_file) as source_handle:
                 source = source_handle.read()
             tree = ast.parse(source, filename=str(source_file))
@@ -483,7 +493,7 @@ def _analyze(
             processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
             continue
         try:
-            findings.extend(_apply_suppressions(source, tree, _findings(source_file, source, tree, rules)))
+            findings.extend(_apply_suppressions(source, tree, _findings(identity, source, tree, rules)))
         except SyntaxError as error:
             # ast.parse() above accepts some sources (e.g. duplicate parameter
             # names) that symtable.symtable() rejects; rules that build symbol
@@ -499,9 +509,10 @@ def _analyze(
     return findings, processing_errors
 
 
-def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     from .onion import onion_findings
 
+    path = identity.path
     rule_names = frozenset(rule.name for rule in rules)
     classes = _selected_classes(tree, rule_names)
     callables = _selected_callables(tree, rule_names)
@@ -525,7 +536,7 @@ def _findings(path: Path, source: str, tree: ast.Module, rules: Sequence[LoadedR
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables, call_graph),
         *_selected_explicitness_findings(path, tree, rules, rule_names),
-        *onion_findings(path, tree, rules, call_graph),
+        *onion_findings(identity, tree, rules, call_graph),
     ]
 
 
@@ -5373,6 +5384,23 @@ def _suppression_directive(comment: str, line: int) -> tuple[int, str, set[str]]
 
 def _rule_identity(name: str) -> str:
     return name.casefold()
+
+
+def _module_name(path: Path) -> str | None:
+    package: list[str] = []
+    directory = path.parent
+    while (directory / "__init__.py").is_file():
+        package.append(directory.name)
+        parent = directory.parent
+        if parent == directory:
+            break
+        directory = parent
+    if not package or any("." in part for part in package):
+        return None
+    package.reverse()
+    if path.stem != "__init__":
+        package.append(path.stem)
+    return ".".join(package)
 
 
 def _source_files(
