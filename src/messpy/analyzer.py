@@ -39,11 +39,12 @@ DEFAULT_SUFFIXES = frozenset({".py", ".pyi"})
 
 @dataclass(frozen=True)
 class SourceFile:
-    """A discovered file's identity: its resolved path, and its dotted module
-    name, or None when the enclosing package cannot be determined."""
+    """A discovered file's identity: its resolved path, and its module name as
+    parts, such as ("myapp", "domain", "orders"), or None when the enclosing
+    package cannot be determined."""
 
     path: Path
-    module: str | None
+    module: tuple[str, ...] | None
 
 
 @dataclass(frozen=True)
@@ -5386,7 +5387,7 @@ def _rule_identity(name: str) -> str:
     return name.casefold()
 
 
-def _module_name(path: Path) -> str | None:
+def _module_name(path: Path) -> tuple[str, ...] | None:
     package: list[str] = []
     directory = path.parent
     while (directory / "__init__.py").is_file():
@@ -5395,12 +5396,12 @@ def _module_name(path: Path) -> str | None:
         if parent == directory:
             break
         directory = parent
-    if not package or any("." in part for part in package):
+    if not package:
         return None
     package.reverse()
     if path.stem != "__init__":
         package.append(path.stem)
-    return ".".join(package)
+    return tuple(package)
 
 
 def _source_files(

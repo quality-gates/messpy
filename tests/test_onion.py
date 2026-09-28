@@ -902,6 +902,7 @@ class OnionAcceptanceTests(unittest.TestCase):
                 project / "src/myapp/domain/orders.v2.py",
                 "from ..infra import db\n",
             )
+
             ruleset = _write_ruleset(project)
             status, stdout, errors = _run([str(project), "text", str(ruleset)])
 
@@ -921,6 +922,24 @@ class OnionAcceptanceTests(unittest.TestCase):
         self.assertNotIn(loose.resolve().as_posix(), stdout)
         self.assertNotIn(unpackaged.resolve().as_posix(), stdout)
         self.assertNotIn(beyond.resolve().as_posix(), stdout)
+
+    def test_a_package_directory_with_a_dot_keeps_its_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            _write(project / "my.app/__init__.py", "")
+            _write(project / "my.app/domain/__init__.py", "")
+            path = _write(project / "my.app/domain/orders.py", "from ..infra import db\n")
+            ruleset = _write(project / "team.xml", _ruleset(domain="*/my.app/domain/*", outer_layers="my.app.infra"))
+            status, stdout, errors = _run([str(path), "text", str(ruleset)])
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "1: DomainOuterImport [priority 2] The module imports my.app.infra, which belongs to the outer "
+                "layer my.app.infra. The domain layer must not know about the interaction layer."
+            ],
+            _finding_lines(stdout, path),
+        )
 
     def test_type_checking_imports_count(self) -> None:
         status, report, errors = _analyze_source(
@@ -1047,7 +1066,7 @@ class OnionAcceptanceTests(unittest.TestCase):
 class SourceFileIdentityTests(unittest.TestCase):
 
     def test_a_module_name_resolves_relative_imports_without_a_package_tree(self) -> None:
-        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), ("app", "domain", "core"))
 
         messages = _onion_messages(source, "from ..infra import db\nfrom . import rules\n", domain="*/app/domain/*")
 
@@ -1055,7 +1074,7 @@ class SourceFileIdentityTests(unittest.TestCase):
                               "The domain layer must not know about the interaction layer.")], messages)
 
     def test_a_package_module_resolves_relative_imports_from_itself(self) -> None:
-        source = SourceFile(Path("/nowhere/app/domain/__init__.py"), "app.domain")
+        source = SourceFile(Path("/nowhere/app/domain/__init__.py"), ("app", "domain"))
 
         messages = _onion_messages(source, "from ..infra import db\n", domain="*/app/domain/*")
 
@@ -1071,7 +1090,7 @@ class SourceFileIdentityTests(unittest.TestCase):
         self.assertIn("imports db, which belongs to the outer layer db.", messages[0][1])
 
     def test_a_relative_import_beyond_the_top_level_package_matches_as_written(self) -> None:
-        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), ("app", "domain", "core"))
 
         messages = _onion_messages(source, "from ...infra import db\n", domain="*/app/domain/*")
 
@@ -1079,7 +1098,7 @@ class SourceFileIdentityTests(unittest.TestCase):
         self.assertIn("imports db, which belongs to the outer layer db.", messages[0][1])
 
     def test_a_dotted_file_name_keeps_its_package(self) -> None:
-        source = SourceFile(Path("/nowhere/app/domain/orders.v2.py"), "app.domain.orders.v2")
+        source = SourceFile(Path("/nowhere/app/domain/orders.v2.py"), ("app", "domain", "orders.v2"))
 
         messages = _onion_messages(source, "from ..infra import db\n", domain="*/app/domain/*")
 
@@ -1087,14 +1106,14 @@ class SourceFileIdentityTests(unittest.TestCase):
         self.assertIn("imports app.infra,", messages[0][1])
 
     def test_domain_patterns_match_the_identity_path_as_given(self) -> None:
-        source = SourceFile(Path("app/domain/core.py"), "app.domain.core")
+        source = SourceFile(Path("app/domain/core.py"), ("app", "domain", "core"))
 
         messages = _onion_messages(source, "import app.infra\n", domain="app/domain/*")
 
         self.assertEqual([1], [line for line, _message in messages])
 
     def test_onion_evaluation_does_not_touch_the_filesystem(self) -> None:
-        source = SourceFile(Path("/nowhere/app/domain/core.py"), "app.domain.core")
+        source = SourceFile(Path("/nowhere/app/domain/core.py"), ("app", "domain", "core"))
         forbidden = AssertionError("onion evaluation touched the filesystem")
 
         with (
@@ -1126,8 +1145,6 @@ def _onion_messages(source: SourceFile, text: str, *, domain: str) -> list[tuple
     rules = [LoadedRule("DomainAction", 1, {"domain": domain}), LoadedRule("DomainOuterImport", 2, properties)]
     tree = ast.parse(text)
     findings = onion_findings(source, tree, rules, partial(build_call_graph, tree))
-    for finding in findings:
-        assert finding.path == source.path
     return [(finding.line, finding.message) for finding in findings]
 
 

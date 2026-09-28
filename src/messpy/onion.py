@@ -18,15 +18,15 @@ DOMAIN_OUTER_IMPORT_RULE_NAME = "DomainOuterImport"
 
 
 def onion_findings(
-    source: SourceFile, tree: ast.Module, rules: Sequence[LoadedRule], call_graph: Callable[[], CallGraph]
+    identity: SourceFile, tree: ast.Module, rules: Sequence[LoadedRule], call_graph: Callable[[], CallGraph]
 ) -> list[Finding]:
     action_rule = _named_rule(rules, DOMAIN_ACTION_RULE_NAME)
     import_rule = _named_rule(rules, DOMAIN_OUTER_IMPORT_RULE_NAME)
     findings = []
-    if action_rule is not None and _in_domain(source.path, action_rule):
-        findings.extend(_domain_action_findings(source.path, tree, action_rule, call_graph()))
-    if import_rule is not None and _in_domain(source.path, import_rule):
-        findings.extend(_outer_import_findings(source, tree, import_rule))
+    if action_rule is not None and _in_domain(identity.path, action_rule):
+        findings.extend(_domain_action_findings(identity.path, tree, action_rule, call_graph()))
+    if import_rule is not None and _in_domain(identity.path, import_rule):
+        findings.extend(_outer_import_findings(identity, tree, import_rule))
     return findings
 
 
@@ -276,23 +276,22 @@ def _caller_context(graph: CallGraph, caller: ast.AST) -> tuple[str, str]:
     return "function", label
 
 
-def _outer_import_findings(source: SourceFile, tree: ast.Module, rule: LoadedRule) -> list:
+def _outer_import_findings(identity: SourceFile, tree: ast.Module, rule: LoadedRule) -> list:
     layers = rule.items("outer-layers")
-    package = _package(source)
+    package = _package(identity)
     findings = []
     for node in ast.walk(tree):
         for module, layer in _matched_imports(package, node, layers):
-            findings.append(_import_finding(source.path, node, rule, module, layer))
+            findings.append(_import_finding(identity.path, node, rule, module, layer))
     return findings
 
 
-def _package(source: SourceFile) -> tuple[str, ...] | None:
-    if source.module is None:
+def _package(identity: SourceFile) -> tuple[str, ...] | None:
+    if identity.module is None:
         return None
-    parts = tuple(source.module.split("."))
-    if source.path.stem == "__init__":
-        return parts
-    return parts[: len(parts) - len(source.path.stem.split("."))]
+    if identity.path.stem == "__init__":
+        return identity.module
+    return identity.module[:-1]
 
 
 def _matched_imports(
