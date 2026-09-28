@@ -11,22 +11,22 @@ from .callgraph import CallGraph, CallSite, _parent_map
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
-    from .analyzer import Finding
+    from .analyzer import Finding, SourceFile
 
 DOMAIN_ACTION_RULE_NAME = "DomainAction"
 DOMAIN_OUTER_IMPORT_RULE_NAME = "DomainOuterImport"
 
 
 def onion_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule], call_graph: Callable[[], CallGraph]
+    identity: SourceFile, tree: ast.Module, rules: Sequence[LoadedRule], call_graph: Callable[[], CallGraph]
 ) -> list[Finding]:
     action_rule = _named_rule(rules, DOMAIN_ACTION_RULE_NAME)
     import_rule = _named_rule(rules, DOMAIN_OUTER_IMPORT_RULE_NAME)
     findings = []
-    if action_rule is not None and _in_domain(path, action_rule):
-        findings.extend(_domain_action_findings(path, tree, action_rule, call_graph()))
-    if import_rule is not None and _in_domain(path, import_rule):
-        findings.extend(_outer_import_findings(path, tree, import_rule))
+    if action_rule is not None and _in_domain(identity.path, action_rule):
+        findings.extend(_domain_action_findings(identity.path, tree, action_rule, call_graph()))
+    if import_rule is not None and _in_domain(identity.path, import_rule):
+        findings.extend(_outer_import_findings(identity, tree, import_rule))
     return findings
 
 
@@ -35,7 +35,7 @@ def _named_rule(rules: Sequence[LoadedRule], name: str) -> LoadedRule | None:
 
 
 def _in_domain(path: Path, rule: LoadedRule) -> bool:
-    posix = path.resolve().as_posix()
+    posix = path.as_posix()
     for pattern in rule.items("domain"):
         if fnmatch.fnmatchcase(posix, pattern):
             return True
@@ -276,26 +276,40 @@ def _caller_context(graph: CallGraph, caller: ast.AST) -> tuple[str, str]:
     return "function", label
 
 
-def _outer_import_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> list:
+def _outer_import_findings(identity: SourceFile, tree: ast.Module, rule: LoadedRule) -> list:
     layers = rule.items("outer-layers")
+    package = _package(identity)
     findings = []
     for node in ast.walk(tree):
-        for module, layer in _matched_imports(path, node, layers):
-            findings.append(_import_finding(path, node, rule, module, layer))
+        for module, layer in _matched_imports(package, node, layers):
+            findings.append(_import_finding(identity.path, node, rule, module, layer))
     return findings
 
 
-def _matched_imports(path: Path, node: ast.AST, layers: Sequence[str]) -> list[tuple[str, str]]:
+def _package(identity: SourceFile) -> tuple[str, ...] | None:
+    if identity.module is None:
+        return None
+    if identity.path.stem == "__init__":
+        return identity.module
+    return identity.module[:-1]
+
+
+def _matched_imports(
+    package: tuple[str, ...] | None, node: ast.AST, layers: Sequence[str]
+) -> list[tuple[str, str]]:
     if not isinstance(node, (ast.Import, ast.ImportFrom)):
         return []
-    if isinstance(node, ast.ImportFrom):
-        base = _absolute_module(path, node)
+    if isinstance(node, ast.Import):
+        names = [alias.name for alias in node.names]
+    else:
+        base = _absolute_module(package, node)
         layer = _matching_layer(base, layers)
         if layer:
             return [(base, layer)]
+        names = _imported_module_names(base, node)
     matches: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for module in _imported_module_names(path, node):
+    for module in names:
         layer = _matching_layer(module, layers)
         if not layer or module in seen:
             continue
@@ -304,10 +318,7 @@ def _matched_imports(path: Path, node: ast.AST, layers: Sequence[str]) -> list[t
     return matches
 
 
-def _imported_module_names(path: Path, node: ast.Import | ast.ImportFrom) -> list[str]:
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = _absolute_module(path, node)
+def _imported_module_names(base: str, node: ast.ImportFrom) -> list[str]:
     names = [base] if base else []
     names.extend(
         f"{base}.{alias.name}" if base else alias.name
@@ -317,11 +328,10 @@ def _imported_module_names(path: Path, node: ast.Import | ast.ImportFrom) -> lis
     return names
 
 
-def _absolute_module(path: Path, node: ast.ImportFrom) -> str:
+def _absolute_module(package: tuple[str, ...] | None, node: ast.ImportFrom) -> str:
     if node.level == 0:
         return node.module or ""
-    package = _package_parts(path)
-    if package is None:
+    if not package:
         return ""
     climb = node.level - 1
     if climb >= len(package):
@@ -330,21 +340,6 @@ def _absolute_module(path: Path, node: ast.ImportFrom) -> str:
     if node.module:
         return ".".join((*kept, node.module))
     return ".".join(kept)
-
-
-def _package_parts(path: Path) -> tuple[str, ...] | None:
-    parts: list[str] = []
-    directory = path.parent
-    while (directory / "__init__.py").is_file():
-        parts.append(directory.name)
-        parent = directory.parent
-        if parent == directory:
-            break
-        directory = parent
-    if not parts:
-        return None
-    parts.reverse()
-    return tuple(parts)
 
 
 def _matching_layer(module: str, layers: Sequence[str]) -> str:
