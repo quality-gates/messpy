@@ -3908,19 +3908,24 @@ def _is_boolean_annotation(node: ast.expr | None) -> bool:
     )
 
 
-def _all_paths_return_boolean(statements: Sequence[ast.stmt]) -> bool:
-    if not statements:
-        return False
-    statement, *remaining = statements
+def _all_paths_return_boolean(statements: Sequence[ast.stmt], fallthrough: bool = False) -> bool:
+    # Examine the statements in reverse order. Each if statement then uses one result for the statements after it.
+    result = fallthrough
+    for statement in reversed(statements):
+        result = _statement_returns_boolean(statement, result)
+    return result
+
+
+def _statement_returns_boolean(statement: ast.stmt, fallthrough: bool) -> bool:
     if isinstance(statement, ast.Return):
         return statement.value is not None and _is_boolean_expression(statement.value)
     if isinstance(statement, ast.If):
-        return _all_paths_return_boolean([*statement.body, *remaining]) and _all_paths_return_boolean(
-            [*statement.orelse, *remaining]
+        return _all_paths_return_boolean(statement.body, fallthrough) and _all_paths_return_boolean(
+            statement.orelse, fallthrough
         )
     if _contains_return(statement):
         return False
-    return _all_paths_return_boolean(remaining)
+    return fallthrough
 
 
 def _contains_return(node: ast.AST) -> bool:
