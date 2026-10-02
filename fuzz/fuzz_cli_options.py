@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from io import StringIO
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
-    import messpy.rulesets as rulesets
-
-NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+    from scan_profile import FORMATS, RULESETS, run_command
 
 
 def fuzz_cli_options(data: bytes) -> None:
@@ -27,9 +23,9 @@ def fuzz_cli_options(data: bytes) -> None:
             if choice == 0:
                 args.append(str(source_file))
             elif choice == 1:
-                args.append(fdp.PickValueInList(["text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif", "invalid_fmt"]))
+                args.append(fdp.PickValueInList([*FORMATS, "invalid_fmt"]))
             elif choice == 2:
-                args.append(fdp.PickValueInList(["codesize", "naming", "unusedcode", "cleancode", "design", "controversial", "opinionated", "python", "bogus"]))
+                args.append(fdp.PickValueInList([*RULESETS, "bogus"]))
             elif choice == 3:
                 opt = fdp.PickValueInList([
                     "--strict", "--verbose", "--ignore-tests", "--ignore-errors-on-exit", "--ignore-violations-on-exit",
@@ -45,14 +41,7 @@ def fuzz_cli_options(data: bytes) -> None:
             else:
                 args.append(fdp.ConsumeUnicode(25))
 
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run(args, stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} for CLI args: {args}")
-        except (cli.CliError, rulesets.RulesetError):
-            pass
+        run_command(args)
 
 
 def main() -> None:

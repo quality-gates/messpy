@@ -1,42 +1,13 @@
 from __future__ import annotations
 
-from io import StringIO
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
     import messpy.rulesets as rulesets
-
-RULESETS = [
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
-    "codesize,naming",
-    "unusedcode,cleancode,design",
-    "python,codesize",
-]
-
-FORMATS = [
-    "text",
-    "xml",
-    "json",
-    "html",
-    "ansi",
-    "github",
-    "gitlab",
-    "checkstyle",
-    "sarif",
-]
-
-NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+    from scan_profile import FORMATS, RULESETS, run_command, run_scan
 
 
 def fuzz_public_api(data: bytes) -> None:
@@ -66,16 +37,7 @@ def fuzz_public_api(data: bytes) -> None:
         if fdp.ConsumeBool():
             flags.append("--ignore-violations-on-exit")
 
-        source_bytes = fdp.ConsumeBytes(sys.maxsize)
-
-        with TemporaryDirectory() as temporary_directory:
-            source_file = Path(temporary_directory) / "source.py"
-            source_file.write_bytes(source_bytes)
-            stdout = StringIO()
-            stderr = StringIO()
-            status = cli.run([str(source_file), report_format, ruleset, *flags], stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} for ruleset {ruleset}, format {report_format}")
+        run_scan(fdp.ConsumeBytes(sys.maxsize), ruleset, report_format, flags)
 
     elif mode == 1:
         # Fuzz XML ruleset loading
@@ -103,14 +65,7 @@ def fuzz_public_api(data: bytes) -> None:
         args = []
         for _ in range(arg_count):
             args.append(fdp.ConsumeUnicode(30))
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run(args, stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} for args {args}")
-        except (cli.CliError, rulesets.RulesetError):
-            pass
+        run_command(args)
 
     elif mode == 3:
         # Fuzz multi-file analysis & directory recursion
@@ -123,11 +78,7 @@ def fuzz_public_api(data: bytes) -> None:
                 sub_file = temp_path / f"file_{i}.py"
                 sub_bytes = fdp.ConsumeBytes(fdp.ConsumeIntInRange(0, 200))
                 sub_file.write_bytes(sub_bytes)
-            stdout = StringIO()
-            stderr = StringIO()
-            status = cli.run([str(temp_path), report_format, ruleset], stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} on multi-file directory")
+            run_command([str(temp_path), report_format, ruleset])
 
 
 def main() -> None:

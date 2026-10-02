@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from io import StringIO
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
     import messpy.rulesets as rulesets
-
-NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+    from scan_profile import run_scan
 
 
 def fuzz_xml_rulesets(data: bytes) -> None:
@@ -48,16 +45,7 @@ def fuzz_xml_rulesets(data: bytes) -> None:
             pass
 
         # Test cli.run with this ruleset XML file on a simple source file
-        source_file = dir_path / "sample.py"
-        source_file.write_text("x = 1\n", encoding="utf-8")
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run([str(source_file), "text", xml_files[0]], stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} for XML ruleset run")
-        except (cli.CliError, rulesets.RulesetError):
-            pass
+        run_scan(b"x = 1\n", xml_files[0])
 
 
 def main() -> None:

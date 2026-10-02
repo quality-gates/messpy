@@ -1,39 +1,10 @@
 from __future__ import annotations
 
-from io import StringIO
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
-
-RULESETS = [
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
-    "codesize,naming,unusedcode,cleancode,design,controversial,opinionated",
-]
-
-FORMATS = [
-    "text",
-    "xml",
-    "json",
-    "html",
-    "ansi",
-    "github",
-    "gitlab",
-    "checkstyle",
-    "sarif",
-]
-
-NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+    from scan_profile import FORMATS, RULESETS, run_scan
 
 
 def fuzz_source_analysis(data: bytes) -> None:
@@ -60,24 +31,7 @@ def fuzz_source_analysis(data: bytes) -> None:
     if fdp.ConsumeBool():
         flags.append("--ignore-violations-on-exit")
 
-    source_bytes = fdp.ConsumeBytes(sys.maxsize)
-
-    with TemporaryDirectory() as temporary_directory:
-        source_file = Path(temporary_directory) / "source.py"
-        source_file.write_bytes(source_bytes)
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run([str(source_file), report_format, ruleset, *flags], stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(
-                    f"Unexpected MessPy exit status: {status}\n"
-                    f"Format: {report_format}, Ruleset: {ruleset}, Flags: {flags}\n"
-                    f"Stderr: {stderr.getvalue()}"
-                )
-        except Exception as error:
-            # Any uncaught exception escaping cli.run is a bug!
-            raise
+    run_scan(fdp.ConsumeBytes(sys.maxsize), ruleset, report_format, flags)
 
 
 def main() -> None:

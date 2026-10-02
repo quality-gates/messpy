@@ -1,6 +1,15 @@
 # Fuzzing source analysis
 
-messpy’s analyzer is a parser-facing surface: random and hostile bytes should not crash it. The fuzz target writes generated input to one temporary `source.py`, then runs the real command path with `text` format and the `codesize` ruleset. Clean runs, ordinary findings, and processing errors are all normal outcomes. Only an unexpected exception is a fuzz failure.
+messpy’s analyzer is a parser-facing surface: random and hostile bytes should not crash it. The fuzz target writes generated input to one temporary `source.py`, then runs the real command path with `text` format once for each ruleset in the shared scan profile. Clean runs, ordinary findings, and processing errors are all normal outcomes. Only an unexpected exception or exit status is a fuzz failure.
+
+## The scan profile
+
+`fuzz/scan_profile.py` is the one place the harnesses and the replay command get their scan settings:
+
+- `RULESETS` holds every built-in ruleset from `messpy.rulesets.built_in_ruleset_names()`, plus one combined entry that loads them all together. A new built-in ruleset joins fuzzing automatically.
+- `onion` cannot load bare, because it needs a `domain`. The profile scans it through `fuzz/onion_scan_ruleset.xml`, which puts every scanned file in the domain.
+- `FORMATS` comes from `messpy.cli.REPORT_FORMATS`.
+- `run_scan()` and `run_command()` run the command and reject any exit status other than 0, 1 or 2.
 
 A findings-level target, `fuzz/fuzz_findings.py`, drives the same input through `messpy.analyzer.analyze()` with no render step and asserts the `Analysis` invariants (finding and error shapes) directly.
 
@@ -49,4 +58,4 @@ Replay every stored regression:
 uv run --python 3.11 python fuzz/replay_source_file.py fuzz/regressions/source-analysis
 ```
 
-The replay command reads each stored input directly. It does not read an Atheris corpus or any local fuzz campaign state.
+The replay command scans each stored input under every profile ruleset, so a regression found under `unusedcode` or `onion` is replayed there. It reads each stored input directly. It does not read an Atheris corpus or any local fuzz campaign state.

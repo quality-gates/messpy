@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-from io import StringIO
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
     import messpy.rulesets as rulesets
+    from messpy.rulesets import built_in_ruleset_names
 
 TAGS = ["ruleset", "rule", "exclude", "priority", "properties", "property", "description", "custom", "bogus"]
 ATTRS = ["name", "ref", "value", "minimum", "maximum", "maxmethods", "maxfields", "reportlevel", "ignorepattern", "markers", "unwanted-functions"]
@@ -53,14 +52,7 @@ RULES = [
     "CamelCasePropertyName",
     "CamelCaseParameterName",
     "CamelCaseVariableName",
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
+    *built_in_ruleset_names(),
 ]
 
 

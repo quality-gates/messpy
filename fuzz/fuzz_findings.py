@@ -8,18 +8,7 @@ import atheris
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
     from messpy.analyzer import Analysis, analyze
     from messpy.rulesets import filter_rules, load_rulesets
-
-RULESETS = [
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
-    "codesize,naming,unusedcode,cleancode,design,controversial,opinionated",
-]
+    from scan_profile import RULESETS
 
 
 def fuzz_findings(data: bytes) -> None:
