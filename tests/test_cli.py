@@ -8,6 +8,7 @@ from pathlib import Path
 import stat
 import sys
 import tempfile
+import time
 import unittest
 import xml.etree.ElementTree as ElementTree
 
@@ -2646,6 +2647,45 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("ShortMethodName [priority 3] Avoid using short method names like i().", report)
         self.assertNotIn("ShortMethodName [priority 3] Avoid using short method names like p().", report)
         self.assertNotIn("BooleanGetMethodName", report)
+
+    def test_boolean_get_method_name_proves_long_sequential_if_chains_in_linear_time(self) -> None:
+        guards = "".join(f"        if c{index}:\n            pass\n" for index in range(40))
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "sequential_guards.py"
+            source.write_text(
+                "class HealthCheck:\n"
+                "    def get_status(self):\n"
+                f"{guards}"
+                "        return True\n"
+                "\n"
+                "    def get_value(self):\n"
+                f"{guards}"
+                "        if late:\n"
+                "            return 1\n"
+                "        return False\n"
+                "\n"
+                "    def get_branches(self):\n"
+                f"{guards}"
+                "        if late:\n"
+                "            return True\n"
+                "        else:\n"
+                "            return not late\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            started = time.perf_counter()
+            status = run([str(source), "text", "naming", "--only", "BooleanGetMethodName"], stdout, stderr)
+            elapsed = time.perf_counter() - started
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertIn("get_status() should not use the get prefix", report)
+        self.assertIn("get_branches() should not use the get prefix", report)
+        self.assertNotIn("get_value()", report)
+        self.assertLess(elapsed, 1.0)
 
     def test_naming_rules_honor_configured_lengths_at_the_cli_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
