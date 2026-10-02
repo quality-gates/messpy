@@ -761,7 +761,7 @@ def _rebound_names(node: ast.AST) -> set[str]:
     found = _pattern_binding_names(node)
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
         found.add(node.id)
-    for child in ast.iter_child_nodes(node):
+    for child in _scope_binding_children(node):
         found.update(_rebound_names(child))
     return found
 
@@ -819,9 +819,17 @@ def _scope_binding_names(node: ast.AST) -> set[str]:
     found = _recorded_binding_names(node)
     if isinstance(node, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return found
-    for child in ast.iter_child_nodes(node):
+    for child in _scope_binding_children(node):
         found.update(_scope_binding_names(child))
     return found
+
+
+def _scope_binding_children(node: ast.AST) -> list[ast.AST]:
+    # A comprehension target binds only inside the comprehension; a walrus in its
+    # iterables or conditions still binds the enclosing scope.
+    if isinstance(node, ast.comprehension):
+        return [node.iter, *node.ifs]
+    return list(ast.iter_child_nodes(node))
 
 
 def _recorded_binding_names(node: ast.AST) -> set[str]:
