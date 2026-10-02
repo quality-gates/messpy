@@ -4782,6 +4782,89 @@ class CommandAcceptanceTests(unittest.TestCase):
                 self.assertEqual(expected_status, status, name)
                 self.assertEqual("", stderr.getvalue(), name)
 
+    def test_comprehension_targets_do_not_rebind_enclosing_scope(self) -> None:
+        cases = [
+            (
+                "exit_beside_comprehension",
+                "ExitExpression",
+                "import sys\n"
+                "def run():\n"
+                "    sys.exit(1)\n"
+                "    [x for sys in [1, 2]]\n",
+                2,
+            ),
+            (
+                "breakpoint_beside_comprehension",
+                "DevelopmentCodeFragment",
+                "def debug_worker():\n"
+                "    breakpoint()\n"
+                "    [item for breakpoint in [1, 2]]\n",
+                2,
+            ),
+            (
+                "len_beside_comprehension",
+                "CountInLoopExpression",
+                "def check(x, lengths):\n"
+                "    while len(x):\n"
+                "        x.pop()\n"
+                "    [y for len in lengths]\n",
+                2,
+            ),
+            (
+                "len_beside_module_comprehension",
+                "CountInLoopExpression",
+                "[y for len in []]\n"
+                "def check(x):\n"
+                "    while len(x):\n"
+                "        x.pop()\n",
+                2,
+            ),
+            (
+                "len_shadowed_inside_loop_test_comprehension",
+                "CountInLoopExpression",
+                "def check(x, sizers):\n"
+                "    while any(len(x) for len in sizers):\n"
+                "        x.pop()\n",
+                0,
+            ),
+            (
+                "walrus_in_comprehension_rebinds_enclosing",
+                "ExitExpression",
+                "import sys\n"
+                "def run(items):\n"
+                "    sys.exit(1)\n"
+                "    [(sys := item) for item in items]\n",
+                0,
+            ),
+            (
+                "len_rebound_in_function",
+                "CountInLoopExpression",
+                "def check(x, sizer):\n"
+                "    len = sizer\n"
+                "    while len(x):\n"
+                "        x.pop()\n",
+                0,
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            for name, rule_name, source_text, expected_status in cases:
+                source = Path(temporary_directory) / f"{name}.py"
+                source.write_text(source_text, encoding="utf-8")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                status = run(
+                    [str(source), "text", "design", "--only", rule_name],
+                    stdout,
+                    stderr,
+                )
+
+                self.assertEqual(expected_status, status, name)
+                self.assertEqual("", stderr.getvalue(), name)
+                if expected_status == 2:
+                    self.assertIn(rule_name, stdout.getvalue(), name)
+
     def test_exit_expression_follows_function_local_exit_imports(self) -> None:
         cases = [
             (

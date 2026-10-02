@@ -1720,10 +1720,23 @@ def _is_shadowed(
     current = node
     while id(current) in parents:
         current = parents[id(current)]
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            if name in bindings[id(current)]:
-                return True
+        if name in _local_scope_names(current, node, parents, bindings):
+            return True
     return name in bindings[id(tree)]
+
+
+def _local_scope_names(
+    scope: ast.AST,
+    node: ast.AST,
+    parents: dict[int, ast.AST],
+    bindings: dict[int, set[str]],
+) -> set[str]:
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return bindings[id(scope)]
+    if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        if not _is_first_generator_iter(node, scope, parents):
+            return _comprehension_target_names(scope)
+    return set()
 
 
 def _selected_explicitness_findings(
