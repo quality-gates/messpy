@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!--
+Fuzz scans write each input to a temporary source.py, so every scanned path is
+in the domain. The outer layers are modules that fuzzed source commonly imports.
+-->
+<ruleset name="fuzz onion">
+    <rule ref="onion">
+        <properties>
+            <property name="domain" value="*" />
+            <property name="outer-layers" value="os,sys,subprocess,tempfile,messpy.cli" />
+        </properties>
+    </rule>
+</ruleset>

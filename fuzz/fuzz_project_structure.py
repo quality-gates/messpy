@@ -1,39 +1,12 @@
 from __future__ import annotations
 
-from io import StringIO
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
-    import messpy.rulesets as rulesets
-
-RULESETS = [
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
-]
-
-FORMATS = [
-    "text",
-    "xml",
-    "json",
-    "html",
-    "ansi",
-    "github",
-    "gitlab",
-    "checkstyle",
-    "sarif",
-]
-
-NORMAL_EXIT_STATUSES = frozenset({0, 1, 2})
+    from scan_profile import FORMATS, RULESETS, run_command
 
 
 def fuzz_project_structure(data: bytes) -> None:
@@ -95,14 +68,7 @@ def fuzz_project_structure(data: bytes) -> None:
             report_file = project_root / "out_report.txt"
             flags.append(f"--reportfile={report_file}")
 
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run([str(project_root), report_format, ruleset, *flags], stdout, stderr)
-            if status not in NORMAL_EXIT_STATUSES:
-                raise AssertionError(f"Unexpected exit status {status} for project scan")
-        except (cli.CliError, rulesets.RulesetError):
-            pass
+        run_command([str(project_root), report_format, ruleset, *flags])
 
 
 def main() -> None:

@@ -1,39 +1,11 @@
 from __future__ import annotations
 
-import ast
-from io import StringIO
-from pathlib import Path
-import random
 import sys
-from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    import messpy.cli as cli
-    import messpy.rulesets as rulesets
-
-RULESETS = [
-    "codesize",
-    "naming",
-    "unusedcode",
-    "cleancode",
-    "design",
-    "controversial",
-    "opinionated",
-    "python",
-]
-
-FORMATS = [
-    "text",
-    "xml",
-    "json",
-    "html",
-    "ansi",
-    "github",
-    "gitlab",
-    "checkstyle",
-    "sarif",
-]
+    from messpy.rulesets import built_in_ruleset_names
+    from scan_profile import FORMATS, RULESETS, run_scan
 
 NAMES = ["x", "y", "z", "foo", "bar", "baz", "LongClassNameForTesting", "Short", "a", "b", "c", "_private", "__dunder__", "CONST", "get_value", "getValue", "is_valid", "self", "cls", "len", "sys", "os", "exit", "breakpoint", "pdb"]
 TYPES = ["int", "str", "bool", "list[int]", "dict[str, int]", "Optional[bool]", "Union[int, bool]", "Final[int]", "Any"]
@@ -136,7 +108,7 @@ def generate_statement(fdp: atheris.FuzzedDataProvider, indent: int = 0, depth: 
         return [f"{sp}return {generate_expression(fdp)}"]
     elif choice == 9:
         directive = fdp.PickValueInList(["# messpy-disable", "# messpy-disable-next-line", "# messpy-enable", "# TODO", "# FIXME", "# normal comment"])
-        rule = fdp.PickValueInList(RULESETS)
+        rule = fdp.PickValueInList(built_in_ruleset_names())
         return [f"{sp}{directive} {rule}"]
     elif choice == 10:
         lines = [f"{sp}match {generate_expression(fdp)}:"]
@@ -161,17 +133,7 @@ def fuzz_python_grammar(data: bytes) -> None:
 
     code = "\n".join(code_lines) + "\n"
 
-    with TemporaryDirectory() as temporary_directory:
-        source_file = Path(temporary_directory) / "source.py"
-        source_file.write_text(code, encoding="utf-8", errors="replace")
-        stdout = StringIO()
-        stderr = StringIO()
-        try:
-            status = cli.run([str(source_file), report_format, ruleset], stdout, stderr)
-            if status not in {0, 1, 2}:
-                raise AssertionError(f"Unexpected exit status {status} on generated code:\n{code}")
-        except (cli.CliError, rulesets.RulesetError):
-            pass
+    run_scan(code.encode("utf-8", errors="replace"), ruleset, report_format)
 
 
 def main() -> None:

@@ -379,6 +379,10 @@ _BUILT_IN_RULESETS = {
 }
 
 
+def built_in_ruleset_names() -> tuple[str, ...]:
+    return tuple(_BUILT_IN_RULESETS)
+
+
 def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
     loaded: dict[str, LoadedRule] = {}
     for reference in references:
