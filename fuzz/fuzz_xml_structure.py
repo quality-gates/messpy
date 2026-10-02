@@ -7,7 +7,6 @@ import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
     import messpy.rulesets as rulesets
-    from messpy.rulesets import built_in_ruleset_names
 
 TAGS = ["ruleset", "rule", "exclude", "priority", "properties", "property", "description", "custom", "bogus"]
 ATTRS = ["name", "ref", "value", "minimum", "maximum", "maxmethods", "maxfields", "reportlevel", "ignorepattern", "markers", "unwanted-functions"]
@@ -52,7 +51,7 @@ RULES = [
     "CamelCasePropertyName",
     "CamelCaseParameterName",
     "CamelCaseVariableName",
-    *built_in_ruleset_names(),
+    *rulesets.built_in_ruleset_names(),
 ]
 
 

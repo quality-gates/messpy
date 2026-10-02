@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "fuzz"))
 
 from messpy.cli import run
 from messpy.rulesets import load_rulesets
-from scan_profile import RULESETS, run_scan
+from scan_profile import CONFIGURED_RULESETS, RULESETS, run_scan
 from source_analysis_target import run_source_analysis
 
 
@@ -59,20 +59,18 @@ class FuzzScanProfileAcceptanceTests(unittest.TestCase):
             loaded_names,
         )
 
-    def test_profile_includes_one_combined_scan_of_every_ruleset(self) -> None:
-        single_rulesets = [ruleset for ruleset in RULESETS if "," not in ruleset]
-        combined_rulesets = [ruleset for ruleset in RULESETS if "," in ruleset]
+    def test_profile_includes_a_combined_scan_that_loads_every_profile_rule(self) -> None:
+        rule_names_per_ruleset = [
+            {rule.name for rule in load_rulesets(ruleset.split(","))} for ruleset in RULESETS
+        ]
+        every_rule_name = set().union(*rule_names_per_ruleset)
 
-        self.assertEqual([",".join(single_rulesets)], combined_rulesets)
+        self.assertIn(every_rule_name, rule_names_per_ruleset)
 
     def test_configured_onion_reports_an_outer_layer_import_in_a_scanned_source(self) -> None:
-        onion_rulesets = [
-            ruleset for ruleset in RULESETS if ruleset.endswith(".xml") and "," not in ruleset
-        ]
+        status = run_scan(b"import subprocess\n", CONFIGURED_RULESETS["onion"])
 
-        statuses = [run_scan(b"import subprocess\n", ruleset) for ruleset in onion_rulesets]
-
-        self.assertEqual([2], statuses)
+        self.assertEqual(2, status)
 
     def test_scan_reports_the_documented_status_for_clean_and_malformed_source(self) -> None:
         self.assertEqual(0, run_scan(b"VALUE = 1\n", "codesize", "json"))
