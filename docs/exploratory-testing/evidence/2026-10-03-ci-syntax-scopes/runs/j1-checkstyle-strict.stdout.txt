@@ -1,0 +1,15 @@
+<checkstyle tool="messpy" version="0.1.17">
+  <file name="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py">
+    <error line="1" column="1" severity="error" message="Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py: invalid syntax" source="messpy.ProcessingError" context="" priority="1" suppressed="false" />
+  </file>
+  <file name="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py">
+    <error line="2" column="1" severity="error" message="The method handle_request has a boolean flag argument urgent, which is a certain sign of a Single Responsibility Principle violation." source="messpy.BooleanArgumentFlag" context="handle_request" priority="1" suppressed="false" />
+    <error line="2" column="1" severity="warning" message="Avoid unused parameters such as &#x27;urgent&#x27;." source="messpy.UnusedFormalParameter" context="urgent" priority="3" suppressed="false" />
+    <error line="3" column="1" severity="warning" message="Avoid unused local variables such as &#x27;x&#x27;." source="messpy.UnusedLocalVariable" context="x" priority="3" suppressed="false" />
+    <error line="5" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="true" />
+    <error line="6" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+    <error line="7" column="1" severity="error" message="Duplicated array key 1, first declared at line 7." source="messpy.DuplicatedArrayKey" context="1" priority="2" suppressed="false" />
+    <error line="7" column="1" severity="warning" message="Avoid unused local variables such as &#x27;data&#x27;." source="messpy.UnusedLocalVariable" context="data" priority="3" suppressed="false" />
+    <error line="11" column="1" severity="error" message="The method handle_request uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it." source="messpy.ElseExpression" context="handle_request" priority="1" suppressed="false" />
+  </file>
+</checkstyle>

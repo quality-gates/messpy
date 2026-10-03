@@ -1,0 +1,8 @@
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:2: BooleanArgumentFlag [priority 1] The method handle_request has a boolean flag argument urgent, which is a certain sign of a Single Responsibility Principle violation.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:2: UnusedFormalParameter [priority 3] Avoid unused parameters such as 'urgent'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:3: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'x'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:6: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:7: DuplicatedArrayKey [priority 2] Duplicated array key 1, first declared at line 7.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:7: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'data'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py:11: ElseExpression [priority 1] The method handle_request uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py:1: ProcessingError Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py: invalid syntax

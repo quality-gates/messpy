@@ -1,0 +1,182 @@
+[
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "BooleanArgumentFlag",
+    "description": "The method handle_request has a boolean flag argument urgent, which is a certain sign of a Single Responsibility Principle violation. (context: handle_request)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a323a313a426f6f6c65616e417267756d656e74466c61673a546865206d6574686f642068616e646c655f7265717565737420686173206120626f6f6c65616e20666c616720617267756d656e7420757267656e742c2077686963682069732061206365727461696e207369676e206f6620612053696e676c6520526573706f6e736962696c697479205072696e6369706c652076696f6c6174696f6e2e",
+    "severity": "blocker",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 2
+      }
+    },
+    "priority": 1,
+    "context": "handle_request",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "UnusedFormalParameter",
+    "description": "Avoid unused parameters such as 'urgent'. (context: urgent)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a323a313a556e75736564466f726d616c506172616d657465723a41766f696420756e7573656420706172616d657465727320737563682061732027757267656e74272e",
+    "severity": "major",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 2
+      }
+    },
+    "priority": 3,
+    "context": "urgent",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "UnusedLocalVariable",
+    "description": "Avoid unused local variables such as 'x'. (context: x)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a333a313a556e757365644c6f63616c5661726961626c653a41766f696420756e75736564206c6f63616c207661726961626c65732073756368206173202778272e",
+    "severity": "major",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 3
+      }
+    },
+    "priority": 3,
+    "context": "x",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module) [suppressed]",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a353a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 5
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": true
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a363a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 6
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "DuplicatedArrayKey",
+    "description": "Duplicated array key 1, first declared at line 7. (context: 1)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a373a313a4475706c69636174656441727261794b65793a4475706c696361746564206172726179206b657920312c206669727374206465636c61726564206174206c696e6520372e",
+    "severity": "critical",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 7
+      }
+    },
+    "priority": 2,
+    "context": "1",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "UnusedLocalVariable",
+    "description": "Avoid unused local variables such as 'data'. (context: data)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a373a313a556e757365644c6f63616c5661726961626c653a41766f696420756e75736564206c6f63616c207661726961626c65732073756368206173202764617461272e",
+    "severity": "major",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 7
+      }
+    },
+    "priority": 3,
+    "context": "data",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "ElseExpression",
+    "description": "The method handle_request uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it. (context: handle_request)",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f68616e646c6572732e70793a31313a313a456c736545787072657373696f6e3a546865206d6574686f642068616e646c655f72657175657374207573657320616e20656c7365207468617420666f6c6c6f77732061206272616e636820776869636820616c776179732072657475726e732c207261697365732c20636f6e74696e7565732c206f7220627265616b732e205468617420656c736520636c617573652069732064656164206f72206d69736c656164696e6720616e6420796f752063616e2073696d706c6966792074686520636f64652062792072656d6f76696e672069742e",
+    "severity": "blocker",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py",
+      "lines": {
+        "begin": 11
+      }
+    },
+    "priority": 1,
+    "context": "handle_request",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.17"
+    },
+    "check_name": "ProcessingError",
+    "description": "Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py: invalid syntax (context: )",
+    "fingerprint": "646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f62726f6b656e2e70793a313a313a50726f63657373696e674572726f723a436f756c64206e6f74207061727365202f55736572732f6a6f6e617468616e62616c6469652f436f64652d322f6769746875622e636f6d2f7175616c6974792d67617465732f6d65737370792f646f63732f6578706c6f7261746f72792d74657374696e672f65766964656e63652f323032362d31302d30332d63692d73796e7461782d73636f7065732f6a312f62726f6b656e2e70793a20696e76616c69642073796e746178",
+    "severity": "blocker",
+    "location": {
+      "path": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 1,
+    "context": "",
+    "suppressed": false
+  }
+]

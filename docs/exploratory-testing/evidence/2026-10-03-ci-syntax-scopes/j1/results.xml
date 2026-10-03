@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<messpy version="0.1.17">
+  <tool name="messpy" version="0.1.17" />
+  <findings>
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="2" column="1" ruleName="BooleanArgumentFlag" priority="1" message="The method handle_request has a boolean flag argument urgent, which is a certain sign of a Single Responsibility Principle violation." context="handle_request" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="2" column="1" ruleName="UnusedFormalParameter" priority="3" message="Avoid unused parameters such as &#x27;urgent&#x27;." context="urgent" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="3" column="1" ruleName="UnusedLocalVariable" priority="3" message="Avoid unused local variables such as &#x27;x&#x27;." context="x" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="5" column="1" ruleName="DevelopmentCodeFragment" priority="2" message="Development-only marker found in production source." context="module" suppressed="True" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="6" column="1" ruleName="DevelopmentCodeFragment" priority="2" message="Development-only marker found in production source." context="module" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="7" column="1" ruleName="DuplicatedArrayKey" priority="2" message="Duplicated array key 1, first declared at line 7." context="1" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="7" column="1" ruleName="UnusedLocalVariable" priority="3" message="Avoid unused local variables such as &#x27;data&#x27;." context="data" suppressed="False" />
+    <finding path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py" line="11" column="1" ruleName="ElseExpression" priority="1" message="The method handle_request uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it." context="handle_request" suppressed="False" />
+  </findings>
+  <errors>
+    <error path="docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py" line="1" column="1" ruleName="ProcessingError" priority="1" message="Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py: invalid syntax" context="" suppressed="False" />
+  </errors>
+</messpy>

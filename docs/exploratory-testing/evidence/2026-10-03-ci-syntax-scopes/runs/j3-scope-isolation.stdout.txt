@@ -1,0 +1,1 @@
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j3/scope_isolation.py:11: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'col'.
