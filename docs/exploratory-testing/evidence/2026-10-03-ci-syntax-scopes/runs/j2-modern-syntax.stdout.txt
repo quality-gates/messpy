@@ -1,0 +1,5 @@
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j2/modern_syntax.py:15: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'rest'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j2/modern_syntax.py:24: IfStatementAssignment [priority 1] Avoid assigning values to variables in if clauses and the like (line '24', column '8').
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j2/modern_syntax.py:24: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'option'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j2/modern_syntax.py:25: DuplicatedArrayKey [priority 2] Duplicated array key (True, False), first declared at line 25.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j2/modern_syntax.py:25: DuplicatedArrayKey [priority 2] Duplicated array key 1.0, first declared at line 25.

@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "messpy",
+          "version": "0.1.17",
+          "rules": [
+            {
+              "id": "BooleanArgumentFlag",
+              "name": "BooleanArgumentFlag",
+              "shortDescription": {
+                "text": "BooleanArgumentFlag"
+              }
+            },
+            {
+              "id": "DevelopmentCodeFragment",
+              "name": "DevelopmentCodeFragment",
+              "shortDescription": {
+                "text": "DevelopmentCodeFragment"
+              }
+            },
+            {
+              "id": "DuplicatedArrayKey",
+              "name": "DuplicatedArrayKey",
+              "shortDescription": {
+                "text": "DuplicatedArrayKey"
+              }
+            },
+            {
+              "id": "ElseExpression",
+              "name": "ElseExpression",
+              "shortDescription": {
+                "text": "ElseExpression"
+              }
+            },
+            {
+              "id": "UnusedFormalParameter",
+              "name": "UnusedFormalParameter",
+              "shortDescription": {
+                "text": "UnusedFormalParameter"
+              }
+            },
+            {
+              "id": "UnusedLocalVariable",
+              "name": "UnusedLocalVariable",
+              "shortDescription": {
+                "text": "UnusedLocalVariable"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "BooleanArgumentFlag",
+          "level": "error",
+          "message": {
+            "text": "The method handle_request has a boolean flag argument urgent, which is a certain sign of a Single Responsibility Principle violation."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 2,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 1,
+            "context": "handle_request",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "UnusedFormalParameter",
+          "level": "warning",
+          "message": {
+            "text": "Avoid unused parameters such as 'urgent'."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 2,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 3,
+            "context": "urgent",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "UnusedLocalVariable",
+          "level": "warning",
+          "message": {
+            "text": "Avoid unused local variables such as 'x'."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 3,
+            "context": "x",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 5,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": true
+          },
+          "suppressions": [
+            {
+              "kind": "inSource"
+            }
+          ]
+        },
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 6,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "DuplicatedArrayKey",
+          "level": "error",
+          "message": {
+            "text": "Duplicated array key 1, first declared at line 7."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "1",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "UnusedLocalVariable",
+          "level": "warning",
+          "message": {
+            "text": "Avoid unused local variables such as 'data'."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 7,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 3,
+            "context": "data",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "ElseExpression",
+          "level": "error",
+          "message": {
+            "text": "The method handle_request uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/handlers.py"
+                },
+                "region": {
+                  "startLine": 11,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 1,
+            "context": "handle_request",
+            "suppressed": false
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "executionSuccessful": false,
+          "toolExecutionNotifications": [
+            {
+              "level": "error",
+              "message": {
+                "text": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py:1:1: Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py: invalid syntax"
+              },
+              "locations": [
+                {
+                  "physicalLocation": {
+                    "artifactLocation": {
+                      "uri": "docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j1/broken.py"
+                    },
+                    "region": {
+                      "startLine": 1,
+                      "startColumn": 1
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

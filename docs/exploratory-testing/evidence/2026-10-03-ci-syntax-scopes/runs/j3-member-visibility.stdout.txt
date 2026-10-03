@@ -1,0 +1,2 @@
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j3/member_visibility.py:8: UnusedPrivateField [priority 3] Avoid unused private fields such as '_dead_field'.
+docs/exploratory-testing/evidence/2026-10-03-ci-syntax-scopes/j3/member_visibility.py:10: UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_unused_private'.

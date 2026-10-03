@@ -175,6 +175,7 @@ A user pass of this behavior is recorded in [exploratory testing: onion and expl
 
 Follow-up feedback on call-based cohesion, aliased imports, and source
 non-execution is in [the 2026-09-26 exploratory report](exploratory-testing/2026-09-26-call-graph-cli.md).
+CI pipeline outputs, exit gate precedence, Python 3.12 syntax, and lexical scope isolation are recorded in [the 2026-10-03 exploratory report](exploratory-testing/2026-10-03-ci-syntax-scopes.md).
 
 ## Suppressions in source
 
