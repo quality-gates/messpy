@@ -33,8 +33,12 @@ class CallableNode:
     enclosing: tuple[ast.AST, ...]
 
     @property
+    def owner_name(self) -> str | None:
+        return self.owner.name if self.owner is not None else None
+
+    @property
     def context(self) -> str:
-        return f"{self.owner.name}.{self.name}" if self.owner is not None else self.name
+        return f"{self.owner_name}.{self.name}" if self.owner_name else self.name
 
     @property
     def parameter_count(self) -> int:

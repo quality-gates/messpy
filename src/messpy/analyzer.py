@@ -2252,7 +2252,7 @@ def _ignore_boolean_flag_callable(
     node = callable_info.node
     return isinstance(node, ast.Lambda) or (
         node.name.startswith("_")
-        or _owner_name(callable_info) in exceptions
+        or callable_info.owner_name in exceptions
         or bool(ignored.pattern and ignored.search(node.name))
     )
 
@@ -2454,7 +2454,7 @@ def _static_accesses(
         receiver = node.func.value
         if not isinstance(receiver, ast.Name) or not receiver.id[:1].isupper():
             continue
-        if receiver.id != _owner_name(callable_info) and receiver.id not in exceptions:
+        if receiver.id != callable_info.owner_name and receiver.id not in exceptions:
             accesses.append((node, receiver))
     return accesses
 
@@ -2570,10 +2570,6 @@ def _static_tuple_key(node: ast.Tuple) -> tuple[bool, object]:
         if all(known for known, _ in values)
         else (False, None)
     )
-
-
-def _owner_name(callable_info: CallableNode) -> str | None:
-    return callable_info.owner.name if callable_info.owner is not None else None
 
 
 def _executable_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:

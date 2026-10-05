@@ -8,7 +8,7 @@ import unittest
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.callables import module_callables
+from messpy.callables import CallableNode, module_callables
 
 
 def _definition(tree: ast.Module, name: str) -> ast.AST:
@@ -19,7 +19,7 @@ def _definition(tree: ast.Module, name: str) -> ast.AST:
     )
 
 
-def _callable(tree: ast.Module, name: str):
+def _callable(tree: ast.Module, name: str) -> CallableNode:
     return next(callable_node for callable_node in module_callables(tree) if callable_node.name == name)
 
 
@@ -85,9 +85,11 @@ class CallableModelTests(unittest.TestCase):
             "                return 1\n"
         )
 
-        self.assertEqual(("function", None), (_callable(tree, "fallback").kind, _callable(tree, "fallback").owner))
-        self.assertEqual("method", _callable(tree, "parse").kind)
-        self.assertIs(_definition(tree, "Parser"), _callable(tree, "parse").owner)
+        fallback, parse = _callable(tree, "fallback"), _callable(tree, "parse")
+
+        self.assertEqual(("function", None, (tree,)), (fallback.kind, fallback.owner, fallback.enclosing))
+        self.assertEqual(("method", (tree,)), (parse.kind, parse.enclosing))
+        self.assertIs(_definition(tree, "Parser"), parse.owner)
 
     def test_class_nested_in_a_function_owns_its_methods_inside_the_function_scope(self) -> None:
         tree = ast.parse(
