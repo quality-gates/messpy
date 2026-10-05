@@ -7,7 +7,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .callgraph import CallGraph, CallSite, _parent_map
+from .callables import module_callables
+from .callgraph import CallGraph, CallSite
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
@@ -50,23 +51,17 @@ def _domain_action_findings(path: Path, tree: ast.Module, rule: LoadedRule, grap
 def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule) -> tuple[list, dict[int, str]]:
     from .analyzer import (
         _ScopeChain,
-        _clean_code_callables,
-        _enclosing_scopes,
         _implicit_input_findings,
         _implicit_instance_output_findings,
         _implicit_output_findings,
         _name_scopes,
     )
 
-    parents = _parent_map(tree)
     name_scopes = _name_scopes(tree)
     findings = []
     phrases: dict[int, str] = {}
-    for callable_info in _clean_code_callables(tree):
-        chain = _ScopeChain(
-            (callable_info.node, *_enclosing_scopes(callable_info.node, tree, parents)),
-            name_scopes,
-        )
+    for callable_info in module_callables(tree):
+        chain = _ScopeChain((callable_info.node, *callable_info.enclosing), name_scopes)
         found = [
             *_implicit_input_findings(path, callable_info, rule, chain),
             *_implicit_output_findings(path, callable_info, rule, chain),

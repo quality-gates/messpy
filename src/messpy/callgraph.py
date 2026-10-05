@@ -138,14 +138,6 @@ def _reverse_edges(edges: dict[int, tuple[CallSite, ...]]) -> dict[int, tuple[Ca
     return {callee_id: tuple(sites) for callee_id, sites in reverse.items()}
 
 
-def _parent_map(tree: ast.AST) -> dict[int, ast.AST]:
-    parents: dict[int, ast.AST] = {}
-    for parent in ast.walk(tree):
-        for child in ast.iter_child_nodes(parent):
-            parents[id(child)] = parent
-    return parents
-
-
 @dataclass(frozen=True)
 class _CallableIndex:
     nodes: dict[int, ast.AST]
