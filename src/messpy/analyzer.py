@@ -15,6 +15,7 @@ import tokenize
 from io import StringIO
 from pathlib import Path
 
+from .callables import CallableNode, module_callables
 from .callgraph import (
     CallGraph,
     _arguments,
@@ -423,14 +424,6 @@ class ProcessingError:
 
 
 @dataclass(frozen=True)
-class CallableInfo:
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-    name: str
-    kind: str
-    parameter_count: int
-
-
-@dataclass(frozen=True)
 class ClassInfo:
     node: ast.ClassDef
     name: str
@@ -465,12 +458,6 @@ class PrivateMemberUsage:
     accessed_names: frozenset[str]
     exported_names: frozenset[str]
     requires_conservative_handling: bool
-
-
-@dataclass(frozen=True)
-class CleanCodeCallable:
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
-    owner_name: str | None
 
 
 def _analyze(
@@ -516,12 +503,11 @@ def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequen
     path = identity.path
     rule_names = frozenset(rule.name for rule in rules)
     classes = _selected_classes(tree, rule_names)
-    callables = _selected_callables(tree, rule_names)
+    callables = module_callables(tree)
     function_scopes = _selected_function_scopes(source, tree, rule_names)
     protocol_method_ids = _selected_protocol_method_ids(tree, rule_names)
     comprehension_scopes = _selected_comprehension_scopes(source, tree, rule_names)
     private_member_usage = _selected_private_member_usage(tree, rule_names)
-    clean_code_callables = _selected_clean_code_callables(tree, rule_names)
     call_graph = cache(partial(build_call_graph, tree))
     return [
         *_cyclomatic_complexity_findings(path, callables, rules),
@@ -534,8 +520,8 @@ def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequen
         *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids),
         *_unused_private_field_findings(path, tree, classes, rules, private_member_usage),
         *_unused_private_method_findings(path, classes, rules, private_member_usage),
-        *_selected_clean_code_findings(path, source, tree, rules, rule_names, clean_code_callables),
-        *_selected_design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables, call_graph),
+        *_selected_clean_code_findings(path, source, tree, rules, rule_names, callables),
+        *_selected_design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph),
         *_selected_explicitness_findings(path, tree, rules, rule_names),
         *onion_findings(identity, tree, rules, call_graph),
     ]
@@ -551,18 +537,6 @@ def _selected_classes(tree: ast.Module, rule_names: AbstractSet[str]) -> list[Cl
     if not _has_any_rule(rule_names, class_rules):
         return []
     return _classes(tree)
-
-
-def _selected_callables(tree: ast.Module, rule_names: AbstractSet[str]) -> list[CallableInfo]:
-    callable_rules = {
-        CYCLOMATIC_COMPLEXITY_RULE_NAME,
-        NPATH_COMPLEXITY_RULE_NAME,
-        METHOD_LENGTH_RULE_NAME,
-        EXCESSIVE_PARAMETER_LIST_RULE_NAME,
-    }
-    if not _has_any_rule(rule_names, callable_rules):
-        return []
-    return _callables(tree)
 
 
 def _selected_function_scopes(
@@ -601,23 +575,6 @@ def _selected_private_member_usage(
     return _private_member_usage(tree)
 
 
-def _selected_clean_code_callables(
-    tree: ast.Module, rule_names: AbstractSet[str]
-) -> list[CleanCodeCallable]:
-    callable_rules = {
-        BOOLEAN_ARGUMENT_FLAG_RULE_NAME,
-        ELSE_EXPRESSION_RULE_NAME,
-        STATIC_ACCESS_RULE_NAME,
-        EXIT_EXPRESSION_RULE_NAME,
-        COUNT_IN_LOOP_EXPRESSION_RULE_NAME,
-        DEVELOPMENT_CODE_FRAGMENT_RULE_NAME,
-        EMPTY_CATCH_BLOCK_RULE_NAME,
-    }
-    if not _has_any_rule(rule_names, callable_rules):
-        return []
-    return _clean_code_callables(tree)
-
-
 def _selected_class_findings(
     path: Path,
     source: str,
@@ -647,11 +604,11 @@ def _selected_clean_code_findings(
     tree: ast.Module,
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
-    clean_code_callables: Sequence[CleanCodeCallable],
+    callables: Sequence[CallableNode],
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, CLEAN_CODE_RULE_NAMES):
         return []
-    return _clean_code_findings(path, source, tree, rules, clean_code_callables)
+    return _clean_code_findings(path, source, tree, rules, callables)
 
 
 def _selected_design_findings(
@@ -661,12 +618,12 @@ def _selected_design_findings(
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
-    clean_code_callables: Sequence[CleanCodeCallable],
+    callables: Sequence[CallableNode],
     call_graph: Callable[[], CallGraph],
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, DESIGN_RULE_NAMES):
         return []
-    return _design_findings(path, source, tree, classes, rules, rule_names, clean_code_callables, call_graph)
+    return _design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph)
 
 
 def _design_findings(
@@ -676,11 +633,11 @@ def _design_findings(
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
-    clean_code_callables: Sequence[CleanCodeCallable],
+    callables: Sequence[CallableNode],
     call_graph: Callable[[], CallGraph],
 ) -> list[Finding]:
     parents = _selected_design_parents(tree, rule_names)
-    contexts = _selected_design_contexts(clean_code_callables, rule_names)
+    contexts = _selected_design_contexts(callables, rule_names)
     bindings = _selected_design_bindings(tree, rule_names)
     graph = _selected_call_graph(call_graph, rule_names)
     return [
@@ -719,7 +676,7 @@ def _selected_design_parents(tree: ast.Module, rule_names: AbstractSet[str]) -> 
 
 
 def _selected_design_contexts(
-    clean_code_callables: Sequence[CleanCodeCallable], rule_names: AbstractSet[str]
+    callables: Sequence[CallableNode], rule_names: AbstractSet[str]
 ) -> dict[int, str]:
     context_rules = {
         EXIT_EXPRESSION_RULE_NAME,
@@ -730,8 +687,8 @@ def _selected_design_contexts(
     if not _has_any_rule(rule_names, context_rules):
         return {}
     return {
-        id(callable_info.node): _clean_code_context(callable_info)
-        for callable_info in clean_code_callables
+        id(callable_info.node): callable_info.context
+        for callable_info in callables
     }
 
 
@@ -1747,20 +1704,6 @@ def _selected_explicitness_findings(
     return _explicitness_findings(path, tree, rules)
 
 
-def _enclosing_scopes(
-    node: ast.AST, tree: ast.Module, parents: dict[int, ast.AST]
-) -> list[ast.AST]:
-    # The scopes that hold the node, from the innermost function out to the module.
-    scopes: list[ast.AST] = []
-    current = node
-    while id(current) in parents:
-        current = parents[id(current)]
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            scopes.append(current)
-    scopes.append(tree)
-    return scopes
-
-
 def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
     finders = [
         (rule, finder)
@@ -1775,13 +1718,12 @@ def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedR
     parents = {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
     name_scopes = _name_scopes(tree)
     findings: list[Finding] = []
-    for callable_info in _clean_code_callables(tree):
-        enclosing = tuple(_enclosing_scopes(callable_info.node, tree, parents))
+    for callable_info in module_callables(tree):
         chain = _ScopeChain(
-            (callable_info.node, *enclosing),
+            (callable_info.node, *callable_info.enclosing),
             name_scopes,
             parents=parents,
-            enclosing=enclosing,
+            enclosing=callable_info.enclosing,
         )
         for rule, finder in finders:
             findings.extend(finder(path, callable_info, rule, chain))
@@ -1789,7 +1731,7 @@ def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedR
 
 
 def _implicit_input_findings(
-    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
+    path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
     first_reads: dict[str, ast.AST] = {}
     for node in _read_nodes(callable_info.node):
@@ -1804,7 +1746,7 @@ def _implicit_input_findings(
 
 def _implicit_output_findings(
 
-    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
+    path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
     nodes = _evaluated_nodes(callable_info.node)
     parameters = _caller_owned_parameters(callable_info, nodes, chain.parents)
@@ -1820,7 +1762,7 @@ def _implicit_output_findings(
 
 
 def _implicit_instance_input_findings(
-    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, _chain: _ScopeChain
+    path: Path, callable_info: CallableNode, rule: LoadedRule, _chain: _ScopeChain
 ) -> list[Finding]:
     receiver = _method_receiver(callable_info)
     if receiver is None:
@@ -1839,10 +1781,10 @@ def _implicit_instance_input_findings(
 
 
 def _implicit_instance_output_findings(
-    path: Path, callable_info: CleanCodeCallable, rule: LoadedRule, chain: _ScopeChain
+    path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
     receiver = _method_receiver(callable_info)
-    if receiver is None or _clean_code_callable_name(callable_info.node) in CONSTRUCTOR_METHOD_NAMES:
+    if receiver is None or callable_info.name in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
     for node in _evaluated_nodes(callable_info.node):
@@ -1866,10 +1808,10 @@ def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
     return ""
 
 
-def _method_receiver(callable_info: CleanCodeCallable) -> str | None:
+def _method_receiver(callable_info: CallableNode) -> str | None:
     # Python gives the receiver to each method that is not static, for example cls in __new__ and mcls in a metaclass.
     node = callable_info.node
-    if callable_info.owner_name is None or isinstance(node, ast.Lambda) or _has_decorator(node, "staticmethod"):
+    if callable_info.owner is None or isinstance(node, ast.Lambda) or _has_decorator(node, "staticmethod"):
         return None
     positional = [*node.args.posonlyargs, *node.args.args]
     return positional[0].arg if positional else None
@@ -1900,7 +1842,7 @@ def _is_rebound_parameter(
 
 
 def _caller_owned_parameters(
-    callable_info: CleanCodeCallable,
+    callable_info: CallableNode,
     nodes: Sequence[ast.AST],
     parents: dict[int, ast.AST] | None = None,
 ) -> set[str]:
@@ -1916,14 +1858,14 @@ def _caller_owned_parameters(
 
 def _explicitness_report(
     path: Path,
-    callable_info: CleanCodeCallable,
+    callable_info: CallableNode,
     rule: LoadedRule,
     first_nodes: dict[str, ast.AST],
     action: str,
     remedy: str,
 ) -> list[Finding]:
-    context = _clean_code_context(callable_info)
-    kind = "function" if callable_info.owner_name is None else "method"
+    context = callable_info.context
+    kind = "function" if callable_info.owner is None else "method"
     return [
         Finding(
             path,
@@ -2262,19 +2204,19 @@ def _clean_code_findings(
     source: str,
     tree: ast.Module,
     rules: Sequence[LoadedRule],
-    clean_code_callables: Sequence[CleanCodeCallable],
+    callables: Sequence[CallableNode],
 ) -> list[Finding]:
     return [
-        *_boolean_argument_flag_findings(path, clean_code_callables, rules),
-        *_else_expression_findings(path, clean_code_callables, rules),
-        *_static_access_findings(path, clean_code_callables, rules),
+        *_boolean_argument_flag_findings(path, callables, rules),
+        *_else_expression_findings(path, callables, rules),
+        *_static_access_findings(path, callables, rules),
         *_if_statement_assignment_findings(path, source, tree, rules),
         *_duplicated_array_key_findings(path, tree, rules),
     ]
 
 
 def _boolean_argument_flag_findings(
-    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = _rule(rules, BOOLEAN_ARGUMENT_FLAG_RULE_NAME)
     if rule is None:
@@ -2289,7 +2231,7 @@ def _boolean_argument_flag_findings(
         for parameter in _boolean_parameters(node.args):
             if parameter.arg in {"self", "cls"} or parameter.arg.startswith("_"):
                 continue
-            context = _clean_code_context(callable_info)
+            context = callable_info.context
             findings.append(
                 Finding(
                     path,
@@ -2305,12 +2247,12 @@ def _boolean_argument_flag_findings(
 
 
 def _ignore_boolean_flag_callable(
-    callable_info: CleanCodeCallable, exceptions: set[str], ignored: re.Pattern[str]
+    callable_info: CallableNode, exceptions: set[str], ignored: re.Pattern[str]
 ) -> bool:
     node = callable_info.node
     return isinstance(node, ast.Lambda) or (
         node.name.startswith("_")
-        or callable_info.owner_name in exceptions
+        or _owner_name(callable_info) in exceptions
         or bool(ignored.pattern and ignored.search(node.name))
     )
 
@@ -2363,14 +2305,14 @@ def _is_boolean_literal(node: ast.expr | None) -> bool:
 
 
 def _else_expression_findings(
-    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = _rule(rules, ELSE_EXPRESSION_RULE_NAME)
     if rule is None:
         return []
     findings: list[Finding] = []
     for callable_info in callables:
-        context = _clean_code_context(callable_info)
+        context = callable_info.context
         nodes = _executable_nodes(callable_info.node)
         elif_nodes = _elif_nodes(nodes)
         for node in nodes:
@@ -2475,7 +2417,7 @@ def _try_statement_always_exits(node: ast.Try | ast.TryStar, *, allow_loop_jumps
 
 
 def _static_access_findings(
-    path: Path, callables: Sequence[CleanCodeCallable], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = _rule(rules, STATIC_ACCESS_RULE_NAME)
     if rule is None:
@@ -2484,11 +2426,11 @@ def _static_access_findings(
     ignored = rule.pattern("ignorepattern")
     findings: list[Finding] = []
     for callable_info in callables:
-        name = _clean_code_callable_name(callable_info.node)
+        name = callable_info.name
         if ignored.pattern and ignored.search(name):
             continue
         for node, receiver in _static_accesses(callable_info, exceptions):
-            context = _clean_code_context(callable_info)
+            context = callable_info.context
             findings.append(
                 Finding(
                     path,
@@ -2503,7 +2445,7 @@ def _static_access_findings(
 
 
 def _static_accesses(
-    callable_info: CleanCodeCallable, exceptions: set[str]
+    callable_info: CallableNode, exceptions: set[str]
 ) -> list[tuple[ast.Call, ast.Name]]:
     accesses: list[tuple[ast.Call, ast.Name]] = []
     for node in _executable_nodes(callable_info.node):
@@ -2512,7 +2454,7 @@ def _static_accesses(
         receiver = node.func.value
         if not isinstance(receiver, ast.Name) or not receiver.id[:1].isupper():
             continue
-        if receiver.id != callable_info.owner_name and receiver.id not in exceptions:
+        if receiver.id != _owner_name(callable_info) and receiver.id not in exceptions:
             accesses.append((node, receiver))
     return accesses
 
@@ -2630,44 +2572,8 @@ def _static_tuple_key(node: ast.Tuple) -> tuple[bool, object]:
     )
 
 
-def _clean_code_callables(tree: ast.Module) -> list[CleanCodeCallable]:
-    owners = _callable_owners(tree, None)
-    return sorted(
-        [
-            CleanCodeCallable(node, owners.get(id(node)))
-            for node in _module_nodes(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-        ],
-        key=lambda callable_info: (callable_info.node.lineno, callable_info.node.col_offset),
-    )
-
-
-def _callable_owners(node: ast.AST, owner_name: str | None) -> dict[int, str]:
-    if isinstance(node, ast.ClassDef):
-        owners: dict[int, str] = {}
-        for statement in node.body:
-            owners.update(_callable_owners(statement, node.name))
-        return owners
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        owners = {id(node): owner_name} if owner_name is not None else {}
-        for statement in node.body:
-            owners.update(_callable_owners(statement, None))
-        return owners
-    if isinstance(node, ast.Lambda):
-        return {}
-    owners = {}
-    for child in ast.iter_child_nodes(node):
-        owners.update(_callable_owners(child, owner_name))
-    return owners
-
-
-def _clean_code_callable_name(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> str:
-    return "<lambda>" if isinstance(node, ast.Lambda) else node.name
-
-
-def _clean_code_context(callable_info: CleanCodeCallable) -> str:
-    name = _clean_code_callable_name(callable_info.node)
-    return f"{callable_info.owner_name}.{name}" if callable_info.owner_name else name
+def _owner_name(callable_info: CallableNode) -> str | None:
+    return callable_info.owner.name if callable_info.owner is not None else None
 
 
 def _executable_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
@@ -2917,8 +2823,7 @@ def _function_scopes(
     tables = _function_tables(symtable.symtable(source, "<source>", "exec"))
     scopes = []
     usage_cache: dict[int, ScopeUsage] = {}
-    callable_nodes = _collect_callable_nodes(tree)
-    for node in callable_nodes:
+    for node in (callable_info.node for callable_info in module_callables(tree)):
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
         candidates = tables[(name, node.lineno)]
         if not candidates:
@@ -2936,21 +2841,6 @@ def _function_scopes(
         )
         scopes.append((node, table, used_names))
     return scopes
-
-
-def _collect_callable_nodes(
-    tree: ast.Module,
-) -> list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda]:
-    return _callable_nodes(tree)
-
-
-def _callable_nodes(node: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda]:
-    found: list[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda] = []
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        found.append(node)
-    for child in ast.iter_child_nodes(node):
-        found.extend(_callable_nodes(child))
-    return found
 
 
 def _take_function_table(
@@ -3969,7 +3859,7 @@ def _called_name(node: ast.expr) -> str:
 
 
 def _cyclomatic_complexity_findings(
-    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == CYCLOMATIC_COMPLEXITY_RULE_NAME), None)
     if rule is None:
@@ -4026,7 +3916,7 @@ def _decision_weight(node: ast.AST) -> int:
 
 
 def _npath_complexity_findings(
-    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == NPATH_COMPLEXITY_RULE_NAME), None)
     if rule is None:
@@ -4154,7 +4044,7 @@ def _npath_comprehension(
 
 
 def _excessive_parameter_list_findings(
-    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == EXCESSIVE_PARAMETER_LIST_RULE_NAME), None)
     if rule is None:
@@ -4179,42 +4069,6 @@ def _excessive_parameter_list_findings(
             )
         )
     return findings
-
-
-def _parameter_count(arguments: ast.arguments) -> int:
-    return (
-        len(arguments.posonlyargs)
-        + len(arguments.args)
-        + len(arguments.kwonlyargs)
-        + int(arguments.vararg is not None)
-        + int(arguments.kwarg is not None)
-    )
-
-
-def _callables(tree: ast.Module) -> list[CallableInfo]:
-    callables = [
-        *_callable_statements(tree.body, in_class_body=False),
-        *(
-            CallableInfo(node, "<lambda>", "lambda", _parameter_count(node.args))
-            for node in _module_nodes(tree)
-            if isinstance(node, ast.Lambda)
-        ),
-    ]
-    return sorted(callables, key=lambda callable_info: callable_info.node.lineno)
-
-
-def _callable_statements(statements: Sequence[ast.stmt], in_class_body: bool) -> list[CallableInfo]:
-    found: list[CallableInfo] = []
-    for node in statements:
-        if isinstance(node, ast.ClassDef):
-            found.extend(_callable_statements(node.body, in_class_body=True))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            kind = "method" if in_class_body else "function"
-            found.append(CallableInfo(node, node.name, kind, _parameter_count(node.args)))
-            found.extend(_callable_statements(node.body, in_class_body=False))
-        else:
-            found.extend(_callable_statements(_child_statements(node), in_class_body=in_class_body))
-    return found
 
 
 @dataclass(frozen=True)
@@ -4615,7 +4469,7 @@ def _is_type_parameter_factory(node: ast.expr) -> bool:
 
 
 def _excessive_method_length_findings(
-    path: Path, callables: Sequence[CallableInfo], rules: Sequence[LoadedRule]
+    path: Path, callables: Sequence[CallableNode], rules: Sequence[LoadedRule]
 ) -> list[Finding]:
     rule = next((candidate for candidate in rules if candidate.name == METHOD_LENGTH_RULE_NAME), None)
     if rule is None:
