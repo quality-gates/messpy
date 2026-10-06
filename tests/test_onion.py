@@ -208,6 +208,39 @@ class OnionAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_class_attribute_assignments_in_nested_class_do_not_emit_domain_action_implicit_output(self) -> None:
+        status, report, errors = _analyze_source(
+            "def build(default):\n"
+            "    class Local:\n"
+            "        value = default\n"
+            "        count = 1\n"
+            "        alias = count\n"
+            "    return Local\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    def test_parameter_rebindings_differentiate_nested_class_attributes(self) -> None:
+        status, report, errors = _analyze_source(
+            "def configure(options):\n"
+            "    class Setting:\n"
+            "        options = 123\n"
+            "    options.append(1)\n"
+            "    return options\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "4: DomainAction [priority 2] The function configure() writes the implicit output options. "
+                "Return it instead."
+            ],
+            report,
+        )
+
     def test_the_same_action_outside_the_domain_layer_stays_quiet(self) -> None:
         source = "def checkout():\n    print('saved')\n"
         with tempfile.TemporaryDirectory() as temporary_directory:

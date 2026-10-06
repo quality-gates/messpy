@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .callables import module_callables
-from .callgraph import CallGraph, CallSite
+from .callgraph import CallGraph, CallSite, _module_nodes
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
@@ -57,11 +57,17 @@ def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule) -> tuple[lis
         _name_scopes,
     )
 
+    parents = {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
     name_scopes = _name_scopes(tree)
     findings = []
     phrases: dict[int, str] = {}
     for callable_info in module_callables(tree):
-        chain = _ScopeChain((callable_info.node, *callable_info.enclosing), name_scopes)
+        chain = _ScopeChain(
+            (callable_info.node, *callable_info.enclosing),
+            name_scopes,
+            parents=parents,
+            enclosing=callable_info.enclosing,
+        )
         found = [
             *_implicit_input_findings(path, callable_info, rule, chain),
             *_implicit_output_findings(path, callable_info, rule, chain),
