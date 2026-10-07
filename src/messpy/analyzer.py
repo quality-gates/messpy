@@ -456,7 +456,10 @@ class ScopeUsage:
 
 @dataclass(frozen=True)
 class PrivateMemberUsage:
-    accessed_names: frozenset[str]
+    # Attribute names loaded through each class's own hierarchy, keyed by the
+    # id() of its ClassDef. A load on an unrelated receiver is not a use.
+    accessed_names: dict[int, frozenset[str]]
+    dynamic_names: frozenset[str]
     exported_names: frozenset[str]
     requires_conservative_handling: bool
 
@@ -3209,7 +3212,7 @@ def _unused_private_field_findings(
         fields = _private_fields(class_info.node)
         referenced = _class_referenced_names(referenced_names, class_info)
         for name, line in fields.items():
-            if _private_member_has_proven_use(name, usage, referenced):
+            if _private_member_has_proven_use(name, class_info, usage, referenced):
                 continue
             findings.append(
                 Finding(
@@ -3225,9 +3228,14 @@ def _unused_private_field_findings(
 
 
 def _private_member_has_proven_use(
-    name: str, usage: PrivateMemberUsage, referenced: frozenset[str]
+    name: str, class_info: ClassInfo, usage: PrivateMemberUsage, referenced: frozenset[str]
 ) -> bool:
-    return name in usage.accessed_names or name in usage.exported_names or name in referenced
+    return (
+        name in usage.accessed_names.get(id(class_info.node), frozenset())
+        or name in usage.dynamic_names
+        or name in usage.exported_names
+        or name in referenced
+    )
 
 
 def _class_referenced_names(
@@ -3282,7 +3290,7 @@ def _unused_private_method_findings(
             continue
         referenced = _class_referenced_names(referenced_names, class_info)
         for method in class_info.methods:
-            if not _is_unused_private_method(method, usage, referenced):
+            if not _is_unused_private_method(method, class_info, usage, referenced):
                 continue
             findings.append(
                 Finding(
@@ -3299,12 +3307,13 @@ def _unused_private_method_findings(
 
 def _is_unused_private_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_info: ClassInfo,
     usage: PrivateMemberUsage,
     referenced: frozenset[str],
 ) -> bool:
     return (
         _is_private_name(method.name)
-        and not _private_member_has_proven_use(method.name, usage, referenced)
+        and not _private_member_has_proven_use(method.name, class_info, usage, referenced)
         and not method.decorator_list
         and not _is_contract_method(method)
     )
@@ -3462,14 +3471,83 @@ def _is_dataclass(node: ast.ClassDef, decorator_names: set[str]) -> bool:
 def _private_member_usage(tree: ast.Module) -> PrivateMemberUsage:
     dynamic_names, has_unknown_dynamic_access = _dynamic_attribute_accesses(tree, _dynamic_access_aliases(tree))
     exported_names, has_unknown_exports = _exported_names(tree)
-    loads = {
-        node.attr for node in _module_nodes(tree) if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
-    } | dynamic_names
     return PrivateMemberUsage(
-        frozenset(loads),
+        _class_hierarchy_loads(tree),
+        frozenset(dynamic_names),
         frozenset(exported_names),
         has_unknown_dynamic_access or has_unknown_exports,
     )
+
+
+def _class_hierarchy_loads(tree: ast.Module) -> dict[int, frozenset[str]]:
+    """Map each class to the attribute names loaded through its in-file hierarchy.
+
+    A load counts for a class when it sits anywhere inside that class, one of
+    its ancestors, or one of its descendants (``self``, ``super()``, and
+    same-class parameters alike), or when its receiver is one of those classes
+    by name or a direct instantiation of one.
+    """
+    class_nodes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
+    bases = _local_bases(tree, class_nodes)
+    subclasses: defaultdict[int, list[ast.ClassDef]] = defaultdict(list)
+    for node in class_nodes:
+        for base_node in bases[id(node)]:
+            subclasses[id(base_node)].append(node)
+    receiver_loads = _receiver_loads(tree)
+    return {
+        id(node): _hierarchy_loads(
+            _linked_classes(node, bases) | _linked_classes(node, subclasses),
+            receiver_loads,
+        )
+        for node in class_nodes
+    }
+
+
+def _local_bases(tree: ast.Module, class_nodes: list[ast.ClassDef]) -> dict[int, list[ast.ClassDef]]:
+    qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
+    bases: dict[int, list[ast.ClassDef]] = {}
+    for node in class_nodes:
+        resolved = (
+            _local_base_class(node, _base_dotted_name(base), qualified_names, classes_by_qualified_name)
+            for base in node.bases
+        )
+        bases[id(node)] = [base_node for base_node in resolved if base_node is not None]
+    return bases
+
+
+def _receiver_loads(tree: ast.Module) -> defaultdict[str, set[str]]:
+    """Map a bare receiver name to the attributes loaded on it or on a call to it."""
+    loads: defaultdict[str, set[str]] = defaultdict(set)
+    for node in _module_nodes(tree):
+        if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
+            continue
+        receiver = node.value.func if isinstance(node.value, ast.Call) else node.value
+        if isinstance(receiver, ast.Name):
+            loads[receiver.id].add(node.attr)
+    return loads
+
+
+def _linked_classes(node: ast.ClassDef, links: dict[int, list[ast.ClassDef]]) -> set[ast.ClassDef]:
+    related = {node}
+    pending = [node]
+    while pending:
+        for linked in links.get(id(pending.pop()), []):
+            if linked not in related:
+                related.add(linked)
+                pending.append(linked)
+    return related
+
+
+def _hierarchy_loads(related: set[ast.ClassDef], receiver_loads: dict[str, set[str]]) -> frozenset[str]:
+    loads = {
+        node.attr
+        for class_node in related
+        for node in ast.walk(class_node)
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load)
+    }
+    for class_node in related:
+        loads |= receiver_loads.get(class_node.name, set())
+    return frozenset(loads)
 
 
 def _dynamic_access_aliases(tree: ast.Module) -> set[str]:
