@@ -16,6 +16,7 @@ from io import StringIO
 from pathlib import Path
 
 from .callables import CallableNode, module_callables
+from .names import Names
 from .callgraph import (
     CallGraph,
     _arguments,
@@ -502,32 +503,33 @@ def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequen
 
     path = identity.path
     rule_names = frozenset(rule.name for rule in rules)
-    classes = _selected_classes(tree, rule_names)
+    names = Names.build(tree, module=identity.module, path=identity.path)
+    classes = _selected_classes(tree, rule_names, names)
     callables = module_callables(tree)
     function_scopes = _selected_function_scopes(source, tree, rule_names)
     protocol_method_ids = _selected_protocol_method_ids(tree, rule_names)
     comprehension_scopes = _selected_comprehension_scopes(source, tree, rule_names)
     private_member_usage = _selected_private_member_usage(tree, rule_names)
-    call_graph = cache(partial(build_call_graph, tree))
+    call_graph = cache(partial(build_call_graph, tree, names))
     return [
         *_cyclomatic_complexity_findings(path, callables, rules),
         *_npath_complexity_findings(path, callables, rules),
         *_excessive_method_length_findings(path, callables, rules),
         *_excessive_parameter_list_findings(path, callables, rules),
         *_selected_class_findings(path, source, classes, rules, rule_names),
-        *_selected_naming_findings(path, tree, rules, rule_names),
+        *_selected_naming_findings(path, tree, rules, rule_names, names),
         *_unused_local_variable_findings(path, rules, function_scopes, comprehension_scopes, protocol_method_ids),
-        *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids),
+        *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids, names),
         *_unused_private_field_findings(path, source, tree, classes, rules, private_member_usage),
         *_unused_private_method_findings(path, classes, rules, private_member_usage),
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, callables),
-        *_selected_design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph),
-        *_selected_explicitness_findings(path, tree, rules, rule_names),
-        *onion_findings(identity, tree, rules, call_graph),
+        *_selected_design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph, names),
+        *_selected_explicitness_findings(path, tree, rules, rule_names, names),
+        *onion_findings(identity, tree, rules, call_graph, names),
     ]
 
 
-def _selected_classes(tree: ast.Module, rule_names: AbstractSet[str]) -> list[ClassInfo]:
+def _selected_classes(tree: ast.Module, rule_names: AbstractSet[str], names: Names) -> list[ClassInfo]:
     class_rules = CLASS_CODE_SIZE_RULE_NAMES | {
         UNUSED_PRIVATE_FIELD_RULE_NAME,
         UNUSED_PRIVATE_METHOD_RULE_NAME,
@@ -536,7 +538,7 @@ def _selected_classes(tree: ast.Module, rule_names: AbstractSet[str]) -> list[Cl
     }
     if not _has_any_rule(rule_names, class_rules):
         return []
-    return _classes(tree)
+    return _classes(tree, names)
 
 
 def _selected_function_scopes(
@@ -592,10 +594,11 @@ def _selected_naming_findings(
     tree: ast.Module,
     rules: Sequence[LoadedRule],
     rule_names: AbstractSet[str],
+    names: Names,
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, NAMING_RULE_NAMES):
         return []
-    return _naming_findings(path, tree, rules)
+    return _naming_findings(path, tree, rules, names)
 
 
 def _selected_clean_code_findings(
@@ -620,10 +623,11 @@ def _selected_design_findings(
     rule_names: AbstractSet[str],
     callables: Sequence[CallableNode],
     call_graph: Callable[[], CallGraph],
+    names: Names,
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, DESIGN_RULE_NAMES):
         return []
-    return _design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph)
+    return _design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph, names)
 
 
 def _design_findings(
@@ -635,6 +639,7 @@ def _design_findings(
     rule_names: AbstractSet[str],
     callables: Sequence[CallableNode],
     call_graph: Callable[[], CallGraph],
+    names: Names,
 ) -> list[Finding]:
     parents = _selected_design_parents(tree, rule_names)
     contexts = _selected_design_contexts(callables, rule_names)
@@ -645,7 +650,7 @@ def _design_findings(
         *_count_in_loop_findings(path, tree, rules, parents, contexts, bindings),
         *_development_fragment_findings(path, source, tree, rules, parents, contexts, graph),
         *_empty_catch_findings(path, tree, rules, parents, contexts),
-        *_coupling_findings(path, tree, classes, rules),
+        *_coupling_findings(path, tree, classes, rules, names),
         *_global_variable_findings(path, tree, rules, parents, bindings),
         *_cohesion_findings(path, classes, rules, graph),
     ]
@@ -704,6 +709,26 @@ def _selected_design_bindings(tree: ast.Module, rule_names: AbstractSet[str]) ->
     return _scope_bindings(tree)
 
 
+def _is_exit_call(node: ast.Call, graph: CallGraph) -> bool:
+    resolved = graph.qualified_name(node)
+    if resolved in EXIT_CALL_NAMES:
+        return True
+    raw = _dotted_name(node.func)
+    # An unbound spelling of a known exit call is still an exit. A local binding resolves to "".
+    return raw in EXIT_CALL_NAMES and resolved == f"builtins.{raw}"
+
+
+def _development_call_name(node: ast.Call, graph: CallGraph, unwanted: set[str]) -> str:
+    resolved = graph.qualified_name(node)
+    if resolved in unwanted:
+        return resolved
+    raw = _dotted_name(node.func)
+    # Built-in debug names stay relevant when nothing binds them. User names do not.
+    if raw in DEVELOPMENT_CALL_NAMES and resolved == f"builtins.{raw}":
+        return raw
+    return ""
+
+
 def _exit_expression_findings(
     path: Path,
     tree: ast.Module,
@@ -718,7 +743,7 @@ def _exit_expression_findings(
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
     for node in _module_nodes(tree):
-        if not isinstance(node, ast.Call) or graph.qualified_name(node) not in EXIT_CALL_NAMES:
+        if not isinstance(node, ast.Call) or not _is_exit_call(node, graph):
             continue
         scope, context = _design_scope(node, parents, contexts)
         if id(scope) in reported_scopes:
@@ -804,13 +829,8 @@ def _development_call_findings(
     for node in _module_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
-        name = _dotted_name(node.func)
-        resolved = graph.qualified_name(node)
-        if resolved in DEVELOPMENT_CALL_NAMES:
-            name = resolved
-        elif name not in unwanted or name == "breakpoint":
-            # A bare `breakpoint` that resolution could not pin on the builtins
-            # module is a user-defined or rebound name, so it stays quiet.
+        name = _development_call_name(node, graph, unwanted)
+        if not name:
             continue
         _, context = _design_scope(node, parents, contexts)
         subject = "The module" if context == "module" else f"The {context}"
@@ -893,12 +913,12 @@ def _coupling_findings(
     tree: ast.Module,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
+    names: Names,
 ) -> list[Finding]:
     rule = _rule(rules, COUPLING_BETWEEN_OBJECTS_RULE_NAME)
     if rule is None:
         return []
     maximum = rule.integer("maximum")
-    aliases = _module_import_aliases(tree)
     module_names = {
         node.name
         for node in tree.body
@@ -906,7 +926,7 @@ def _coupling_findings(
     }
     findings: list[Finding] = []
     for class_info in classes:
-        count = len(_class_dependencies(class_info, aliases, module_names))
+        count = len(_class_dependencies(class_info, names, module_names))
         if count < maximum:
             continue
         findings.append(
@@ -923,7 +943,7 @@ def _coupling_findings(
 
 def _class_dependencies(
     class_info: ClassInfo,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
     module_names: set[str],
 ) -> set[str]:
     local_names = {
@@ -933,222 +953,179 @@ def _class_dependencies(
         *(method.name for method in class_info.methods),
     }
     dependencies: set[str] = set()
-    active_aliases = dict(aliases)
-    active_names = set(local_names)
     for expression in [*class_info.node.bases, *class_info.node.decorator_list]:
-        dependencies, active_aliases, active_names = _dependency_state(
-            expression, active_aliases, active_names, dependencies
-        )
+        dependencies = _dependency_state(expression, names, class_info.node, local_names, dependencies)
     for statement in class_info.node.body:
         if not isinstance(statement, ast.ClassDef):
-            dependencies, active_aliases, active_names = _dependency_state(
-                statement, active_aliases, active_names, dependencies
-            )
+            dependencies = _dependency_state(statement, names, class_info.node, local_names, dependencies)
     if class_info.is_ast_visitor:
         dependencies = {dependency for dependency in dependencies if not dependency.startswith("ast.")}
     return dependencies
 
 
-def _module_import_aliases(tree: ast.Module) -> dict[str, tuple[str, bool]]:
-    aliases: dict[str, tuple[str, bool]] = {}
-    for statement in tree.body:
-        if isinstance(statement, ast.Import):
-            for item in statement.names:
-                binding = item.asname or item.name.split(".", 1)[0]
-                target = item.name if item.asname else binding
-                aliases[binding] = (target, False)
-        elif isinstance(statement, ast.ImportFrom):
-            module = _import_from_module(statement)
-            for item in statement.names:
-                aliases[item.asname or item.name] = (_imported_name(module, item.name), True)
-    return aliases
-
-
-def _import_from_module(node: ast.ImportFrom) -> str:
-    return f"{'.' * node.level}{node.module or ''}"
-
-
-def _imported_name(module: str, name: str) -> str:
-    separator = "" if module.endswith(".") else "."
-    return f"{module}{separator}{name}"
-
-
 def _dependency_state(
     node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
-    if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-        return _dependency_scope(node, aliases, local_names, dependencies)
-    if isinstance(node, (ast.Import, ast.ImportFrom)):
-        return _dependency_import_state(node, aliases, local_names, dependencies)
+) -> set[str]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return _dependency_function(node, names, scope, local_names, dependencies)
+    if isinstance(node, ast.ClassDef):
+        return dependencies
     if isinstance(node, (ast.AnnAssign, ast.arg)):
-        return _dependency_annotation_state(node, aliases, local_names, dependencies)
-    referenced = _dependency_reference(node, aliases, local_names, dependencies)
+        return _dependency_annotation_state(node, names, scope, local_names, dependencies)
+    referenced = _dependency_reference(node, names, scope, local_names, dependencies)
     if referenced is not None:
         return referenced
-    return _dependency_children(node, aliases, local_names, dependencies)
-
-
-def _dependency_scope(
-    node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
-    local_names: set[str],
-    dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return _dependency_function(node, aliases, local_names, dependencies)
-    return dependencies, aliases, local_names
-
-
-def _dependency_import_state(
-    node: ast.Import | ast.ImportFrom,
-    aliases: dict[str, tuple[str, bool]],
-    local_names: set[str],
-    dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
-    if isinstance(node, ast.ImportFrom):
-        return _dependency_import(node, aliases, local_names, dependencies, symbol=True)
-    return _dependency_import(node, aliases, local_names, dependencies, symbol=False)
+    return _dependency_children(node, names, scope, local_names, dependencies)
 
 
 def _dependency_annotation_state(
     node: ast.AnnAssign | ast.arg,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
+) -> set[str]:
     if isinstance(node, ast.arg):
-        return _dependency_annotation(node.annotation, aliases, local_names, dependencies)
-    dependencies, aliases, local_names = _dependency_annotation(node.annotation, aliases, local_names, dependencies)
+        return _dependency_annotation(node.annotation, names, scope, local_names, dependencies)
+    dependencies = _dependency_annotation(node.annotation, names, scope, local_names, dependencies)
     if node.value is None:
-        return dependencies, aliases, local_names
-    return _dependency_state(node.value, aliases, local_names, dependencies)
+        return dependencies
+    return _dependency_state(node.value, names, scope, local_names, dependencies)
 
 
 def _dependency_reference(
     node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]] | None:
+) -> set[str] | None:
     if isinstance(node, ast.Name):
         if isinstance(node.ctx, ast.Load):
-            dependencies = _with_dependency(node.id, aliases, local_names, dependencies)
-        return dependencies, aliases, local_names
-    if isinstance(node, ast.Attribute):
-        return _dependency_attribute(node, aliases, local_names, dependencies)
+            return _with_dependency(node, names, scope, local_names, dependencies)
+        return dependencies
+    if isinstance(node, ast.Attribute) and _dotted_name(node):
+        return _with_dependency(node, names, scope, local_names, dependencies)
     return None
-
-
-def _dependency_attribute(
-    node: ast.Attribute,
-    aliases: dict[str, tuple[str, bool]],
-    local_names: set[str],
-    dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]] | None:
-    name = _dotted_name(node)
-    if not name:
-        return None
-    return _with_dependency(name, aliases, local_names, dependencies), aliases, local_names
 
 
 def _dependency_children(
     node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
+) -> set[str]:
     for child in ast.iter_child_nodes(node):
-        dependencies, aliases, local_names = _dependency_state(child, aliases, local_names, dependencies)
-    return dependencies, aliases, local_names
+        dependencies = _dependency_state(child, names, scope, local_names, dependencies)
+    return dependencies
 
 
 def _dependency_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
+) -> set[str]:
     scope_names = {*(argument.arg for argument in _arguments(node.args)), *_direct_bindings(node)}
+    scope_names -= _function_import_names(node)
     inner_names = local_names | scope_names
-    inner_aliases = {name: alias for name, alias in aliases.items() if name not in scope_names}
     for decorator in node.decorator_list:
-        dependencies, inner_aliases, inner_names = _dependency_state(
-            decorator, inner_aliases, inner_names, dependencies
-        )
+        dependencies = _dependency_state(decorator, names, scope, inner_names, dependencies)
     for argument in _arguments(node.args):
-        dependencies, inner_aliases, inner_names = _dependency_state(
-            argument, inner_aliases, inner_names, dependencies
-        )
+        dependencies = _dependency_state(argument, names, scope, inner_names, dependencies)
     for default in [*node.args.defaults, *node.args.kw_defaults]:
         if default is not None:
-            dependencies, inner_aliases, inner_names = _dependency_state(
-                default, inner_aliases, inner_names, dependencies
-            )
-    dependencies, inner_aliases, inner_names = _dependency_annotation(
-        node.returns, inner_aliases, inner_names, dependencies
-    )
+            dependencies = _dependency_state(default, names, scope, inner_names, dependencies)
+    dependencies = _dependency_annotation(node.returns, names, scope, inner_names, dependencies)
     for statement in node.body:
-        dependencies, inner_aliases, inner_names = _dependency_state(statement, inner_aliases, inner_names, dependencies)
-    return dependencies, aliases, local_names
+        dependencies = _dependency_state(statement, names, node, inner_names, dependencies)
+    return dependencies
 
 
-def _dependency_import(
-    node: ast.Import | ast.ImportFrom,
-    aliases: dict[str, tuple[str, bool]],
-    local_names: set[str],
-    dependencies: set[str],
-    symbol: bool,
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
-    updated = dict(aliases)
-    names = set(local_names)
-    module = _import_from_module(node) if isinstance(node, ast.ImportFrom) else ""
-    for item in node.names:
-        if symbol:
-            binding = item.asname or item.name
-            updated[binding] = (_imported_name(module, item.name), True)
-        else:
-            binding = item.asname or item.name.split(".", 1)[0]
-            updated[binding] = (item.name if item.asname else binding, False)
-        names.discard(binding)
-    return dependencies, updated, names
+def _function_import_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    found: set[str] = set()
+    for statement in node.body:
+        found.update(_import_names_under(statement))
+    return found
+
+
+def _import_names_under(node: ast.AST) -> set[str]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return set()
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return {alias.asname or alias.name.split(".", 1)[0] for alias in node.names}
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        found.update(_import_names_under(child))
+    return found
 
 
 def _dependency_annotation(
     annotation: ast.expr | None,
-    aliases: dict[str, tuple[str, bool]],
-    local_names: set[str],
-    dependencies: set[str],
-) -> tuple[set[str], dict[str, tuple[str, bool]], set[str]]:
-    expression = _annotation_expression(annotation)
-    if expression is None:
-        return dependencies, aliases, local_names
-    return _dependency_state(expression, aliases, local_names, dependencies)
-
-
-def _with_dependency(
-    name: str,
-    aliases: dict[str, tuple[str, bool]],
+    names: Names,
+    scope: ast.AST,
     local_names: set[str],
     dependencies: set[str],
 ) -> set[str]:
-    root, *tail = name.split(".")
-    if root in local_names or root in dir(builtins) or root == "typing":
+    expression = _annotation_expression(annotation)
+    if expression is None:
         return dependencies
-    if root in aliases:
-        imported, is_symbol = aliases[root]
-        dependency = imported if is_symbol else ".".join([imported, *tail[:1]])
-    elif tail:
-        dependency = ".".join([root, *tail[:1]])
-    elif root[:1].isupper():
-        dependency = root
-    else:
-        return dependencies
-    if dependency.startswith(("typing.", "collections.abc.")):
+    return _dependency_state(expression, names, scope, local_names, dependencies)
+
+
+def _with_dependency(
+    node: ast.expr,
+    names: Names,
+    scope: ast.AST,
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
+    dependency = _dependency_name(node, names, scope, local_names)
+    if not dependency or dependency.startswith(("typing.", "collections.abc.", "builtins.")):
         return dependencies
     return {*dependencies, dependency}
+
+
+def _dependency_name(
+    node: ast.expr,
+    names: Names,
+    scope: ast.AST,
+    local_names: set[str],
+) -> str:
+    dotted = _dotted_name(node)
+    if not dotted:
+        return ""
+    root, *tail = dotted.split(".")
+    if root in dir(builtins) or root == "typing":
+        return ""
+    imported = names.imported(node, scope=scope)
+    if imported is not None:
+        return _imported_dependency(imported, tail)
+    if root in local_names:
+        return ""
+    return _spelling_dependency(root, tail)
+
+
+def _imported_dependency(imported: tuple[str, bool], tail: list[str]) -> str:
+    canonical, is_symbol = imported
+    if is_symbol:
+        return canonical
+    return ".".join([canonical, *tail[:1]])
+
+
+def _spelling_dependency(root: str, tail: list[str]) -> str:
+    if tail:
+        return ".".join([root, *tail[:1]])
+    if root[:1].isupper():
+        return root
+    return ""
+
 
 
 def _annotation_expression(annotation: ast.expr | None) -> ast.expr | None:
@@ -1697,14 +1674,14 @@ def _local_scope_names(
 
 
 def _selected_explicitness_findings(
-    path: Path, tree: ast.Module, rules: Sequence[LoadedRule], rule_names: AbstractSet[str]
+    path: Path, tree: ast.Module, rules: Sequence[LoadedRule], rule_names: AbstractSet[str], names: Names
 ) -> list[Finding]:
     if not _has_any_rule(rule_names, EXPLICITNESS_RULE_NAMES):
         return []
-    return _explicitness_findings(path, tree, rules)
+    return _explicitness_findings(path, tree, rules, names)
 
 
-def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
+def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule], names: Names) -> list[Finding]:
     finders = [
         (rule, finder)
         for rule, finder in (
@@ -1724,6 +1701,7 @@ def _explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedR
             name_scopes,
             parents=parents,
             enclosing=callable_info.enclosing,
+            names=names,
         )
         for rule, finder in finders:
             findings.extend(finder(path, callable_info, rule, chain))
@@ -2013,6 +1991,7 @@ class _ScopeChain:
     parents: dict[int, ast.AST] | None = None
     enclosing: tuple[ast.AST, ...] = ()
     callable_node: ast.AST | None = None
+    names: Names | None = None
 
     def __post_init__(self) -> None:
         if not self.enclosing and len(self.scopes) > 1:
@@ -2032,6 +2011,7 @@ class _ScopeChain:
             self.parents,
             enclosing=self.enclosing,
             callable_node=self.callable_node,
+            names=self.names,
         )
 
     def binding(self, name: str) -> tuple[str, ast.AST]:
@@ -2049,18 +2029,9 @@ class _ScopeChain:
         return _binding_kind(name, self.name_scopes[id(module)]) or "unbound", module
 
     def qualified_name(self, node: ast.expr) -> str:
-        dotted = _dotted_name(node)
-        if not dotted:
+        if self.names is None:
             return ""
-        root, separator, member = dotted.partition(".")
-        kind, scope = self.binding(root)
-        if kind == "unbound":
-            base = f"builtins.{root}"
-        elif kind == "definition":
-            base = self.name_scopes[id(scope)].imports.get(root, "")
-        else:
-            base = ""
-        return f"{base}{separator}{member}" if base else ""
+        return self.names.qualified(node)
 
     def is_module(self, name: str) -> bool:
         kind, scope = self.binding(name)
@@ -2090,7 +2061,7 @@ class _NameScope:
     definitions: frozenset[str]
     global_names: frozenset[str]
     nonlocal_names: frozenset[str]
-    imports: dict[str, str]
+    imports: frozenset[str]
     modules: frozenset[str]
 
 
@@ -2112,7 +2083,7 @@ class _NameParts:
     constants: frozenset[str] = frozenset()
     global_names: frozenset[str] = frozenset()
     nonlocal_names: frozenset[str] = frozenset()
-    imports: tuple[tuple[str, str], ...] = ()
+    imports: tuple[str, ...] = ()
     modules: frozenset[str] = frozenset()
 
 
@@ -2126,7 +2097,7 @@ def _scope_name_record(statements: Sequence[ast.AST], extra_variables: set[str])
         definitions=frozenset(set(parts.definitions) | constants),
         global_names=parts.global_names,
         nonlocal_names=parts.nonlocal_names,
-        imports=dict(parts.imports),
+        imports=frozenset(parts.imports),
         modules=parts.modules,
     )
 
@@ -2167,7 +2138,7 @@ def _imported_name_parts(parts: _NameParts, node: ast.Import | ast.ImportFrom) -
     return replace(
         parts,
         definitions=parts.definitions | frozenset(_import_binding_names(node)),
-        imports=(*parts.imports, *tuple(_import_qualified_names(node).items())),
+        imports=(*parts.imports, *_import_binding_names(node)),
         modules=modules,
     )
 
@@ -2186,17 +2157,6 @@ def _nested_name_parts(parts: _NameParts, node: ast.AST) -> _NameParts:
 def _constant_annotation_parts(parts: _NameParts, node: ast.AnnAssign) -> _NameParts:
     names = frozenset(name.id for name in _target_names(node.target))
     return replace(parts, constants=parts.constants | names)
-
-
-def _import_qualified_names(node: ast.Import | ast.ImportFrom) -> dict[str, str]:
-    if isinstance(node, ast.ImportFrom):
-        module = _import_from_module(node)
-        return {item.asname or item.name: _imported_name(module, item.name) for item in node.names}
-    names: dict[str, str] = {}
-    for item in node.names:
-        package = item.name.split(".", 1)[0]
-        names[item.asname or package] = item.name if item.asname else package
-    return names
 
 
 def _is_constant_annotation(annotation: ast.expr) -> bool:
@@ -2751,12 +2711,13 @@ def _unused_formal_parameter_findings(
         tuple[ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, symtable.SymbolTable, frozenset[str]]
     ],
     protocol_method_ids: set[int],
+    names: Names,
 ) -> list[Finding]:
     rule = _rule(rules, UNUSED_FORMAL_PARAMETER_RULE_NAME)
     if rule is None:
         return []
     findings: list[Finding] = []
-    visitor_method_ids = _ast_visitor_method_ids(tree)
+    visitor_method_ids = _ast_visitor_method_ids(tree, names)
     for node, table, used_names in function_scopes:
         if _is_conservative_callable(node, id(node) in protocol_method_ids):
             continue
@@ -3626,8 +3587,8 @@ def _named_expression_targets(node: ast.AST) -> list[ast.Name]:
     return found
 
 
-def _naming_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
-    targets, callables = _naming_roles(tree)
+def _naming_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRule], names: Names) -> list[Finding]:
+    targets, callables = _naming_roles(tree, names)
     findings: list[Finding] = []
     findings.extend(_short_class_name_findings(path, targets, rules))
     findings.extend(_long_class_name_findings(path, targets, rules))
@@ -4131,12 +4092,12 @@ class _NamingState:
     type_alias_annotation_ids: frozenset[int] = frozenset()
 
 
-def _naming_roles(tree: ast.Module) -> tuple[list[NamingTarget], list[NamingCallable]]:
+def _naming_roles(tree: ast.Module, names: Names) -> tuple[list[NamingTarget], list[NamingCallable]]:
     state = _naming_visit(
         tree,
         _NamingState(
-            visitor_method_ids=frozenset(_ast_visitor_method_ids(tree)),
-            type_alias_annotation_ids=frozenset(_type_alias_annotation_ids(tree)),
+            visitor_method_ids=frozenset(_ast_visitor_method_ids(tree, names)),
+            type_alias_annotation_ids=frozenset(_type_alias_annotation_ids(tree, names)),
         ),
     )
     for target in _named_binding_targets(tree):
@@ -4158,105 +4119,22 @@ def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
     return targets
 
 
-def _type_alias_annotation_ids(tree: ast.Module) -> set[int]:
-    found, _aliases = _type_alias_ids(tree, {}, ())
-    return found
+def _type_alias_annotation_ids(tree: ast.Module, names: Names) -> set[int]:
+    return _type_alias_ids(tree, names)
 
 
-def _type_alias_ids(
-    node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
-    class_outer: tuple[dict[str, tuple[str, bool]], ...],
-) -> tuple[set[int], dict[str, tuple[str, bool]]]:
-    if isinstance(node, (ast.Import, ast.ImportFrom)):
-        return set(), {**aliases, **_statement_import_aliases(node)}
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return _type_alias_function_ids(node, aliases, class_outer)
-    if isinstance(node, ast.ClassDef):
-        return _type_alias_class_ids(node, aliases, class_outer)
-    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-        return _type_alias_assignment_ids(node, aliases, class_outer)
-    return _type_alias_child_ids(node, aliases, class_outer)
-
-
-def _type_alias_function_ids(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    aliases: dict[str, tuple[str, bool]],
-    class_outer: tuple[dict[str, tuple[str, bool]], ...],
-) -> tuple[set[int], dict[str, tuple[str, bool]]]:
-    inherited = class_outer[-1] if class_outer else aliases
-    local_names = _direct_bindings(node)
-    inner = {name: alias for name, alias in inherited.items() if name not in local_names}
-    found: set[int] = set()
-    for statement in node.body:
-        statement_ids, inner = _type_alias_ids(statement, inner, class_outer)
-        found |= statement_ids
-    return found, _aliases_without(aliases, node.name)
-
-
-def _type_alias_class_ids(
-    node: ast.ClassDef,
-    aliases: dict[str, tuple[str, bool]],
-    class_outer: tuple[dict[str, tuple[str, bool]], ...],
-) -> tuple[set[int], dict[str, tuple[str, bool]]]:
-    body_aliases = dict(aliases)
-    found: set[int] = set()
-    enclosed = (*class_outer, aliases)
-    for statement in node.body:
-        statement_ids, body_aliases = _type_alias_ids(statement, body_aliases, enclosed)
-        found |= statement_ids
-    return found, _aliases_without(aliases, node.name)
-
-
-def _type_alias_assignment_ids(
-    node: ast.Assign | ast.AnnAssign | ast.AugAssign,
-    aliases: dict[str, tuple[str, bool]],
-    class_outer: tuple[dict[str, tuple[str, bool]], ...],
-) -> tuple[set[int], dict[str, tuple[str, bool]]]:
-    found = _recorded_type_alias_ids(node, aliases)
-    found, aliases = _type_alias_child_ids(node, aliases, class_outer, found)
-    return found, _aliases_without_assignment(aliases, node)
-
-
-def _recorded_type_alias_ids(
-    node: ast.Assign | ast.AnnAssign | ast.AugAssign,
-    aliases: dict[str, tuple[str, bool]],
-) -> set[int]:
-    if isinstance(node, ast.AnnAssign) and _is_type_alias_annotation(node.annotation, aliases):
-        return {id(node.annotation)}
-    return set()
-
-
-def _type_alias_child_ids(
-    node: ast.AST,
-    aliases: dict[str, tuple[str, bool]],
-    class_outer: tuple[dict[str, tuple[str, bool]], ...],
-    found: set[int] | None = None,
-) -> tuple[set[int], dict[str, tuple[str, bool]]]:
-    accumulated = set(found) if found is not None else set()
+def _type_alias_ids(node: ast.AST, names: Names) -> set[int]:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        found: set[int] = set()
+        for statement in node.body:
+            found |= _type_alias_ids(statement, names)
+        return found
+    found = set()
+    if isinstance(node, ast.AnnAssign) and _is_type_alias_annotation(node.annotation, names):
+        found.add(id(node.annotation))
     for child in ast.iter_child_nodes(node):
-        child_ids, aliases = _type_alias_ids(child, aliases, class_outer)
-        accumulated |= child_ids
-    return accumulated, aliases
-
-
-def _aliases_without(
-    aliases: dict[str, tuple[str, bool]],
-    name: str,
-) -> dict[str, tuple[str, bool]]:
-    restored = dict(aliases)
-    restored.pop(name, None)
-    return restored
-
-
-def _aliases_without_assignment(
-    aliases: dict[str, tuple[str, bool]],
-    statement: ast.stmt,
-) -> dict[str, tuple[str, bool]]:
-    restored = dict(aliases)
-    for name in _statement_assigned_names(statement):
-        restored.pop(name, None)
-    return restored
+        found |= _type_alias_ids(child, names)
+    return found
 
 
 def _naming_visit(node: ast.AST, state: _NamingState) -> _NamingState:
@@ -4488,18 +4366,19 @@ def _target_names(node: ast.AST) -> list[ast.Name]:
     return []
 
 
-def _is_type_alias_annotation(
-    node: ast.expr,
-    import_aliases: dict[str, tuple[str, bool]] | None = None,
-) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "TypeAlias" or _resolved_import_name(node, import_aliases or {}) == "typing.TypeAlias"
-    return (
+def _is_type_alias_annotation(node: ast.expr, names: Names | None = None) -> bool:
+    if isinstance(node, ast.Name) and node.id == "TypeAlias":
+        return True
+    if (
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
         and node.value.id == "typing"
         and node.attr == "TypeAlias"
-    ) or _resolved_import_name(node, import_aliases or {}) == "typing.TypeAlias"
+    ):
+        return True
+    if names is None:
+        return False
+    return names.qualified(_base_expression(node)) == "typing.TypeAlias"
 
 
 def _is_final_annotation(node: ast.expr) -> bool:
@@ -4693,10 +4572,10 @@ def _excessive_class_complexity_findings(
     ]
 
 
-def _classes(tree: ast.Module) -> list[ClassInfo]:
+def _classes(tree: ast.Module, names: Names) -> list[ClassInfo]:
     classes = []
     protocol_names = _protocol_base_names(tree)
-    visitor_ids = _ast_visitor_class_ids(tree)
+    visitor_ids = _ast_visitor_class_ids(tree, names)
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     for node in _module_nodes(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
@@ -4711,9 +4590,9 @@ def _classes(tree: ast.Module) -> list[ClassInfo]:
     return sorted(classes, key=lambda class_info: class_info.node.lineno)
 
 
-def _ast_visitor_class_ids(tree: ast.Module) -> set[int]:
+def _ast_visitor_class_ids(tree: ast.Module, names: Names) -> set[int]:
     class_nodes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
-    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, _class_import_aliases(tree))
+    visitor_ids = _direct_ast_visitor_class_ids(class_nodes, names)
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     inherited_ids = _inherited_ast_visitor_class_ids(
         class_nodes,
@@ -4735,80 +4614,22 @@ def _child_statements(node: ast.AST) -> list[ast.stmt]:
 
 
 def _base_dotted_name(node: ast.expr) -> str:
+    return _dotted_name(_base_expression(node))
+
+
+def _base_expression(node: ast.expr) -> ast.expr:
     while isinstance(node, ast.Subscript):
         node = node.value
-    return _dotted_name(node)
+    return node
 
 
-def _direct_ast_visitor_class_ids(
-    class_nodes: list[ast.ClassDef],
-    aliases_by_class: dict[int, dict[str, tuple[str, bool]]],
-) -> set[int]:
+def _direct_ast_visitor_class_ids(class_nodes: list[ast.ClassDef], names: Names) -> set[int]:
     visitor_bases = {"ast.NodeVisitor", "ast.NodeTransformer"}
     return {
         id(node)
         for node in class_nodes
-        if {
-            _resolved_import_name(base, aliases_by_class.get(id(node), {}))
-            for base in node.bases
-        }
-        & visitor_bases
+        if {names.qualified(_base_expression(base)) for base in node.bases} & visitor_bases
     }
-
-
-def _class_import_aliases(tree: ast.Module) -> dict[int, dict[str, tuple[str, bool]]]:
-    return _index_class_import_aliases(tree.body, {})
-
-
-def _index_class_import_aliases(
-    statements: list[ast.stmt],
-    inherited: dict[str, tuple[str, bool]],
-) -> dict[int, dict[str, tuple[str, bool]]]:
-    aliases = dict(inherited)
-    aliases_by_class: dict[int, dict[str, tuple[str, bool]]] = {}
-    for statement in statements:
-        if isinstance(statement, (ast.Import, ast.ImportFrom)):
-            aliases.update(_statement_import_aliases(statement))
-            continue
-        if isinstance(statement, ast.ClassDef):
-            aliases_by_class[id(statement)] = dict(aliases)
-            aliases_by_class.update(_index_class_import_aliases(statement.body, aliases))
-            aliases.pop(statement.name, None)
-            continue
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            aliases_by_class.update(_index_class_import_aliases(statement.body, aliases))
-            aliases.pop(statement.name, None)
-            continue
-        for name in _statement_assigned_names(statement):
-            aliases.pop(name, None)
-        aliases_by_class.update(_index_class_import_aliases(_child_statements(statement), aliases))
-    return aliases_by_class
-
-
-def _statement_import_aliases(
-    statement: ast.Import | ast.ImportFrom,
-) -> dict[str, tuple[str, bool]]:
-    if isinstance(statement, ast.Import):
-        return {
-            item.asname or item.name.split(".", 1)[0]: (
-                item.name if item.asname else item.name.split(".", 1)[0],
-                False,
-            )
-            for item in statement.names
-        }
-    module = _import_from_module(statement)
-    return {
-        item.asname or item.name: (_imported_name(module, item.name), True)
-        for item in statement.names
-    }
-
-
-def _statement_assigned_names(statement: ast.stmt) -> set[str]:
-    if isinstance(statement, ast.Assign):
-        return {name for target in statement.targets for name in _assigned_names(target)}
-    if isinstance(statement, (ast.AnnAssign, ast.AugAssign)):
-        return set(_assigned_names(statement.target))
-    return set()
 
 
 def _inherited_ast_visitor_class_ids(
@@ -4936,20 +4757,8 @@ def _has_unresolved_base(
     )
 
 
-def _resolved_import_name(
-    node: ast.expr,
-    aliases: dict[str, tuple[str, bool]],
-) -> str:
-    name = _base_dotted_name(node)
-    root, *tail = name.split(".")
-    if root not in aliases:
-        return ""
-    imported, _is_symbol = aliases[root]
-    return ".".join([imported, *tail])
-
-
-def _ast_visitor_method_ids(tree: ast.Module) -> set[int]:
-    visitor_ids = _ast_visitor_class_ids(tree)
+def _ast_visitor_method_ids(tree: ast.Module, names: Names) -> set[int]:
+    visitor_ids = _ast_visitor_class_ids(tree, names)
     return {
         id(statement)
         for node in _module_nodes(tree)
