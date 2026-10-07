@@ -4690,6 +4690,28 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "    return False\n",
                 6,
             ),
+            "if_try_finally_returns": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            return 1\n"
+                "        finally:\n"
+                "            cleanup()\n"
+                "    else:\n"
+                "        return 2\n",
+                8,
+            ),
+            "if_finally_returns": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            pass\n"
+                "        finally:\n"
+                "            return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                8,
+            ),
         }
         quiet = {
             "for_breaks": (
@@ -4751,6 +4773,26 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "    elif value == 2:\n"
                 "        raise ValueError(value)\n"
                 "    return 3\n"
+            ),
+            "try_finally_completes": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            cleanup()\n"
+                "        finally:\n"
+                "            cleanup()\n"
+                "    else:\n"
+                "        return 2\n"
+            ),
+            "try_except_falls_through": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            return 1\n"
+                "        except Exception:\n"
+                "            pass\n"
+                "    else:\n"
+                "        return 2\n"
             ),
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
