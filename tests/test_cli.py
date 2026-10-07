@@ -4642,6 +4642,58 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return 2\n",
                 5,
             ),
+            "match_returns": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case _:\n"
+                "                return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                7,
+            ),
+            "match_capture_returns": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case captured:\n"
+                "                return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                7,
+            ),
+            "match_or_pattern_returns": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case 1 | _:\n"
+                "                return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                7,
+            ),
+            "match_continue_exits_if": (
+                "def scan(items):\n"
+                "    for item in items:\n"
+                "        if item:\n"
+                "            match item:\n"
+                "                case _:\n"
+                "                    continue\n"
+                "        else:\n"
+                "            break\n",
+                8,
+            ),
+            "match_break_exits_if": (
+                "def scan(items):\n"
+                "    for item in items:\n"
+                "        if item:\n"
+                "            match item:\n"
+                "                case _:\n"
+                "                    break\n"
+                "        else:\n"
+                "            continue\n",
+                8,
+            ),
             "for_returns": (
                 "def first(values):\n"
                 "    for value in values:\n"
@@ -4793,6 +4845,53 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "            pass\n"
                 "    else:\n"
                 "        return 2\n"
+            ),
+            "match_without_irrefutable_case": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case 1:\n"
+                "                return 1\n"
+                "    else:\n"
+                "        return 2\n"
+            ),
+            "match_guarded_wildcard": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case _ if valid(value):\n"
+                "                return 1\n"
+                "    else:\n"
+                "        return 2\n"
+            ),
+            "match_case_falls_through": (
+                "def check(cond, value):\n"
+                "    if cond:\n"
+                "        match value:\n"
+                "            case 1:\n"
+                "                return 1\n"
+                "            case _:\n"
+                "                pass\n"
+                "    else:\n"
+                "        return 2\n"
+            ),
+            "loop_else_match_break": (
+                "def stop_on_break(values):\n"
+                "    for value in values:\n"
+                "        match value:\n"
+                "            case _:\n"
+                "                break\n"
+                "    else:\n"
+                "        return None\n"
+            ),
+            "loop_else_match_continue": (
+                "def stop_on_continue(values):\n"
+                "    for value in values:\n"
+                "        match value:\n"
+                "            case _:\n"
+                "                continue\n"
+                "    else:\n"
+                "        return None\n"
             ),
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
