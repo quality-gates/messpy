@@ -518,7 +518,7 @@ def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequen
         *_selected_naming_findings(path, tree, rules, rule_names),
         *_unused_local_variable_findings(path, rules, function_scopes, comprehension_scopes, protocol_method_ids),
         *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids),
-        *_unused_private_field_findings(path, tree, classes, rules, private_member_usage),
+        *_unused_private_field_findings(path, source, tree, classes, rules, private_member_usage),
         *_unused_private_method_findings(path, classes, rules, private_member_usage),
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph),
@@ -3224,6 +3224,7 @@ def _uncached_scope_usage(
 
 def _unused_private_field_findings(
     path: Path,
+    source: str,
     tree: ast.Module,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
@@ -3236,12 +3237,18 @@ def _unused_private_field_findings(
         return []
     findings: list[Finding] = []
     dataclass_names = _dataclass_decorator_names(tree)
+    # Defaults, decorators, and class-body expressions resolve in the class
+    # scope. Nested functions do not close over that scope, so a bare name
+    # there is not a use of the field. The class symbol table records only
+    # the references that actually resolve there.
+    referenced_names = _class_scope_referenced_names(source)
     for class_info in classes:
         if _is_dataclass(class_info.node, dataclass_names):
             continue
         fields = _private_fields(class_info.node)
+        referenced = referenced_names.get((class_info.node.name, class_info.node.lineno), frozenset())
         for name, line in fields.items():
-            if name in usage.accessed_names or name in usage.exported_names:
+            if _private_field_has_proven_use(name, usage, referenced):
                 continue
             findings.append(
                 Finding(
@@ -3254,6 +3261,36 @@ def _unused_private_field_findings(
                 )
             )
     return findings
+
+
+def _private_field_has_proven_use(
+    name: str, usage: PrivateMemberUsage, referenced: frozenset[str]
+) -> bool:
+    return name in usage.accessed_names or name in usage.exported_names or name in referenced
+
+
+def _class_scope_referenced_names(source: str) -> dict[tuple[str, int], frozenset[str]]:
+    try:
+        table = symtable.symtable(source, "<source>", "exec")
+    except SyntaxError:
+        # ast.parse accepts some sources symtable rejects. Keep attribute-only
+        # detection rather than failing the whole file for this rule.
+        return {}
+    referenced: dict[tuple[str, int], frozenset[str]] = {}
+    for class_table in _class_symbol_tables(table):
+        referenced[(class_table.get_name(), class_table.get_lineno())] = _referenced_identifiers(class_table)
+    return referenced
+
+
+def _referenced_identifiers(table: symtable.SymbolTable) -> frozenset[str]:
+    return frozenset(name for name in table.get_identifiers() if table.lookup(name).is_referenced())
+
+
+def _class_symbol_tables(table: symtable.SymbolTable) -> list[symtable.SymbolTable]:
+    found = [table] if table.get_type() == "class" else []
+    for child in table.get_children():
+        found.extend(_class_symbol_tables(child))
+    return found
 
 
 def _unused_private_method_findings(
