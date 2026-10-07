@@ -2362,6 +2362,8 @@ def _statement_always_exits(statement: ast.stmt, *, allow_loop_jumps: bool = Tru
         return True
     if isinstance(statement, ast.If):
         return _if_statement_always_exits(statement, allow_loop_jumps=allow_loop_jumps)
+    if isinstance(statement, ast.Match):
+        return _match_statement_always_exits(statement, allow_loop_jumps=allow_loop_jumps)
     if isinstance(statement, (ast.With, ast.AsyncWith)):
         return _block_always_exits(statement.body, allow_loop_jumps=allow_loop_jumps)
     if isinstance(statement, (ast.Try, ast.TryStar)):
@@ -2376,6 +2378,16 @@ def _if_statement_always_exits(node: ast.If, *, allow_loop_jumps: bool = True) -
     return all(
         _block_always_exits(branch, allow_loop_jumps=allow_loop_jumps) for branch in branches
     ) and _block_always_exits(tail, allow_loop_jumps=allow_loop_jumps)
+
+
+def _match_statement_always_exits(node: ast.Match, *, allow_loop_jumps: bool = True) -> bool:
+    if not any(
+        case.guard is None and _match_pattern_is_irrefutable(case.pattern) for case in node.cases
+    ):
+        return False
+    return all(
+        _block_always_exits(case.body, allow_loop_jumps=allow_loop_jumps) for case in node.cases
+    )
 
 
 def _try_statement_always_exits(node: ast.Try | ast.TryStar, *, allow_loop_jumps: bool = True) -> bool:
@@ -4110,18 +4122,18 @@ def _npath_match(node: ast.Match) -> int:
         for case in node.cases
     )
     if not any(
-        case.guard is None and _npath_match_pattern_is_irrefutable(case.pattern)
+        case.guard is None and _match_pattern_is_irrefutable(case.pattern)
         for case in node.cases
     ):
         case_paths += 1
     return _npath_expression(node.subject) * case_paths
 
 
-def _npath_match_pattern_is_irrefutable(pattern: ast.AST) -> bool:
+def _match_pattern_is_irrefutable(pattern: ast.AST) -> bool:
     if isinstance(pattern, ast.MatchAs):
-        return pattern.pattern is None or _npath_match_pattern_is_irrefutable(pattern.pattern)
+        return pattern.pattern is None or _match_pattern_is_irrefutable(pattern.pattern)
     return isinstance(pattern, ast.MatchOr) and any(
-        _npath_match_pattern_is_irrefutable(option) for option in pattern.patterns
+        _match_pattern_is_irrefutable(option) for option in pattern.patterns
     )
 
 
