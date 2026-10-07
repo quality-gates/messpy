@@ -3007,6 +3007,149 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_unusedcode_treats_a_private_field_read_in_a_parameter_default_as_a_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "parameter_default_field.py"
+            source.write_text(
+                "class Client:\n"
+                "    _timeout = 30\n"
+                "    _unused = 1\n"
+                "\n"
+                "    def connect(self, timeout=_timeout):\n"
+                "        return timeout\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertNotIn("_timeout", stdout.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_unused'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_treats_a_private_field_read_in_a_decorator_as_a_use(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "decorator_field.py"
+            source.write_text(
+                "class Routes:\n"
+                "    _route = '/health'\n"
+                "    _unused = 1\n"
+                "\n"
+                "    @register(_route)\n"
+                "    def health(self):\n"
+                "        return 'ok'\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertNotIn("_route", stdout.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_unused'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_treats_a_private_field_read_in_a_class_body_expression_as_a_use(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "class_body_field.py"
+            source.write_text(
+                "class Math:\n"
+                "    _base = 10\n"
+                "    _unused = 1\n"
+                "    limit = _base * 2\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertNotIn("_base", stdout.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_unused'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_still_reports_a_private_field_named_only_in_a_nested_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "nested_scope_field.py"
+            source.write_text(
+                "class Client:\n"
+                "    _timeout = 30\n"
+                "\n"
+                "    def connect(self):\n"
+                "        def inner(timeout=_timeout):\n"
+                "            return timeout\n"
+                "        return _timeout\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_timeout'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_reports_private_fields_when_symtable_rejects_the_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "duplicate_args_field.py"
+            source.write_text(
+                "class Cache:\n"
+                "    def remember(self, value, value):\n"
+                "        self._stale = 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertNotIn("ProcessingError", stdout.getvalue())
+        self.assertIn(
+            "UnusedPrivateField [priority 3] Avoid unused private fields such as '_stale'.",
+            stdout.getvalue(),
+        )
+
     def test_unusedcode_reports_an_unused_private_method_through_the_command_entry(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "unused_method.py"
