@@ -632,6 +632,48 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual((0, ""), (status, errors))
         self.assertEqual([], report)
 
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 type aliases require Python 3.12+")
+    def test_pep695_type_alias_is_not_an_implicit_input(self) -> None:
+        status, report, errors = _analyze(
+            "type Result = dict[str, str]\n"
+            "\n"
+            "total = 0\n"
+            "\n"
+            "def create() -> Result:\n"
+            "    return Result(total)\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitInput [priority 3] The function create() reads the implicit input total. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 type aliases require Python 3.12+")
+    def test_pep695_type_alias_in_an_enclosing_function_is_not_an_implicit_input(self) -> None:
+        status, report, errors = _analyze(
+            "def outer(seed):\n"
+            "    type Result = dict[str, str]\n"
+            "    extra = seed\n"
+            "    def create() -> Result:\n"
+            "        return Result(extra)\n"
+            "    return create\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "5: ImplicitInput [priority 3] The function create() reads the implicit input extra. "
+                "Pass it as an argument instead."
+            ],
+            report,
+        )
+
     def test_method_decorator_mutating_instance_state_reports_implicit_instance_output(self) -> None:
         status, report, errors = _analyze(
             "class Hub:\n"

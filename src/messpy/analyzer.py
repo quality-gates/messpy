@@ -2138,7 +2138,20 @@ def _name_parts(parts: _NameParts, node: ast.AST) -> _NameParts:
         return _imported_name_parts(parts, node)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return replace(parts, definitions=parts.definitions | frozenset(_recorded_binding_names(node)))
+    # A PEP 695 alias binds a definition. Its value is not evaluated in this scope,
+    # so the name must not fall through to the Store child and become a variable.
+    alias_name = _type_alias_name(node)
+    if alias_name:
+        return replace(parts, definitions=parts.definitions | frozenset({alias_name}))
     return _nested_name_parts(parts, node)
+
+
+def _type_alias_name(node: ast.AST) -> str:
+    type_alias = getattr(ast, "TypeAlias", None)
+    if type_alias is None or not isinstance(node, type_alias):
+        return ""
+    name = node.name
+    return name.id if isinstance(name, ast.Name) else ""
 
 
 def _declared_name_parts(parts: _NameParts, node: ast.Global | ast.Nonlocal) -> _NameParts:

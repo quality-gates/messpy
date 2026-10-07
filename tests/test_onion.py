@@ -781,6 +781,27 @@ class OnionAcceptanceTests(unittest.TestCase):
         self.assertEqual((0, ""), (status, errors))
         self.assertEqual([], report)
 
+    @unittest.skipIf(sys.version_info < (3, 12), "type aliases require Python 3.12")
+    def test_a_pep695_type_alias_is_not_a_domain_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "type Result = dict[str, str]\n"
+            "\n"
+            "total = 0\n"
+            "\n"
+            "def create() -> Result:\n"
+            "    return Result(total)\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: DomainAction [priority 2] The function create() reads the implicit input total. "
+                "Pass it as an argument instead.",
+            ],
+            report,
+        )
+
     def test_future_annotations_keep_signature_expressions_quiet(self) -> None:
         status, report, errors = _analyze_source(
             "from __future__ import annotations\n"
