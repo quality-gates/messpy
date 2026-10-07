@@ -3253,6 +3253,90 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_label'.", report)
 
+    def test_unusedcode_still_reports_a_private_method_loaded_only_from_an_unrelated_receiver(self) -> None:
+        report = self._unused_private_method_report(
+            "class Logger:\n"
+            "    def write(self, record):\n"
+            "        return record._label\n"
+            "\n"
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "    def show(self):\n"
+            "        return 1\n"
+        )
+
+        self.assertIn(
+            ":6: UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_label'.",
+            report,
+        )
+
+    def test_unusedcode_still_reports_a_private_field_loaded_only_from_an_unrelated_receiver(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unrelated_field.py"
+            source.write_text(
+                "class Logger:\n"
+                "    def write(self, record):\n"
+                "        return record._label\n"
+                "\n"
+                "class Box:\n"
+                "    _label = 'box'\n"
+                "\n"
+                "    def show(self):\n"
+                "        return 1\n",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateField"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            ":6: UnusedPrivateField [priority 3] Avoid unused private fields such as '_label'.",
+            stdout.getvalue(),
+        )
+
+    def test_unusedcode_treats_private_method_loads_through_related_classes_as_uses(self) -> None:
+        report = self._unused_private_method_report(
+            "class Box:\n"
+            "    def _own(self):\n"
+            "        return 'own'\n"
+            "\n"
+            "    def _inherited(self):\n"
+            "        return 'inherited'\n"
+            "\n"
+            "    def _named(self):\n"
+            "        return 'named'\n"
+            "\n"
+            "    def _built(self):\n"
+            "        return 'built'\n"
+            "\n"
+            "    def _unused(self):\n"
+            "        return None\n"
+            "\n"
+            "    def show(self):\n"
+            "        return self._own()\n"
+            "\n"
+            "class Crate(Box):\n"
+            "    def show(self):\n"
+            "        return self._inherited()\n"
+            "\n"
+            "class Logger:\n"
+            "    def write(self):\n"
+            "        return Box._named, Crate()._built\n"
+        )
+
+        for name in ("_own", "_inherited", "_named", "_built"):
+            self.assertNotIn(f"'{name}'", report)
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_unused'.", report)
+
     def _unused_private_method_report(self, text: str) -> str:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "class_scope_method.py"
