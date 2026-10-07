@@ -4346,6 +4346,28 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return True\n",
                 7,
             ),
+            "if_try_finally_body_returns": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            return 1\n"
+                "        finally:\n"
+                "            cleanup()\n"
+                "    else:\n"
+                "        return 2\n",
+                8,
+            ),
+            "if_try_finally_finalbody_returns": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            pass\n"
+                "        finally:\n"
+                "            return 1\n"
+                "    else:\n"
+                "        return 2\n",
+                8,
+            ),
             "elif_chain_exits": (
                 "def chain(value):\n"
                 "    if value == 1:\n"
@@ -4421,6 +4443,16 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return False\n"
                 "    else:\n"
                 "        return True\n"
+            ),
+            "if_try_finally_completes": (
+                "def check(cond):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            cleanup()\n"
+                "        finally:\n"
+                "            cleanup()\n"
+                "    else:\n"
+                "        return 2\n"
             ),
             "elif_chain_falls_through": (
                 "def keep(value):\n"

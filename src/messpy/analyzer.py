@@ -2376,8 +2376,6 @@ def _if_statement_always_exits(node: ast.If, *, allow_loop_jumps: bool = True) -
 
 
 def _try_statement_always_exits(node: ast.Try | ast.TryStar, *, allow_loop_jumps: bool = True) -> bool:
-    if not node.handlers:
-        return False
     if node.finalbody and _block_always_exits(node.finalbody, allow_loop_jumps=allow_loop_jumps):
         return True
     if not _block_always_exits(node.body, allow_loop_jumps=allow_loop_jumps) or (
