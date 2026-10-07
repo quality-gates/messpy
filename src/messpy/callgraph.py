@@ -57,6 +57,14 @@ class CallGraph:
         """The callable in this module that the call calls, if any."""
         return self._links.targets.get(id(call))
 
+    def call_site(self, caller: ast.AST, call: ast.Call) -> CallSite | None:
+        """Resolve a call from a specific scope into a call site, if possible."""
+        index = self._links.index
+        callee_id = _resolved_callee(index, id(caller), call, self._links.masks)
+        if callee_id is None:
+            return None
+        return CallSite(caller, index.nodes[callee_id], _called_name(call, index, callee_id), call.lineno)
+
     def qualified_name(self, call: ast.Call) -> str:
         """The canonical name the call calls, or "" when a local binding hides it."""
         return self._links.names.qualified(call.func)
@@ -68,6 +76,7 @@ class CallGraph:
 @dataclass(frozen=True)
 class _CallLinks:
     tree: ast.Module
+    index: _CallableIndex
     callees: dict[int, tuple[CallSite, ...]]
     callers: dict[int, tuple[CallSite, ...]]
     targets: dict[int, ast.AST]
@@ -86,6 +95,7 @@ def build_call_graph(tree: ast.Module, names: Names | None = None) -> CallGraph:
         callables=tuple(index.nodes.values()),
         _links=_CallLinks(
             tree=tree,
+            index=index,
             callees=callees,
             callers=_reverse_edges(callees),
             targets={id(call): index.nodes[callee_id] for _caller_id, call, callee_id in resolved},

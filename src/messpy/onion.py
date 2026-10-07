@@ -53,7 +53,11 @@ def _domain_action_findings(
     path: Path, tree: ast.Module, rule: LoadedRule, graph: CallGraph, names: Names
 ) -> list:
     direct, phrases = _direct_actions(path, tree, rule, names)
-    return [*_import_time_findings(path, tree, rule, names), *direct, *_spread_findings(path, graph, rule, phrases)]
+    return [
+        *_import_time_findings(path, tree, rule, names),
+        *direct,
+        *_spread_findings(path, tree, graph, rule, phrases),
+    ]
 
 
 def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> tuple[list, dict[int, str]]:
@@ -230,18 +234,36 @@ def _signature_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list
     return annotations
 
 
-def _spread_findings(path: Path, graph: CallGraph, rule: LoadedRule, phrases: dict[int, str]) -> list:
+def _spread_findings(
+    path: Path, tree: ast.Module, graph: CallGraph, rule: LoadedRule, phrases: dict[int, str]
+) -> list:
     actions = _action_ids(graph, phrases)
+    sites = [site for caller in graph.callables for site in graph.callees(caller)]
+    sites.extend(_module_call_sites(tree, graph))
+
     findings = []
-    for caller in graph.callables:
-        for site in graph.callees(caller):
-            if id(site.callee) not in actions:
-                continue
-            phrase = _chain_phrase(site.callee, phrases, graph, set())
-            if not phrase:
-                continue
-            findings.append(_spread_finding(path, rule, graph, site, phrase))
+    for site in sites:
+        if id(site.callee) not in actions:
+            continue
+        phrase = _chain_phrase(site.callee, phrases, graph, set())
+        if not phrase:
+            continue
+        findings.append(_spread_finding(path, rule, graph, site, phrase))
     return findings
+
+
+def _module_call_sites(tree: ast.Module, graph: CallGraph) -> list[CallSite]:
+    sites = []
+    seen: set[int] = set()
+    for node in _import_time_nodes(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        site = graph.call_site(tree, node)
+        if site is None or id(site.callee) in seen:
+            continue
+        seen.add(id(site.callee))
+        sites.append(site)
+    return sites
 
 
 def _action_ids(graph: CallGraph, phrases: dict[int, str]) -> set[int]:
@@ -270,6 +292,13 @@ def _chain_phrase(callee: ast.AST, phrases: dict[int, str], graph: CallGraph, se
 
 
 def _spread_finding(path, rule, graph: CallGraph, site: CallSite, phrase: str):
+    if isinstance(site.caller, ast.Module):
+        message = (
+            f"The module calls {site.name}(), which {phrase}, at import time. "
+            "Move the action to the interaction layer."
+        )
+        return _finding(path, site.line, rule, message)
+
     kind, context = _caller_context(graph, site.caller)
     message = (
         f"The {kind} {context}() calls {site.name}(), which {phrase}. "
