@@ -242,7 +242,7 @@ class OnionAcceptanceTests(unittest.TestCase):
         )
 
     def test_the_same_action_outside_the_domain_layer_stays_quiet(self) -> None:
-        source = "def checkout():\n    print('saved')\n"
+        source = "def checkout():\n    print('saved')\n\ncheckout()\n"
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
             domain = _write(project / "src/myapp/domain/orders.py", source)
@@ -253,6 +253,7 @@ class OnionAcceptanceTests(unittest.TestCase):
         self.assertEqual((2, ""), (status, errors))
         self.assertIn("DomainAction", stdout)
         self.assertIn(domain.resolve().as_posix(), stdout)
+        self.assertIn("The module calls checkout()", stdout)
         self.assertNotIn(outside.resolve().as_posix(), stdout)
 
     def test_import_time_io_is_an_action_and_plain_definitions_stay_quiet(self) -> None:
@@ -284,6 +285,106 @@ class OnionAcceptanceTests(unittest.TestCase):
             ],
             report,
         )
+
+    def test_a_module_level_action_call_is_reported_at_import_time(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save():\n"
+            "    print('saved')\n"
+            "\n"
+            "save()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save() writes the implicit output print. "
+                "Return it instead.",
+                "4: DomainAction [priority 2] The module calls save(), which writes the implicit output print, "
+                "at import time. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_an_import_time_default_call_spreads_a_same_module_action(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save():\n"
+            "    print('saved')\n"
+            "\n"
+            "def boot(value=save()):\n"
+            "    return value\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save() writes the implicit output print. "
+                "Return it instead.",
+                "4: DomainAction [priority 2] The module calls save(), which writes the implicit output print, "
+                "at import time. Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_deferred_annotation_calls_are_not_reported_at_import_time(self) -> None:
+        status, report, errors = _analyze_source(
+            "from __future__ import annotations\n"
+            "\n"
+            "def save():\n"
+            "    print('saved')\n"
+            "\n"
+            "def boot(value: save()):\n"
+            "    return value\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "4: DomainAction [priority 2] The function save() writes the implicit output print. "
+                "Return it instead."
+            ],
+            report,
+        )
+
+    def test_module_level_calls_name_transitive_actions(self) -> None:
+        status, report, errors = _analyze_source(
+            "def save():\n"
+            "    helper()\n"
+            "\n"
+            "def helper():\n"
+            "    print('saved')\n"
+            "\n"
+            "save()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function save() calls helper(), "
+                "which writes the implicit output print. Move the action to the interaction layer.",
+                "5: DomainAction [priority 2] The function helper() writes the implicit output print. "
+                "Return it instead.",
+                "7: DomainAction [priority 2] The module calls save(), which calls helper(), "
+                "which writes the implicit output print, at import time. "
+                "Move the action to the interaction layer.",
+            ],
+            report,
+        )
+
+    def test_module_level_call_to_a_non_action_is_not_reported(self) -> None:
+        status, report, errors = _analyze_source(
+            "def lookup():\n"
+            "    return 1\n"
+            "\n"
+            "lookup()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
 
     def test_actions_spread_through_same_module_helpers_and_name_the_chain(self) -> None:
         status, report, errors = _analyze_source(
