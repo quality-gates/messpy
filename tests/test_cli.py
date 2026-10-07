@@ -5765,6 +5765,29 @@ class CommandAcceptanceTests(unittest.TestCase):
             status = run([str(source), "text", "python", "--only", "CamelCaseVariableName"], stdout, stderr)
             self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
 
+    @unittest.skipIf(sys.version_info < (3, 12), "PEP 695 type aliases require Python 3.12+")
+    def test_local_pep695_type_alias_unused_check_follows_use(self) -> None:
+        unused = "def create():\n    type Result = dict[str, str]\n    return 1\n"
+        used = "def create():\n    type Result = dict[str, str]\n    return Result()\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unused_alias.py"
+            source.write_text(unused, encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual(2, status)
+            self.assertIn(
+                "UnusedLocalVariable [priority 3] Avoid unused local variables such as 'Result'.",
+                stdout.getvalue(),
+            )
+            self.assertEqual("", stderr.getvalue())
+
+            source.write_text(used, encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(source), "text", "unusedcode", "--only", "UnusedLocalVariable"], stdout, stderr)
+            self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
     def test_type_alias_annotation_not_flagged_as_snake_case_variable(self) -> None:
         sources = [
             "from typing import TypeAlias\nPoint: TypeAlias = tuple[int, int]\n",
