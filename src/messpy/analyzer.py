@@ -4064,10 +4064,29 @@ def _npath_statement(node: ast.stmt) -> int:
         return _npath_match(node)
     elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return 1
-    elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.Raise)):
-        value = getattr(node, "value", None)
-        return _npath_expression(value) if value is not None else 1
+    return _npath_simple_statement(node)
+
+
+def _npath_simple_statement(node: ast.stmt) -> int:
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
+        return _npath_expression_product((*targets, node.value))
+    elif isinstance(node, ast.Delete):
+        return _npath_expression_product(node.targets)
+    elif isinstance(node, ast.Assert):
+        return _npath_expression_product((node.test, node.msg))
+    elif isinstance(node, ast.Raise):
+        return _npath_expression_product((node.exc, node.cause))
+    elif isinstance(node, (ast.Expr, ast.Return)):
+        return _npath_expression_product((node.value,))
     return 1
+
+
+def _npath_expression_product(expressions: Sequence[ast.AST | None]) -> int:
+    complexity = 1
+    for expression in expressions:
+        complexity *= _npath_expression(expression)
+    return complexity
 
 
 def _npath_loop(node: ast.For | ast.AsyncFor | ast.While) -> int:
