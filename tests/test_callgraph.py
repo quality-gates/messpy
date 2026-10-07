@@ -9,6 +9,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from messpy.callgraph import CallSite, build_call_graph
+from messpy.names import Names
 
 
 def _graph(source: str):
@@ -254,9 +255,29 @@ class CallGraphTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["sys.exit", "os._exit", "exit", "helper.run"],
+            ["sys.exit", "os._exit", "builtins.exit", "builtins.helper.run"],
             [graph.qualified_name(call) for call in _calls(tree)],
         )
+
+    def test_qualified_name_follows_aliases_outside_the_old_module_allowlist(self) -> None:
+        tree, graph = _graph(
+            "import logging as log\n"
+            "from subprocess import run as start\n"
+            "log.debug('x')\n"
+            "start(['ls'])\n"
+        )
+
+        self.assertEqual(
+            ["logging.debug", "subprocess.run"],
+            [graph.qualified_name(call) for call in _calls(tree)],
+        )
+
+    def test_qualified_name_resolves_relative_imports_from_the_module_identity(self) -> None:
+        tree = ast.parse("from ..debug import trace\n\ndef checkout():\n    trace()\n")
+        names = Names.build(tree, module=("app", "domain", "orders"), path=Path("/nowhere/app/domain/orders.py"))
+        graph = build_call_graph(tree, names)
+
+        self.assertEqual(["app.debug.trace"], [graph.qualified_name(call) for call in _calls(tree)])
 
     def test_qualified_name_is_empty_for_locally_rebound_names(self) -> None:
         tree, graph = _graph(
@@ -280,6 +301,16 @@ class CallGraphTests(unittest.TestCase):
         )
 
         self.assertEqual(["", "sys.exit"], [graph.qualified_name(call) for call in _calls(tree)])
+
+    def test_module_of_resolves_relative_imports_and_stays_empty_without_a_package(self) -> None:
+        tree = ast.parse("from ..infra import db\nfrom logging import warning\n")
+        known = Names.build(tree, module=("app", "domain", "orders"), path=Path("/nowhere/app/domain/orders.py"))
+        unknown = Names.build(tree, module=None, path=Path("/tmp/script.py"))
+        relative, absolute = [node for node in tree.body if isinstance(node, ast.ImportFrom)]
+
+        self.assertEqual("app.infra", known.module_of(relative))
+        self.assertEqual("logging", known.module_of(absolute))
+        self.assertEqual("", unknown.module_of(relative))
 
 
 if __name__ == "__main__":

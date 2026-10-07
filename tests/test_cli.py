@@ -1056,13 +1056,14 @@ class CommandAcceptanceTests(unittest.TestCase):
         # each resolution.
         import messpy.analyzer as engine_module
         import messpy.callgraph as callgraph_module
+        import messpy.names as names_module
 
         source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
         original_parents = engine_module._selected_design_parents
-        original_aliases = callgraph_module._imported_call_aliases
+        original_build = names_module.Names.__dict__["build"]
         original_masked_children = callgraph_module._masked_children
         parent_maps: list[dict[int, ast.AST]] = []
-        alias_call_count = 0
+        name_build_count = 0
         masked_visits = 0
 
         class CountingParents(dict[int, ast.AST]):
@@ -1079,10 +1080,16 @@ class CommandAcceptanceTests(unittest.TestCase):
             parent_maps.append(parents)
             return parents
 
-        def imported_call_aliases(tree: ast.Module) -> dict[int, object]:
-            nonlocal alias_call_count
-            alias_call_count += 1
-            return original_aliases(tree)
+        def counting_build(
+            cls: type[names_module.Names],
+            tree: ast.Module,
+            *,
+            module: tuple[str, ...] | None,
+            path: Path,
+        ) -> names_module.Names:
+            nonlocal name_build_count
+            name_build_count += 1
+            return original_build.__func__(cls, tree, module=module, path=path)
 
         def masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
             nonlocal masked_visits
@@ -1090,7 +1097,7 @@ class CommandAcceptanceTests(unittest.TestCase):
             return original_masked_children(node, masked)
 
         engine_module._selected_design_parents = selected_parents
-        callgraph_module._imported_call_aliases = imported_call_aliases
+        names_module.Names.build = classmethod(counting_build)
         callgraph_module._masked_children = masked_children
         try:
             with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1111,13 +1118,13 @@ class CommandAcceptanceTests(unittest.TestCase):
                 )
         finally:
             engine_module._selected_design_parents = original_parents
-            callgraph_module._imported_call_aliases = original_aliases
+            names_module.Names.build = original_build
             callgraph_module._masked_children = original_masked_children
 
         self.assertEqual(0, status)
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
-        self.assertEqual(1, alias_call_count)
+        self.assertEqual(1, name_build_count)
         self.assertEqual(1, len(parent_maps))
         node_count = len(list(ast.walk(ast.parse(source))))
         self.assertLess(parent_maps[0].lookups, 2 * node_count)
@@ -5087,6 +5094,7 @@ class CommandAcceptanceTests(unittest.TestCase):
             source = directory / "configured_design.py"
             ruleset = directory / "configured-design.xml"
             source.write_text(
+                "import acme\n"
                 "# REVIEW before release\n"
                 "def inspect(items):\n"
                 "    acme.trace(items)\n"
@@ -5199,6 +5207,105 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn(":2:", report)
         self.assertNotIn(":3:", report)
         self.assertNotIn(":4:", report)
+
+    def test_imported_aliases_resolve_the_same_way_for_debug_calls_and_implicit_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "aliased_calls.py"
+            ruleset = directory / "aliases.xml"
+            source.write_text(
+                "import logging as log\n"
+                "from logging import warning\n"
+                "import subprocess as sp\n"
+                "\n"
+                "def a():\n"
+                "    log.debug('x')\n"
+                "\n"
+                "def b():\n"
+                "    warning('x')\n"
+                "\n"
+                "def c():\n"
+                "    sp.run(['ls'])\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"DevelopmentCodeFragment\"><properties>"
+                "<property name=\"unwanted-functions\" value=\"logging.debug,logging.warning,subprocess.run\"/>"
+                "</properties></rule>"
+                "<rule ref=\"ImplicitOutput\"/>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        for name in ("logging.debug", "logging.warning", "subprocess.run"):
+            self.assertIn(
+                f"calls the typical debug function {name}() which is mostly only used during development.",
+                report,
+            )
+            self.assertIn(f"writes the implicit output {name}.", report)
+        self.assertEqual(3, report.count("DevelopmentCodeFragment"))
+        self.assertEqual(3, report.count("ImplicitOutput"))
+
+    def test_unimported_dotted_call_is_not_an_unwanted_function(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "unimported_debug.py"
+            ruleset = Path(temporary_directory) / "unwanted.xml"
+            source.write_text("def debug():\n    logging.debug('x')\n", encoding="utf-8")
+            ruleset.write_text(
+                "<ruleset><rule ref=\"DevelopmentCodeFragment\"><properties>"
+                "<property name=\"unwanted-functions\" value=\"logging.debug\"/>"
+                "</properties></rule></ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset), "--only", "DevelopmentCodeFragment"], stdout, stderr)
+
+        self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_relative_import_resolves_an_unwanted_function_from_the_module_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            package = project / "src" / "app"
+            domain = package / "domain"
+            domain.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (domain / "__init__.py").write_text("", encoding="utf-8")
+            source = domain / "orders.py"
+            ruleset = project / "rules.xml"
+            source.write_text(
+                "from ..debug import trace\n"
+                "\n"
+                "def checkout():\n"
+                "    trace()\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset><rule ref=\"DevelopmentCodeFragment\"><properties>"
+                "<property name=\"unwanted-functions\" value=\"app.debug.trace\"/>"
+                "</properties></rule></ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset), "--only", "DevelopmentCodeFragment"], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "calls the typical debug function app.debug.trace() which is mostly only used during development.",
+            stdout.getvalue(),
+        )
 
     def test_development_code_fragment_reports_aliased_debug_calls(self) -> None:
         cases = [

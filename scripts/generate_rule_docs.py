@@ -74,7 +74,7 @@ NOTES = {
     "IfStatementAssignment": "Only the condition of `if` / `while`, not every `:=` in the file.",
     "DuplicatedArrayKey": "Dictionary literals only; dynamic or unhashable keys are not guessed.",
     "ExitExpression": "Follows visible `sys` / `os` / builtin exit aliases and respects local shadowing.",
-    "DevelopmentCodeFragment": "Resolves `pdb` / `builtins` import aliases before matching; user-defined or rebound `breakpoint` names stay quiet.",
+    "DevelopmentCodeFragment": "Resolves import aliases, including `unwanted-functions`, before matching. An unresolved spelling is not a match. User-defined or rebound `breakpoint` names stay quiet.",
     "GlobalVariable": "Mutation-based by default so imports and true constants stay quiet.",
     "CouplingBetweenObjects": "Counts syntax references only—never imports the referenced modules.",
     "CamelCaseClassName": "Rule id is historical; the check is CapWords for classes.",

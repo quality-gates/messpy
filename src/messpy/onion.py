@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from .callables import module_callables
 from .callgraph import CallGraph, CallSite, _module_nodes
+from .names import Names
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
@@ -19,15 +20,20 @@ DOMAIN_OUTER_IMPORT_RULE_NAME = "DomainOuterImport"
 
 
 def onion_findings(
-    identity: SourceFile, tree: ast.Module, rules: Sequence[LoadedRule], call_graph: Callable[[], CallGraph]
+    identity: SourceFile,
+    tree: ast.Module,
+    rules: Sequence[LoadedRule],
+    call_graph: Callable[[], CallGraph],
+    names: Names | None = None,
 ) -> list[Finding]:
+    resolved_names = names if names is not None else Names.build(tree, module=identity.module, path=identity.path)
     action_rule = _named_rule(rules, DOMAIN_ACTION_RULE_NAME)
     import_rule = _named_rule(rules, DOMAIN_OUTER_IMPORT_RULE_NAME)
     findings = []
     if action_rule is not None and _in_domain(identity.path, action_rule):
-        findings.extend(_domain_action_findings(identity.path, tree, action_rule, call_graph()))
+        findings.extend(_domain_action_findings(identity.path, tree, action_rule, call_graph(), resolved_names))
     if import_rule is not None and _in_domain(identity.path, import_rule):
-        findings.extend(_outer_import_findings(identity, tree, import_rule))
+        findings.extend(_outer_import_findings(identity, tree, import_rule, resolved_names))
     return findings
 
 
@@ -43,12 +49,14 @@ def _in_domain(path: Path, rule: LoadedRule) -> bool:
     return False
 
 
-def _domain_action_findings(path: Path, tree: ast.Module, rule: LoadedRule, graph: CallGraph) -> list:
-    direct, phrases = _direct_actions(path, tree, rule)
-    return [*_import_time_findings(path, tree, rule), *direct, *_spread_findings(path, graph, rule, phrases)]
+def _domain_action_findings(
+    path: Path, tree: ast.Module, rule: LoadedRule, graph: CallGraph, names: Names
+) -> list:
+    direct, phrases = _direct_actions(path, tree, rule, names)
+    return [*_import_time_findings(path, tree, rule, names), *direct, *_spread_findings(path, graph, rule, phrases)]
 
 
-def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule) -> tuple[list, dict[int, str]]:
+def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> tuple[list, dict[int, str]]:
     from .analyzer import (
         _ScopeChain,
         _implicit_input_findings,
@@ -67,6 +75,7 @@ def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule) -> tuple[lis
             name_scopes,
             parents=parents,
             enclosing=callable_info.enclosing,
+            names=names,
         )
         found = [
             *_implicit_input_findings(path, callable_info, rule, chain),
@@ -87,10 +96,10 @@ def _action_phrase(message: str) -> str:
     return sentence
 
 
-def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule) -> list:
+def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> list:
     from .analyzer import _ScopeChain, _ambient_read, _ambient_write, _name_scopes
 
-    chain = _ScopeChain((tree,), _name_scopes(tree))
+    chain = _ScopeChain((tree,), _name_scopes(tree), names=names)
     reads: dict[str, ast.AST] = {}
     writes: dict[str, ast.AST] = {}
     for node in _import_time_nodes(tree):
@@ -277,40 +286,29 @@ def _caller_context(graph: CallGraph, caller: ast.AST) -> tuple[str, str]:
     return "function", label
 
 
-def _outer_import_findings(identity: SourceFile, tree: ast.Module, rule: LoadedRule) -> list:
+def _outer_import_findings(identity: SourceFile, tree: ast.Module, rule: LoadedRule, names: Names) -> list:
     layers = rule.items("outer-layers")
-    package = _package(identity)
     findings = []
     for node in ast.walk(tree):
-        for module, layer in _matched_imports(package, node, layers):
+        for module, layer in _matched_imports(names, node, layers):
             findings.append(_import_finding(identity.path, node, rule, module, layer))
     return findings
 
 
-def _package(identity: SourceFile) -> tuple[str, ...] | None:
-    if identity.module is None:
-        return None
-    if identity.path.stem == "__init__":
-        return identity.module
-    return identity.module[:-1]
-
-
-def _matched_imports(
-    package: tuple[str, ...] | None, node: ast.AST, layers: Sequence[str]
-) -> list[tuple[str, str]]:
+def _matched_imports(names: Names, node: ast.AST, layers: Sequence[str]) -> list[tuple[str, str]]:
     if not isinstance(node, (ast.Import, ast.ImportFrom)):
         return []
     if isinstance(node, ast.Import):
-        names = [alias.name for alias in node.names]
+        imported = [alias.name for alias in node.names]
     else:
-        base = _absolute_module(package, node)
+        base = names.module_of(node)
         layer = _matching_layer(base, layers)
         if layer:
             return [(base, layer)]
-        names = _imported_module_names(base, node)
+        imported = _imported_module_names(base, node)
     matches: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for module in names:
+    for module in imported:
         layer = _matching_layer(module, layers)
         if not layer or module in seen:
             continue
@@ -327,20 +325,6 @@ def _imported_module_names(base: str, node: ast.ImportFrom) -> list[str]:
         if alias.name != "*"
     )
     return names
-
-
-def _absolute_module(package: tuple[str, ...] | None, node: ast.ImportFrom) -> str:
-    if node.level == 0:
-        return node.module or ""
-    if not package:
-        return ""
-    climb = node.level - 1
-    if climb >= len(package):
-        return ""
-    kept = package[: len(package) - climb]
-    if node.module:
-        return ".".join((*kept, node.module))
-    return ".".join(kept)
 
 
 def _matching_layer(module: str, layers: Sequence[str]) -> str:

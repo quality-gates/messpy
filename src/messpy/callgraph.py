@@ -2,8 +2,8 @@
 
 One place answers "what does this ``ast.Call`` call?" for every rule. It follows
 lexical scopes, global and nonlocal declarations, shadowing bindings,
-comprehension targets, receiver method calls on ``self`` or ``cls``, and import
-aliases. Analysis stays within one module.
+comprehension targets, and receiver method calls on ``self`` or ``cls``.
+Qualified names come from ``Names``. Analysis stays within one module.
 """
 
 from __future__ import annotations
@@ -12,6 +12,9 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from pathlib import Path
+
+from .names import Names
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
 
@@ -55,12 +58,8 @@ class CallGraph:
         return self._links.targets.get(id(call))
 
     def qualified_name(self, call: ast.Call) -> str:
-        """The dotted name the call calls after import aliases; empty when a local binding hides it."""
-        # Filled on first use: only ExitExpression and DevelopmentCodeFragment need names.
-        names = self._links.qualified_names
-        if not names:
-            names.update(_resolved_call_names(self._links.tree, self._links.masks))
-        return names.get(id(call), "")
+        """The canonical name the call calls, or "" when a local binding hides it."""
+        return self._links.names.qualified(call.func)
 
     def method_class(self, callable_node: ast.AST) -> ast.ClassDef | None:
         return self._links.classes.get(id(callable_node))
@@ -73,15 +72,16 @@ class _CallLinks:
     callers: dict[int, tuple[CallSite, ...]]
     targets: dict[int, ast.AST]
     masks: dict[int, frozenset[str]]
-    qualified_names: dict[int, str]
+    names: Names
     classes: dict[int, ast.ClassDef]
 
 
-def build_call_graph(tree: ast.Module) -> CallGraph:
+def build_call_graph(tree: ast.Module, names: Names | None = None) -> CallGraph:
     index = _index_callables(tree)
     masks = _comprehension_masks(tree)
     resolved = _resolved_calls(tree, index, masks)
     callees = _call_edges(index, resolved)
+    resolved_names = names if names is not None else Names.build(tree, module=None, path=Path())
     return CallGraph(
         callables=tuple(index.nodes.values()),
         _links=_CallLinks(
@@ -90,7 +90,7 @@ def build_call_graph(tree: ast.Module) -> CallGraph:
             callers=_reverse_edges(callees),
             targets={id(call): index.nodes[callee_id] for _caller_id, call, callee_id in resolved},
             masks=masks,
-            qualified_names={},
+            names=resolved_names,
             classes=index.owners,
         ),
     )
@@ -625,89 +625,6 @@ def _stored_names(node: ast.AST) -> list[str]:
 _BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
 
 
-@dataclass(frozen=True)
-class _ScopeCallImports:
-    """The call-relevant imports and the other name bindings of one scope."""
-
-    call_modules: dict[str, str]
-    rebound: set[str]
-
-
-def _resolved_call_names(tree: ast.Module, masks: dict[int, frozenset[str]]) -> dict[int, str]:
-    aliases = _imported_call_aliases(tree)
-    bindings = _scope_bindings(tree)
-    resolved_calls: dict[int, str] = {}
-    active_names, changes = _call_scope_entered({}, [], tree, aliases, bindings)
-    pending: list[tuple[ast.AST, bool]] = [(tree, False)]
-    while pending:
-        node, leaving_scope = pending.pop()
-        if leaving_scope:
-            active_names, changes = _call_scope_left(active_names, changes)
-            continue
-        if isinstance(node, ast.Call):
-            resolved_calls[id(node)] = _qualified_call_name(node, active_names, masks)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            active_names, changes = _call_scope_entered(active_names, changes, node, aliases, bindings)
-            pending.append((node, True))
-        children = list(ast.iter_child_nodes(node))
-        pending.extend((child, False) for child in reversed(children))
-    return resolved_calls
-
-
-def _call_scope_entered(
-    active_names: dict[str, str],
-    changes: list[list[tuple[str, str | None]]],
-    scope: _BindingScope,
-    aliases: dict[int, _ScopeCallImports],
-    bindings: dict[int, set[str]],
-) -> tuple[dict[str, str], list[list[tuple[str, str | None]]]]:
-    imports = aliases[id(scope)]
-    scope_bindings = bindings[id(scope)]
-    recorded: list[tuple[str, str | None]] = []
-    updated = dict(active_names)
-    for name in imports.rebound | set(imports.call_modules) | scope_bindings:
-        recorded.append((name, active_names.get(name)))
-        if name in imports.rebound or name not in imports.call_modules:
-            updated[name] = ""
-        else:
-            updated[name] = imports.call_modules[name]
-    return updated, [*changes, recorded]
-
-
-def _call_scope_left(
-    active_names: dict[str, str],
-    changes: list[list[tuple[str, str | None]]],
-) -> tuple[dict[str, str], list[list[tuple[str, str | None]]]]:
-    updated = dict(active_names)
-    for name, previous in reversed(changes[-1]):
-        if previous is None:
-            updated.pop(name, None)
-        else:
-            updated[name] = previous
-    return updated, changes[:-1]
-
-
-def _qualified_call_name(call: ast.Call, active_names: dict[str, str], masks: dict[int, frozenset[str]]) -> str:
-    original_name = _dotted_name(call.func)
-    if original_name.split(".", 1)[0] in masks.get(id(call), ()):
-        return ""
-    return _resolve_call_name(original_name, active_names)
-
-
-def _resolve_call_name(
-    original_name: str,
-    active_names: dict[str, str],
-) -> str:
-    root_name = original_name.split(".", 1)[0]
-    attributes = original_name[len(root_name):]
-    resolved_name = active_names.get(root_name)
-    if resolved_name is None:
-        return original_name
-    if not resolved_name:
-        return ""
-    return f"{resolved_name}{attributes}"
-
-
 def _dotted_name(node: ast.expr) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -715,62 +632,6 @@ def _dotted_name(node: ast.expr) -> str:
         parent = _dotted_name(node.value)
         return f"{parent}.{node.attr}" if parent else ""
     return ""
-
-
-def _imported_call_aliases(tree: ast.Module) -> dict[int, _ScopeCallImports]:
-    return {id(scope): _scope_call_imports(scope) for scope in _binding_scopes(tree)}
-
-
-def _scope_call_imports(scope: _BindingScope) -> _ScopeCallImports:
-    call_modules: dict[str, str] = {}
-    rebound: set[str] = set()
-    for statement in _scope_statements(scope):
-        call_modules.update(_call_import_map(statement))
-        rebound.update(_rebound_names(statement))
-    return _ScopeCallImports(call_modules=call_modules, rebound=rebound)
-
-
-def _call_import_map(node: ast.AST) -> dict[str, str]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
-        return {}
-    if isinstance(node, ast.Import):
-        return _call_import_aliases(node)
-    if isinstance(node, ast.ImportFrom) and node.module in {"sys", "os", "builtins", "pdb"}:
-        return _call_import_from_aliases(node)
-    if isinstance(node, (ast.ImportFrom,)):
-        return {}
-    found: dict[str, str] = {}
-    for child in ast.iter_child_nodes(node):
-        found.update(_call_import_map(child))
-    return found
-
-
-def _rebound_names(node: ast.AST) -> set[str]:
-    if isinstance(node, (ast.Import, ast.ImportFrom, ast.Lambda)):
-        return set()
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return {node.name}
-    found = _pattern_binding_names(node)
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-        found.add(node.id)
-    for child in _scope_binding_children(node):
-        found.update(_rebound_names(child))
-    return found
-
-
-def _call_import_aliases(statement: ast.Import) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: imported.name
-        for imported in statement.names
-        if imported.name in {"sys", "os", "builtins", "pdb"}
-    }
-
-
-def _call_import_from_aliases(statement: ast.ImportFrom) -> dict[str, str]:
-    return {
-        imported.asname or imported.name: f"{statement.module}.{imported.name}"
-        for imported in statement.names
-    }
 
 
 @lru_cache(maxsize=1)
