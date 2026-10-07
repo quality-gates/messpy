@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 import xml.etree.ElementTree as ElementTree
+from urllib.parse import unquote
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -507,6 +508,58 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("messpy", run_record["tool"]["driver"]["name"])
         self.assertEqual("ExcessiveMethodLength", run_record["results"][0]["ruleId"])
         self.assertFalse(run_record["invocations"][0]["executionSuccessful"])
+
+    def test_sarif_percent_encodes_artifact_uris_without_changing_json_paths(self) -> None:
+        paths_to_uris = {
+            "spaced name.py": "spaced%20name.py",
+            "hash#name.py": "hash%23name.py",
+            "dir/sub dir/a.py": "dir/sub%20dir/a.py",
+            "percent%.py": "percent%25.py",
+            "plain_ascii.py": "plain_ascii.py",
+        }
+        if sys.platform != "win32":
+            paths_to_uris["query?.py"] = "query%3F.py"
+        source_paths = [*paths_to_uris, "café.py"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            for path in source_paths:
+                source_path = project / path
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_path.write_text(_long_function("too_long"), encoding="utf-8")
+
+            reports: dict[str, str] = {}
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(project)
+                for report_format in ["sarif", "json"]:
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    status = run([".", report_format, "codesize"], stdout, stderr)
+
+                    self.assertEqual(2, status, report_format)
+                    self.assertEqual("", stderr.getvalue(), report_format)
+                    reports[report_format] = stdout.getvalue()
+            finally:
+                os.chdir(previous_cwd)
+
+        sarif = json.loads(reports["sarif"])
+        actual_uris = {
+            result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+            for result in sarif["runs"][0]["results"]
+        }
+        uri_by_path = {unquote(uri): uri for uri in actual_uris}
+
+        json_report = json.loads(reports["json"])
+        actual_paths = {finding["path"] for finding in json_report["findings"]}
+        unicode_paths = {path for path in actual_paths if not path.isascii()}
+        self.assertEqual(1, len(unicode_paths))
+        self.assertEqual(set(paths_to_uris) | unicode_paths, actual_paths)
+        self.assertEqual(actual_paths, set(uri_by_path))
+        for path, expected_uri in paths_to_uris.items():
+            self.assertEqual(expected_uri, uri_by_path[path])
+        unicode_uri = uri_by_path[next(iter(unicode_paths))]
+        self.assertTrue(unicode_uri.isascii())
+        self.assertIn("%", unicode_uri)
 
     @unittest.skipIf(
         sys.platform == "win32",

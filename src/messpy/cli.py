@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TextIO
+from urllib.parse import quote
 
 from . import __version__
 from .analyzer import DEFAULT_SUFFIXES, Finding, ProcessingError, analyze
@@ -671,7 +672,7 @@ def _sarif_level(priority: int) -> str:
 def _sarif_location(record: dict[str, str | int | bool]) -> dict[str, object]:
     return {
         "physicalLocation": {
-            "artifactLocation": {"uri": record["path"]},
+            "artifactLocation": {"uri": quote(str(record["path"]), safe="/")},
             "region": {"startLine": record["line"], "startColumn": 1},
         }
     }
