@@ -1874,6 +1874,99 @@ class CommandAcceptanceTests(unittest.TestCase):
                 self.assertEqual("", stdout.getvalue(), rule_name)
                 self.assertEqual("", stderr.getvalue(), rule_name)
 
+    def test_npath_counts_branching_expressions_in_simple_statements(self) -> None:
+        source_text = (
+            "def assignment_target(flag):\n"
+            "    items[1 if flag else 0] = 1\n"
+            "def annotated_target(flag):\n"
+            "    items[1 if flag else 0]: int = 1\n"
+            "def assignment_value(flag):\n"
+            "    value = 1 if flag else 0\n"
+            "def augmented_target(flag):\n"
+            "    items[1 if flag else 0] += 1\n"
+            "def delete_target(flag):\n"
+            "    del items[1 if flag else 0]\n"
+            "def assert_test(flag, ready):\n"
+            "    assert flag or ready\n"
+            "def assert_message(flag, ready):\n"
+            "    assert flag or ready, 1 if flag else 0\n"
+            "def raise_cause(flag):\n"
+            "    raise RuntimeError('x') from (1 if flag else 0)\n"
+            "def return_value(flag):\n"
+            "    return 1 if flag else 0\n"
+        )
+        expected = {
+            "assignment_target": 3,
+            "annotated_target": 3,
+            "assignment_value": 3,
+            "augmented_target": 3,
+            "delete_target": 3,
+            "assert_test": 2,
+            "assert_message": 6,
+            "raise_cause": 3,
+            "return_value": 3,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "simple_statements.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(source_text, encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="2" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = stdout.getvalue()
+        self.assertEqual(len(expected), report.count("NPathComplexity [priority 3]"))
+        for name, complexity in expected.items():
+            with self.subTest(name=name):
+                self.assertIn(
+                    f"The function {name}() has an NPath complexity of {complexity}.",
+                    report,
+                )
+
+    def test_npath_multiplies_branching_target_and_value_paths(self) -> None:
+        source_text = (
+            "def target_and_value(a, b):\n"
+            "    items[1 if a else 0] = 1 if b else 0\n"
+            "def multiple_targets(a, b):\n"
+            "    items[1 if a else 0], items[1 if b else 0] = 1\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "combined_paths.py"
+            ruleset = temporary / "npath.xml"
+            source.write_text(source_text, encoding="utf-8")
+            ruleset.write_text(
+                """<ruleset name="npath">
+    <rule ref="NPathComplexity"><properties><property name="minimum" value="9" /></properties></rule>
+</ruleset>
+""",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        for name in ("target_and_value", "multiple_targets"):
+            with self.subTest(name=name):
+                self.assertIn(
+                    f"The function {name}() has an NPath complexity of 9.",
+                    stdout.getvalue(),
+                )
+
     def test_npath_counts_conditional_expression_in_comprehension_element(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
