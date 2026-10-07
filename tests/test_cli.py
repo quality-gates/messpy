@@ -3178,6 +3178,98 @@ class CommandAcceptanceTests(unittest.TestCase):
             stdout.getvalue(),
         )
 
+    def test_unusedcode_treats_a_private_method_aliased_in_the_class_body_as_a_use(self) -> None:
+        report = self._unused_private_method_report(
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "    def _unused(self):\n"
+            "        return None\n"
+            "\n"
+            "    alias = _label\n"
+        )
+
+        self.assertNotIn("'_label'", report)
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_unused'.", report)
+
+    def test_unusedcode_treats_a_private_method_named_in_a_parameter_default_as_a_use(self) -> None:
+        report = self._unused_private_method_report(
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "    def _unused(self):\n"
+            "        return None\n"
+            "\n"
+            "    def show(self, name=_label):\n"
+            "        return name\n"
+        )
+
+        self.assertNotIn("'_label'", report)
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_unused'.", report)
+
+    def test_unusedcode_treats_a_private_method_named_in_a_decorator_as_a_use(self) -> None:
+        report = self._unused_private_method_report(
+            "def wrap(target):\n"
+            "    return lambda function: function\n"
+            "\n"
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "    def _unused(self):\n"
+            "        return None\n"
+            "\n"
+            "    @wrap(_label)\n"
+            "    def show(self):\n"
+            "        return 1\n"
+        )
+
+        self.assertNotIn("'_label'", report)
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_unused'.", report)
+
+    def test_unusedcode_still_reports_a_private_method_named_only_in_a_method_body(self) -> None:
+        report = self._unused_private_method_report(
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "    def show(self):\n"
+            "        return _label\n"
+        )
+
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_label'.", report)
+
+    def test_unusedcode_still_reports_a_private_method_named_only_in_another_class_body(self) -> None:
+        report = self._unused_private_method_report(
+            "class Box:\n"
+            "    def _label(self):\n"
+            "        return 'box'\n"
+            "\n"
+            "class Other:\n"
+            "    alias = _label\n"
+        )
+
+        self.assertIn("UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_label'.", report)
+
+    def _unused_private_method_report(self, text: str) -> str:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "class_scope_method.py"
+            source.write_text(text, encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run(
+                [str(source), "text", "unusedcode", "--only", "UnusedPrivateMethod"],
+                stdout,
+                stderr,
+            )
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        return stdout.getvalue()
+
     def test_unusedcode_keeps_private_methods_overriding_imported_bases_quiet(self) -> None:
         source = (FIXTURES / "issue_138").resolve()
         stdout = StringIO()

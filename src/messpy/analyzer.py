@@ -521,7 +521,7 @@ def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequen
         *_unused_local_variable_findings(path, rules, function_scopes, comprehension_scopes, protocol_method_ids),
         *_unused_formal_parameter_findings(path, tree, rules, function_scopes, protocol_method_ids, names),
         *_unused_private_field_findings(path, source, tree, classes, rules, private_member_usage),
-        *_unused_private_method_findings(path, classes, rules, private_member_usage),
+        *_unused_private_method_findings(path, source, classes, rules, private_member_usage),
         *_selected_clean_code_findings(path, source, tree, rules, rule_names, callables),
         *_selected_design_findings(path, source, tree, classes, rules, rule_names, callables, call_graph, names),
         *_selected_explicitness_findings(path, tree, rules, rule_names, names),
@@ -3207,9 +3207,9 @@ def _unused_private_field_findings(
         if _is_dataclass(class_info.node, dataclass_names):
             continue
         fields = _private_fields(class_info.node)
-        referenced = referenced_names.get((class_info.node.name, class_info.node.lineno), frozenset())
+        referenced = _class_referenced_names(referenced_names, class_info)
         for name, line in fields.items():
-            if _private_field_has_proven_use(name, usage, referenced):
+            if _private_member_has_proven_use(name, usage, referenced):
                 continue
             findings.append(
                 Finding(
@@ -3224,10 +3224,16 @@ def _unused_private_field_findings(
     return findings
 
 
-def _private_field_has_proven_use(
+def _private_member_has_proven_use(
     name: str, usage: PrivateMemberUsage, referenced: frozenset[str]
 ) -> bool:
     return name in usage.accessed_names or name in usage.exported_names or name in referenced
+
+
+def _class_referenced_names(
+    referenced_names: dict[tuple[str, int], frozenset[str]], class_info: ClassInfo
+) -> frozenset[str]:
+    return referenced_names.get((class_info.node.name, class_info.node.lineno), frozenset())
 
 
 def _class_scope_referenced_names(source: str) -> dict[tuple[str, int], frozenset[str]]:
@@ -3256,6 +3262,7 @@ def _class_symbol_tables(table: symtable.SymbolTable) -> list[symtable.SymbolTab
 
 def _unused_private_method_findings(
     path: Path,
+    source: str,
     classes: Sequence[ClassInfo],
     rules: Sequence[LoadedRule],
     usage: PrivateMemberUsage | None,
@@ -3266,12 +3273,16 @@ def _unused_private_method_findings(
     if usage.requires_conservative_handling:
         return []
     findings: list[Finding] = []
+    # A method named by a bare name in a class-body statement, decorator, or
+    # default is used there, like the private fields above.
+    referenced_names = _class_scope_referenced_names(source)
     for class_info in classes:
         # An unresolved base may call protected hooks that this file cannot see.
         if class_info.has_unresolved_base:
             continue
+        referenced = _class_referenced_names(referenced_names, class_info)
         for method in class_info.methods:
-            if not _is_unused_private_method(method, usage):
+            if not _is_unused_private_method(method, usage, referenced):
                 continue
             findings.append(
                 Finding(
@@ -3289,11 +3300,11 @@ def _unused_private_method_findings(
 def _is_unused_private_method(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     usage: PrivateMemberUsage,
+    referenced: frozenset[str],
 ) -> bool:
     return (
         _is_private_name(method.name)
-        and method.name not in usage.accessed_names
-        and method.name not in usage.exported_names
+        and not _private_member_has_proven_use(method.name, usage, referenced)
         and not method.decorator_list
         and not _is_contract_method(method)
     )
