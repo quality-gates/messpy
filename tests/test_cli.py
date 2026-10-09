@@ -1404,6 +1404,14 @@ class CommandAcceptanceTests(unittest.TestCase):
                 ["input.py", "text", "codesize", "--minimum-priority", "0"],
                 "--minimum-priority expects a priority between 1 and 5, received '0'.",
             ),
+            (
+                ["input.py", "text", "codesize", "--minimum-priority", "not-a-number"],
+                "--minimum-priority expects a priority between 1 and 5, received 'not-a-number'.",
+            ),
+            (
+                ["input.py", "text", "codesize", "--minimum-priority=5", "--maximum-priority=1"],
+                "Minimum priority must not exceed maximum priority.",
+            ),
             (["input.py", "unknown", "codesize"], "Unknown format: unknown"),
             (["input.py", "text", "unknown"], "Unknown ruleset 'unknown'."),
         ]
@@ -1418,6 +1426,27 @@ class CommandAcceptanceTests(unittest.TestCase):
                 self.assertEqual(1, status)
                 self.assertEqual("", stdout.getvalue())
                 self.assertIn(diagnostic, stderr.getvalue())
+
+    def test_inverted_priority_error_respects_ignore_errors_on_exit(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+
+        status = run(
+            [
+                "input.py",
+                "text",
+                "codesize",
+                "--minimum-priority=5",
+                "--maximum-priority=1",
+                "--ignore-errors-on-exit",
+            ],
+            stdout,
+            stderr,
+        )
+
+        self.assertEqual(0, status)
+        self.assertEqual("", stdout.getvalue())
+        self.assertEqual("Error: Minimum priority must not exceed maximum priority.\n", stderr.getvalue())
 
     def test_custom_ruleset_composes_references_and_later_overrides(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -6322,6 +6351,16 @@ class CommandAcceptanceTests(unittest.TestCase):
             stderr = StringIO()
             status = run([str(fixture), "text", ruleset, "--only", name], stdout, stderr)
             self.assertEqual((0, "", ""), (status, stdout.getvalue(), stderr.getvalue()))
+
+    def test_help_does_not_validate_an_unused_priority_range(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+
+        status = run(["--help", "--minimum-priority=5", "--maximum-priority=1"], stdout, stderr)
+
+        self.assertEqual(0, status)
+        self.assertIn("messpy <paths> <format> <ruleset[,ruleset...]>", stdout.getvalue())
+        self.assertEqual("", stderr.getvalue())
 
     def test_help_describes_command_shape_and_exit_codes(self) -> None:
         stdout = StringIO()

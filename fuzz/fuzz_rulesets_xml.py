@@ -23,24 +23,20 @@ def fuzz_xml_rulesets(data: bytes) -> None:
             xml_path.write_bytes(xml_bytes)
             xml_files.append(str(xml_path))
 
-        # Test load_rulesets directly
         try:
-            loaded = rulesets.load_rulesets(xml_files)
-            if loaded:
-                only = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
-                enable = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
-                disable = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
-                try:
-                    rulesets.filter_rules(
-                        loaded,
-                        only=only,
-                        enable=enable,
-                        disable=disable,
-                        minimum_priority=fdp.ConsumeIntInRange(1, 5),
-                        maximum_priority=fdp.ConsumeIntInRange(1, 5),
-                    )
-                except rulesets.RulesetError:
-                    pass
+            only = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
+            enable = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
+            disable = [fdp.ConsumeUnicode(15) for _ in range(fdp.ConsumeIntInRange(0, 2))]
+            rulesets.select_rules(
+                rulesets.RuleSelection(
+                    rulesets=tuple(xml_files),
+                    only=tuple(only),
+                    enable=tuple(enable),
+                    disable=tuple(disable),
+                    minimum_priority=fdp.ConsumeIntInRange(1, 5),
+                    maximum_priority=fdp.ConsumeIntInRange(1, 5),
+                )
+            )
         except rulesets.RulesetError:
             pass
 

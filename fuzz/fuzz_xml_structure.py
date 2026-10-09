@@ -89,16 +89,16 @@ def fuzz_xml_structure(data: bytes) -> None:
         xml_file = Path(temporary_directory) / "rules.xml"
         xml_file.write_text(xml_content, encoding="utf-8", errors="replace")
         try:
-            loaded = rulesets.load_rulesets([str(xml_file)])
-            if loaded:
-                rulesets.filter_rules(
-                    loaded,
-                    only=[fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))],
-                    enable=[fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))],
-                    disable=[fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))],
+            rulesets.select_rules(
+                rulesets.RuleSelection(
+                    rulesets=(str(xml_file),),
+                    only=tuple(fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))),
+                    enable=tuple(fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))),
+                    disable=tuple(fdp.ConsumeUnicode(10) for _ in range(fdp.ConsumeIntInRange(0, 2))),
                     minimum_priority=fdp.ConsumeIntInRange(0, 6),
                     maximum_priority=fdp.ConsumeIntInRange(0, 6),
                 )
+            )
         except rulesets.RulesetError:
             pass
 

@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from . import __version__
 from .analyzer import DEFAULT_SUFFIXES, Finding, ProcessingError, analyze
-from .rulesets import RulesetError, filter_rules, load_rulesets
+from .rulesets import RuleSelection, RulesetError, select_rules
 
 
 REPORT_FORMATS = frozenset(
@@ -54,16 +54,6 @@ BOOLEAN_OPTIONS = frozenset(
         "--verbose",
     }
 )
-
-
-@dataclass(frozen=True)
-class RuleSelection:
-    rulesets: tuple[str, ...]
-    only: tuple[str, ...]
-    enable: tuple[str, ...]
-    disable: tuple[str, ...]
-    minimum_priority: int
-    maximum_priority: int
 
 
 @dataclass(frozen=True)
@@ -128,15 +118,7 @@ def _handle_help_or_version(parsed_arguments: ParsedArguments, stdout: TextIO) -
 def _run_analysis(parsed_arguments: ParsedArguments, stdout: TextIO, stderr: TextIO) -> int:
     if parsed_arguments.report_format.lower() not in REPORT_FORMATS:
         raise CliError(f"Unknown format: {parsed_arguments.report_format}")
-    selection = parsed_arguments.rule_selection
-    rules = filter_rules(
-        load_rulesets(selection.rulesets),
-        selection.only,
-        selection.enable,
-        selection.disable,
-        selection.minimum_priority,
-        selection.maximum_priority,
-    )
+    rules = select_rules(parsed_arguments.rule_selection)
     if parsed_arguments.verbose:
         stderr.write(f"Loaded rules: {', '.join(rule.name for rule in rules)}\n")
 
@@ -319,7 +301,7 @@ def _finish_help_or_version_parsing(state: _ArgumentParseState) -> ParsedArgumen
         color=state.color,
         show_help=state.show_help,
         show_version=state.show_version,
-        rule_selection=_rule_selection(state, rulesets=[]),
+        rule_selection=RuleSelection(rulesets=()),
         exit_policy=_exit_policy(state),
     )
 
@@ -336,8 +318,6 @@ def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
     rulesets = _split_nonempty(state.positionals[2])
     if not rulesets:
         raise CliError("At least one ruleset is required", state.ignore_errors_on_exit)
-    if state.rules.minimum_priority > state.rules.maximum_priority:
-        raise CliError("Minimum priority must not exceed maximum priority.", state.ignore_errors_on_exit)
     return ParsedArguments(
         paths=tuple(paths),
         report_format=state.positionals[1],
@@ -356,14 +336,17 @@ def _finish_analysis_parsing(state: _ArgumentParseState) -> ParsedArguments:
 
 
 def _rule_selection(state: _ArgumentParseState, rulesets: list[str]) -> RuleSelection:
-    return RuleSelection(
-        rulesets=tuple(rulesets),
-        only=tuple(state.rules.only),
-        enable=tuple(state.rules.enable),
-        disable=tuple(state.rules.disable),
-        minimum_priority=state.rules.minimum_priority,
-        maximum_priority=state.rules.maximum_priority,
-    )
+    try:
+        return RuleSelection(
+            rulesets=tuple(rulesets),
+            only=tuple(state.rules.only),
+            enable=tuple(state.rules.enable),
+            disable=tuple(state.rules.disable),
+            minimum_priority=state.rules.minimum_priority,
+            maximum_priority=state.rules.maximum_priority,
+        )
+    except RulesetError as error:
+        raise CliError(str(error), state.ignore_errors_on_exit) from error
 
 
 def _exit_policy(state: _ArgumentParseState) -> ExitPolicy:
