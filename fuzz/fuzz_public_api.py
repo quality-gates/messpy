@@ -46,16 +46,13 @@ def fuzz_public_api(data: bytes) -> None:
             xml_file = Path(temporary_directory) / "custom_ruleset.xml"
             xml_file.write_bytes(xml_content)
             try:
-                loaded = rulesets.load_rulesets([str(xml_file)])
-                if loaded and fdp.ConsumeBool():
-                    rulesets.filter_rules(
-                        loaded,
-                        only=[],
-                        enable=[],
-                        disable=[],
+                rulesets.select_rules(
+                    rulesets.RuleSelection(
+                        rulesets=(str(xml_file),),
                         minimum_priority=fdp.ConsumeIntInRange(1, 5),
                         maximum_priority=fdp.ConsumeIntInRange(1, 5),
                     )
+                )
             except rulesets.RulesetError:
                 pass
 

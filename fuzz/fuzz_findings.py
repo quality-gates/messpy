@@ -7,7 +7,7 @@ import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
     from messpy.analyzer import Analysis, analyze
-    from messpy.rulesets import filter_rules, load_rulesets
+    from messpy.rulesets import RuleSelection, select_rules
     from scan_profile import RULESETS
 
 
@@ -20,7 +20,7 @@ def fuzz_findings(data: bytes) -> None:
     with TemporaryDirectory() as temporary_directory:
         source_file = Path(temporary_directory) / "source.py"
         source_file.write_bytes(source_bytes)
-        rules = filter_rules(load_rulesets(ruleset.split(",")), [], [], [], 1, 5)
+        rules = select_rules(RuleSelection(rulesets=tuple(ruleset.split(","))))
         analysis = analyze([source_file], rules=rules, ignore_tests=ignore_tests)
 
     assert isinstance(analysis, Analysis)

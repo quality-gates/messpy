@@ -56,6 +56,23 @@ class RulesetError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class RuleSelection:
+    rulesets: tuple[str, ...]
+    only: tuple[str, ...] = ()
+    enable: tuple[str, ...] = ()
+    disable: tuple[str, ...] = ()
+    minimum_priority: int = 1
+    maximum_priority: int = 5
+
+    def __post_init__(self) -> None:
+        for priority in (self.minimum_priority, self.maximum_priority):
+            if type(priority) is not int or not 1 <= priority <= 5:
+                raise RulesetError("Priority must be an integer between 1 and 5.")
+        if self.minimum_priority > self.maximum_priority:
+            raise RulesetError("Minimum priority must not exceed maximum priority.")
+
+
 _MATCH_NOTHING = re.compile(r"(?!)")
 
 
@@ -404,24 +421,23 @@ def _validate_required_items(rules: Iterable[LoadedRule]) -> None:
                 raise RulesetError(f"{rule.name} property '{property_name}' must name at least one {kind}.")
 
 
-def filter_rules(
-    rules: Iterable[LoadedRule],
-    only: Iterable[str],
-    enable: Iterable[str],
-    disable: Iterable[str],
-    minimum_priority: int,
-    maximum_priority: int,
-) -> list[LoadedRule]:
-    loaded = list(rules)
+def select_rules(selection: RuleSelection) -> list[LoadedRule]:
+    loaded = load_rulesets(selection.rulesets)
     names = {_identity(rule.name): rule.name for rule in loaded}
-    _validate_rule_names([*only, *enable, *disable], names)
+    _validate_rule_names((*selection.only, *selection.enable, *selection.disable), names)
 
-    selected = {_identity(name) for name in [*only, *enable]}
-    disabled = {_identity(name) for name in disable}
+    selected = {_identity(name) for name in (*selection.only, *selection.enable)}
+    disabled = {_identity(name) for name in selection.disable}
     return [
         rule
         for rule in loaded
-        if _rule_is_selected(rule, selected, disabled, minimum_priority, maximum_priority)
+        if _rule_is_selected(
+            rule,
+            selected,
+            disabled,
+            selection.minimum_priority,
+            selection.maximum_priority,
+        )
     ]
 
 

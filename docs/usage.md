@@ -94,9 +94,9 @@ Python code can run the same analysis without a command line. `analyze` resolves
 
 ```python
 from messpy.analyzer import analyze
-from messpy.rulesets import filter_rules, load_rulesets
+from messpy.rulesets import RuleSelection, select_rules
 
-rules = filter_rules(load_rulesets(["python"]), [], [], [], 1, 5)
+rules = select_rules(RuleSelection(rulesets=("python",)))
 analysis = analyze(["src"], rules=rules, ignore_tests=True)
 
 for finding in analysis.findings:
