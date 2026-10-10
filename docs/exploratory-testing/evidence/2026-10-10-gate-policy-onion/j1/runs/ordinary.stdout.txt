@@ -1,0 +1,11 @@
+src/billing/invoice.py:8: LongVariable [priority 3] Avoid excessively long variable names like include_tax_breakdown_for_regional_rules. Configured maximum length is 35.
+src/billing/invoice.py:9: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'unused_preview'.
+src/billing/invoice.py:10: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/billing/invoice.py:13: EmptyCatchBlock [priority 2] Avoid using empty exception handlers in draft_total.
+src/billing/invoice.py:15: IfStatementAssignment [priority 1] Avoid assigning values to variables in if clauses and the like (line '15', column '9').
+src/billing/invoice.py:15: UnusedLocalVariable [priority 3] Avoid unused local variables such as 'status'.
+src/billing/invoice.py:16: DevelopmentCodeFragment [priority 2] The draft_total calls the typical debug function pdb.set_trace() which is mostly only used during development.
+src/billing/invoice.py:24: UnusedPrivateField [priority 3] Avoid unused private fields such as '_cached_tax'.
+src/billing/invoice.py:26: UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_render_footer'.
+src/billing/signing.py:18: UnusedPrivateMethod [priority 3] Avoid unused private methods such as '_sign'.
+src/billing/legacy.py:3: ProcessingError Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-10-gate-policy-onion/j1/src/billing/legacy.py: '(' was never closed

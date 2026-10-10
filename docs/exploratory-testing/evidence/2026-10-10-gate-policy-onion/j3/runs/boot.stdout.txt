@@ -1,0 +1,3 @@
+src/shop/domain/boot.py:5: DomainAction [priority 2] The function save_report() writes the implicit output print. Return it instead.
+src/shop/domain/boot.py:9: DomainAction [priority 2] The function publish() calls save_report(), which writes the implicit output print. Move the action to the interaction layer.
+src/shop/domain/boot.py:12: DomainAction [priority 2] The module calls publish(), which calls save_report(), which writes the implicit output print, at import time. Move the action to the interaction layer.

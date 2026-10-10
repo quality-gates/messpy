@@ -1,0 +1,1 @@
+Error: [Errno 13] Permission denied: '/Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-10-gate-policy-onion/j1/mixed/secret'

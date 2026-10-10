@@ -116,6 +116,8 @@ Suppression directives are applied and recorded on each finding through its `sup
 - Tests are included unless `--ignore-tests` is set, so excluding test quality is an explicit choice.
 - A malformed or unreadable file becomes a `ProcessingError`. Other valid files still analyze.
 
+A pass over a production gate, team policy, and onion checks is recorded in [the 2026-10-10 exploratory report](exploratory-testing/2026-10-10-gate-policy-onion.md). An unreadable directory still aborts that scan; see [#258](https://github.com/quality-gates/messpy/issues/258).
+
 ## Custom XML policy
 
 Keep team thresholds next to the code:
@@ -176,6 +178,7 @@ A user pass of this behavior is recorded in [exploratory testing: onion and expl
 Follow-up feedback on call-based cohesion, aliased imports, and source
 non-execution is in [the 2026-09-26 exploratory report](exploratory-testing/2026-09-26-call-graph-cli.md).
 CI pipeline outputs, exit gate precedence, Python 3.12 syntax, and lexical scope isolation are recorded in [the 2026-10-03 exploratory report](exploratory-testing/2026-10-03-ci-syntax-scopes.md).
+Team policy, onion call spreads, and discovery of an unreadable directory are recorded in [the 2026-10-10 exploratory report](exploratory-testing/2026-10-10-gate-policy-onion.md).
 
 ## Suppressions in source
 

@@ -1,0 +1,2 @@
+sample.py:4: LongVariable [priority 3] Avoid excessively long variable names like include_tax_breakdown_for_regional_rules. Configured maximum length is 35.
+sample.py:5: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.

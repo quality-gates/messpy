@@ -1,0 +1,2 @@
+src/billing/flow.py:11: ElseExpression [priority 1] The method classify uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.
+src/billing/flow.py:23: ElseExpression [priority 1] The method route uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.

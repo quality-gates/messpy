@@ -1,0 +1,1 @@
+Error: DomainAction property 'domain' must name at least one path pattern.

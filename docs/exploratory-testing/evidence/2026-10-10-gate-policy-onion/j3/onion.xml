@@ -1,0 +1,8 @@
+<ruleset name="team">
+    <rule ref="onion">
+        <properties>
+            <property name="domain" value="*/shop/domain/*" />
+            <property name="outer-layers" value="shop.infra,shop.web,requests,sqlalchemy" />
+        </properties>
+    </rule>
+</ruleset>
