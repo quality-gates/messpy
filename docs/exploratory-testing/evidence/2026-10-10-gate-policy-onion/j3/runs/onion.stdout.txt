@@ -1,0 +1,11 @@
+src/shop/domain/boot.py:5: DomainAction [priority 2] The function save_report() writes the implicit output print. Return it instead.
+src/shop/domain/boot.py:9: DomainAction [priority 2] The function publish() calls save_report(), which writes the implicit output print. Move the action to the interaction layer.
+src/shop/domain/boot.py:12: DomainAction [priority 2] The module calls publish(), which calls save_report(), which writes the implicit output print, at import time. Move the action to the interaction layer.
+src/shop/domain/callbacks.py:9: DomainAction [priority 2] The function record() writes the implicit output repo. Return it instead.
+src/shop/domain/orders.py:5: DomainOuterImport [priority 2] The module imports requests, which belongs to the outer layer requests. The domain layer must not know about the interaction layer.
+src/shop/domain/orders.py:8: DomainOuterImport [priority 2] The module imports shop.infra.repository, which belongs to the outer layer shop.infra. The domain layer must not know about the interaction layer.
+src/shop/domain/orders.py:11: DomainOuterImport [priority 2] The module imports shop.web.api, which belongs to the outer layer shop.web. The domain layer must not know about the interaction layer.
+src/shop/domain/orders.py:15: DomainAction [priority 2] The function save_report() writes the implicit output print. Return it instead.
+src/shop/domain/orders.py:19: DomainAction [priority 2] The function publish() calls save_report(), which writes the implicit output print. Move the action to the interaction layer.
+src/shop/domain/orders.py:23: DomainOuterImport [priority 2] The module imports sqlalchemy, which belongs to the outer layer sqlalchemy. The domain layer must not know about the interaction layer.
+src/shop/domain/orders.py:33: DomainAction [priority 2] The method Order.apply_discount() writes the implicit output self.total. Return it instead.

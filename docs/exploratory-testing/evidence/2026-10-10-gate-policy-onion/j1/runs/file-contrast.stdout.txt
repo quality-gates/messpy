@@ -1,0 +1,2 @@
+mixed/ok/visible.py:2: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/billing/locked-file.py:1: ProcessingError Could not process /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-10-gate-policy-onion/j1/src/billing/locked-file.py: [Errno 13] Permission denied: '/Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-10-gate-policy-onion/j1/src/billing/locked-file.py'

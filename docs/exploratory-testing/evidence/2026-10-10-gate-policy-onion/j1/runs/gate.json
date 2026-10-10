@@ -1,0 +1,120 @@
+{
+  "tool": {
+    "name": "messpy",
+    "version": "0.1.20"
+  },
+  "findings": [
+    {
+      "path": "src/billing/invoice.py",
+      "line": 8,
+      "column": 1,
+      "ruleName": "LongVariable",
+      "priority": 3,
+      "message": "Avoid excessively long variable names like include_tax_breakdown_for_regional_rules. Configured maximum length is 35.",
+      "context": "include_tax_breakdown_for_regional_rules",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 9,
+      "column": 1,
+      "ruleName": "UnusedLocalVariable",
+      "priority": 3,
+      "message": "Avoid unused local variables such as 'unused_preview'.",
+      "context": "unused_preview",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 10,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "Development-only marker found in production source.",
+      "context": "module",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 13,
+      "column": 1,
+      "ruleName": "EmptyCatchBlock",
+      "priority": 2,
+      "message": "Avoid using empty exception handlers in draft_total.",
+      "context": "draft_total",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 15,
+      "column": 1,
+      "ruleName": "IfStatementAssignment",
+      "priority": 1,
+      "message": "Avoid assigning values to variables in if clauses and the like (line '15', column '9').",
+      "context": "",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 15,
+      "column": 1,
+      "ruleName": "UnusedLocalVariable",
+      "priority": 3,
+      "message": "Avoid unused local variables such as 'status'.",
+      "context": "status",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 16,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "The draft_total calls the typical debug function pdb.set_trace() which is mostly only used during development.",
+      "context": "draft_total",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 24,
+      "column": 1,
+      "ruleName": "UnusedPrivateField",
+      "priority": 3,
+      "message": "Avoid unused private fields such as '_cached_tax'.",
+      "context": "_cached_tax",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/invoice.py",
+      "line": 26,
+      "column": 1,
+      "ruleName": "UnusedPrivateMethod",
+      "priority": 3,
+      "message": "Avoid unused private methods such as '_render_footer'.",
+      "context": "_render_footer",
+      "suppressed": false
+    },
+    {
+      "path": "src/billing/signing.py",
+      "line": 18,
+      "column": 1,
+      "ruleName": "UnusedPrivateMethod",
+      "priority": 3,
+      "message": "Avoid unused private methods such as '_sign'.",
+      "context": "_sign",
+      "suppressed": false
+    }
+  ],
+  "errors": [
+    {
+      "path": "src/billing/legacy.py",
+      "line": 3,
+      "column": 1,
+      "ruleName": "ProcessingError",
+      "priority": 1,
+      "message": "Could not parse /Users/jonathanbaldie/Code-2/github.com/quality-gates/messpy/docs/exploratory-testing/evidence/2026-10-10-gate-policy-onion/j1/src/billing/legacy.py: '(' was never closed",
+      "context": "",
+      "suppressed": false
+    }
+  ]
+}

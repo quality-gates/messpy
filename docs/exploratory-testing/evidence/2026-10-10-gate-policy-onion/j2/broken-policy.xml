@@ -1,0 +1,3 @@
+<ruleset name="broken">
+  <rule ref="pyhton" />
+</ruleset>

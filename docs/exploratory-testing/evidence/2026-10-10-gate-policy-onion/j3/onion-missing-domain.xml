@@ -1,0 +1,7 @@
+<ruleset name="team">
+    <rule ref="onion">
+        <properties>
+            <property name="outer-layers" value="requests" />
+        </properties>
+    </rule>
+</ruleset>
