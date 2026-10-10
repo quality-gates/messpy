@@ -955,6 +955,134 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn(f"{malformed.resolve().as_posix()}:1: ProcessingError", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
 
+    def test_unreadable_directory_keeps_other_findings_and_records_a_processing_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            visible = project / "ok" / "visible.py"
+            secret = project / "secret"
+            visible.parent.mkdir()
+            secret.mkdir()
+            visible.write_text(_todo_source("visible"), encoding="utf-8")
+            (secret / "hidden.py").write_text(_todo_source("hidden"), encoding="utf-8")
+            _require_blocked_listing(self, secret)
+            try:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([str(project), "text", "python"], stdout, stderr)
+                report = stdout.getvalue()
+            finally:
+                secret.chmod(0o755)
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(_development_fragment(visible), report)
+        self.assertIn(_directory_processing_error(secret), report)
+        self.assertNotIn("hidden.py", report)
+
+    def test_unreadable_directory_report_is_written_when_errors_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            visible = project / "ok" / "visible.py"
+            secret = project / "secret"
+            visible.parent.mkdir()
+            secret.mkdir()
+            visible.write_text(_todo_source("visible"), encoding="utf-8")
+            report_file = project / "out.json"
+            _require_blocked_listing(self, secret)
+            try:
+                errors_ignored = _run_reportfile(
+                    project,
+                    report_file,
+                    "--ignore-errors-on-exit",
+                )
+                both_ignored = _run_reportfile(
+                    project,
+                    report_file,
+                    "--ignore-errors-on-exit",
+                    "--ignore-violations-on-exit",
+                )
+            finally:
+                secret.chmod(0o755)
+
+        # Findings still fail the gate. --ignore-errors-on-exit only ignores
+        # processing errors, matching the documented exit precedence.
+        self.assertEqual(2, errors_ignored[0])
+        self.assertEqual("", errors_ignored[1])
+        self.assertEqual("", errors_ignored[2])
+        self.assertEqual(0, both_ignored[0])
+        self.assertEqual(errors_ignored[3], both_ignored[3])
+        report = json.loads(errors_ignored[3])
+        self.assertEqual(["DevelopmentCodeFragment"], [item["ruleName"] for item in report["findings"]])
+        self.assertTrue(report["findings"][0]["path"].endswith("ok/visible.py"))
+        self.assertEqual([secret.resolve().as_posix()], [item["path"] for item in report["errors"]])
+        self.assertEqual("ProcessingError", report["errors"][0]["ruleName"])
+        self.assertEqual(1, report["errors"][0]["line"])
+        self.assertIn(f"Could not process {secret.resolve()}", report["errors"][0]["message"])
+        self.assertIn("Permission denied", report["errors"][0]["message"])
+
+    def test_readable_file_and_unreadable_directory_are_both_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            visible = project / "ok" / "visible.py"
+            secret = project / "secret"
+            visible.parent.mkdir()
+            secret.mkdir()
+            visible.write_text(_todo_source("visible"), encoding="utf-8")
+            _require_blocked_listing(self, secret)
+            try:
+                stdout = StringIO()
+                stderr = StringIO()
+                status = run([f"{visible},{secret}", "text", "python"], stdout, stderr)
+                report = stdout.getvalue()
+                repeated = StringIO()
+                repeated_status = run([f"{project},{secret}", "text", "python"], repeated, StringIO())
+                repeated_report = repeated.getvalue()
+            finally:
+                secret.chmod(0o755)
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(_development_fragment(visible), report)
+        self.assertIn(_directory_processing_error(secret), report)
+        self.assertEqual(1, report.count("ProcessingError"))
+        self.assertEqual(1, repeated_status)
+        self.assertEqual(1, repeated_report.count("ProcessingError"))
+        self.assertIn(_development_fragment(visible), repeated_report)
+
+    def test_unreadable_file_still_keeps_sibling_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            visible = project / "visible.py"
+            locked = project / "locked.py"
+            visible.write_text(_todo_source("visible"), encoding="utf-8")
+            locked.write_text("def locked():\n    return 1\n", encoding="utf-8")
+            geteuid = getattr(os, "geteuid", None)
+            if geteuid is None or geteuid() == 0 or sys.platform == "win32":
+                self.skipTest("POSIX file permissions cannot be enforced here")
+            locked.chmod(0)
+            try:
+                readable = locked.open("r")
+            except OSError:
+                readable = None
+            else:
+                readable.close()
+            if readable is None:
+                try:
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    status = run([f"{visible},{locked}", "text", "python"], stdout, stderr)
+                    report = stdout.getvalue()
+                finally:
+                    locked.chmod(0o644)
+            else:
+                locked.chmod(0o644)
+                self.skipTest("chmod 000 does not block reading a file")
+
+        self.assertEqual(1, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(_development_fragment(visible), report)
+        self.assertIn(f"{locked.resolve().as_posix()}:1: ProcessingError Could not process {locked.resolve()}", report)
+
     def test_duplicate_parameter_name_reports_an_error_without_hiding_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
@@ -7034,3 +7162,45 @@ def _finding_for(path: Path, name: str, line: int = 1) -> str:
         "[priority 3] "
         f"The function {name}() has 101 lines of code. Current threshold is set to 100. Avoid really long methods."
     )
+
+
+def _todo_source(name: str) -> str:
+    return f"def {name}():\n    # TODO: should still be reported\n    return 1\n"
+
+
+def _development_fragment(path: Path) -> str:
+    return (
+        f"{path.resolve().as_posix()}:2: DevelopmentCodeFragment [priority 2] "
+        "Development-only marker found in production source."
+    )
+
+
+def _directory_processing_error(path: Path) -> str:
+    resolved = path.resolve()
+    return f"{resolved.as_posix()}:1: ProcessingError Could not process {resolved}:"
+
+
+def _require_blocked_listing(test: unittest.TestCase, directory: Path) -> None:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() == 0 or sys.platform == "win32":
+        test.skipTest("POSIX directory listing permissions cannot be enforced here")
+    directory.chmod(0)
+    try:
+        next(directory.iterdir())
+    except StopIteration:
+        blocked = False
+    except OSError:
+        blocked = True
+    else:
+        blocked = False
+    if not blocked:
+        directory.chmod(0o755)
+        test.skipTest("chmod 000 does not block directory listing")
+
+
+def _run_reportfile(project: Path, report_file: Path, *flags: str) -> tuple[int, str, str, str]:
+    stdout = StringIO()
+    stderr = StringIO()
+    status = run([str(project), "json", "python", "--reportfile", str(report_file), *flags], stdout, stderr)
+    written = report_file.read_text(encoding="utf-8") if report_file.is_file() else ""
+    return status, stdout.getvalue(), stderr.getvalue(), written
