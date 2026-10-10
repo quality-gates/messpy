@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from io import StringIO
+import os
 from pathlib import Path
 import re
 import sys
@@ -191,6 +192,55 @@ class FacadeAcceptanceTests(unittest.TestCase):
         self.assertEqual((), analysis.errors)
         self.assertEqual({".py", ".pyi"}, set(DEFAULT_SUFFIXES))
         self.assertFalse(isinstance(ProcessingError(source, 1, "unused"), Finding))
+
+    def test_analyze_records_an_unreadable_directory_without_dropping_other_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            visible = project / "ok" / "visible.py"
+            secret = project / "secret"
+            missing = project / "missing.py"
+            visible.parent.mkdir()
+            secret.mkdir()
+            visible.write_text(
+                "def visible():\n    # TODO: should still be reported\n    return 1\n",
+                encoding="utf-8",
+            )
+            (secret / "hidden.py").write_text("def hidden():\n    return 1\n", encoding="utf-8")
+            rules = load_rulesets(["python"])
+            _require_blocked_listing(self, secret)
+            try:
+                analysis = analyze([project], rules=rules)
+                with self.assertRaises(OSError) as missing_path:
+                    analyze([missing], rules=rules)
+            finally:
+                secret.chmod(0o755)
+
+        self.assertEqual("Input path does not exist", str(missing_path.exception))
+        self.assertEqual([visible.resolve()], [finding.path for finding in analysis.findings])
+        self.assertEqual("DevelopmentCodeFragment", analysis.findings[0].rule_name)
+        self.assertEqual(1, len(analysis.errors))
+        self.assertEqual(secret.resolve(), analysis.errors[0].path)
+        self.assertEqual(1, analysis.errors[0].line)
+        self.assertIn(f"Could not process {secret.resolve()}", analysis.errors[0].message)
+        self.assertIn("Permission denied", analysis.errors[0].message)
+
+
+def _require_blocked_listing(test: unittest.TestCase, directory: Path) -> None:
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() == 0 or sys.platform == "win32":
+        test.skipTest("POSIX directory listing permissions cannot be enforced here")
+    directory.chmod(0)
+    try:
+        next(directory.iterdir())
+    except StopIteration:
+        blocked = False
+    except OSError:
+        blocked = True
+    else:
+        blocked = False
+    if not blocked:
+        directory.chmod(0o755)
+        test.skipTest("chmod 000 does not block directory listing")
 
 
 if __name__ == "__main__":

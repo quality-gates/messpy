@@ -64,9 +64,9 @@ def analyze(
     ignore_tests: bool = False,
 ) -> Analysis:
     input_paths = [Path(value).resolve() for value in paths]
-    source_files = _source_files(input_paths, suffixes, exclusions, ignore_tests)
+    source_files, discovery_errors = _source_files(input_paths, suffixes, exclusions, ignore_tests)
     findings, processing_errors = _analyze(source_files, rules)
-    return Analysis(findings=tuple(findings), errors=tuple(processing_errors))
+    return Analysis(findings=tuple(findings), errors=tuple([*discovery_errors, *processing_errors]))
 
 
 METHOD_LENGTH_RULE_NAME = "ExcessiveMethodLength"
@@ -5251,11 +5251,19 @@ def _module_name(path: Path) -> tuple[str, ...] | None:
 
 def _source_files(
     paths: Sequence[Path], suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
-) -> list[Path]:
+) -> tuple[list[Path], list[ProcessingError]]:
     source_files: set[Path] = set()
+    discovery_errors: list[ProcessingError] = []
+    seen_errors: set[Path] = set()
     for path in paths:
-        source_files.update(_source_files_under(path, suffixes, exclusions, ignore_tests, root=path))
-    return sorted(source_files, key=lambda candidate: candidate.as_posix())
+        found, errors = _source_files_under(path, suffixes, exclusions, ignore_tests, root=path)
+        source_files.update(found)
+        for error in errors:
+            if error.path in seen_errors:
+                continue
+            seen_errors.add(error.path)
+            discovery_errors.append(error)
+    return sorted(source_files, key=lambda candidate: candidate.as_posix()), discovery_errors
 
 
 def _source_files_under(
@@ -5264,12 +5272,12 @@ def _source_files_under(
     exclusions: Sequence[str],
     ignore_tests: bool,
     root: Path | None = None,
-) -> set[Path]:
+) -> tuple[set[Path], list[ProcessingError]]:
     scan_root = root if root is not None else path
     if _is_root_ignored(path, exclusions, ignore_tests, scan_root):
-        return set()
+        return set(), []
     if path.is_file():
-        return {path.resolve()} if path.suffix.lower() in suffixes else set()
+        return ({path.resolve()} if path.suffix.lower() in suffixes else set()), []
     if not path.is_dir():
         raise OSError("Input path does not exist")
     return _collect_directory_source_files(path, suffixes, exclusions, ignore_tests, scan_root)
@@ -5281,13 +5289,19 @@ def _collect_directory_source_files(
     exclusions: Sequence[str],
     ignore_tests: bool,
     root: Path,
-) -> set[Path]:
+) -> tuple[set[Path], list[ProcessingError]]:
     source_files: set[Path] = set()
-    for candidate in sorted(path.iterdir(), key=lambda entry: entry.name):
-        source_files.update(
-            _source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests, root)
-        )
-    return source_files
+    discovery_errors: list[ProcessingError] = []
+    try:
+        candidates = sorted(path.iterdir(), key=lambda entry: entry.name)
+    except OSError as error:
+        resolved = path.resolve()
+        return set(), [ProcessingError(resolved, 1, f"Could not process {resolved}: {error}")]
+    for candidate in candidates:
+        found, errors = _source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests, root)
+        source_files.update(found)
+        discovery_errors.extend(errors)
+    return source_files, discovery_errors
 
 
 def _is_root_ignored(
@@ -5322,16 +5336,16 @@ def _source_files_for_candidate(
     exclusions: Sequence[str],
     ignore_tests: bool,
     root: Path,
-) -> set[Path]:
+) -> tuple[set[Path], list[ProcessingError]]:
     if candidate.is_dir():
         if _is_candidate_directory_ignored(candidate, exclusions, ignore_tests, root):
-            return set()
+            return set(), []
         return _source_files_under(candidate, suffixes, exclusions, ignore_tests, root=root)
     if not candidate.is_file() or candidate.suffix.lower() not in suffixes:
-        return set()
+        return set(), []
     if _is_candidate_file_ignored(candidate, exclusions, ignore_tests, root):
-        return set()
-    return {candidate.resolve()}
+        return set(), []
+    return {candidate.resolve()}, []
 
 
 def _relative_parts(path: Path, root: Path | None = None) -> tuple[str, ...]:

@@ -114,9 +114,9 @@ Suppression directives are applied and recorded on each finding through its `sup
 - Nested directory symlinks are not followed. An explicitly supplied directory symlink is resolved and scanned.
 - Default skipped directory names include VCS directories, virtual environments, `site-packages`, `__pycache__`, Python tool caches, and common build, dist, coverage, generated, output, and temporary directories.
 - Tests are included unless `--ignore-tests` is set, so excluding test quality is an explicit choice.
-- A malformed or unreadable file becomes a `ProcessingError`. Other valid files still analyze.
+- A malformed or unreadable file, and a directory that cannot be listed, become a `ProcessingError`. Other valid files still analyze.
 
-A pass over a production gate, team policy, and onion checks is recorded in [the 2026-10-10 exploratory report](exploratory-testing/2026-10-10-gate-policy-onion.md). An unreadable directory still aborts that scan; see [#258](https://github.com/quality-gates/messpy/issues/258).
+A pass over a production gate, team policy, and onion checks is recorded in [the 2026-10-10 exploratory report](exploratory-testing/2026-10-10-gate-policy-onion.md). An unreadable directory is a `ProcessingError` and the rest of that scan continues; see [#258](https://github.com/quality-gates/messpy/issues/258).
 
 ## Custom XML policy
 
