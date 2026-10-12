@@ -16,7 +16,8 @@ from urllib.parse import unquote
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.analyzer import _direct_bindings, _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.analyzer import _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.callgraph import _direct_bindings
 from messpy.cli import run
 
 
