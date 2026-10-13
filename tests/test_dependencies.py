@@ -37,6 +37,129 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_class_keywords_resolve_enclosing_function_bindings(self) -> None:
+        cases = [
+            ("def build(options):\n    class Service(policy=options.factory):\n        pass", set()),
+            ("def build():\n    options = object()\n    class Service(policy=options.factory):\n        pass", set()),
+            ("def outer(options):\n    def build():\n        class Service(policy=options.factory):\n            pass", set()),
+            ("def outer(options):\n    def build():\n        nonlocal options\n        class Service(policy=options.factory):\n            pass", set()),
+            ("def build():\n    global options\n    class Service(policy=options.factory):\n        pass", {"external.factory"}),
+            ("def build():\n    from external import Options as options\n    class Service(policy=options.factory):\n        pass", {"external.Options"}),
+            ("def build(options):\n    class Service(policy=(options.factory, Other)):\n        pass", {"external.Other"}),
+            ("class Outer:\n    options = object()\n    class Service(policy=options.factory):\n        pass", set()),
+            ("class Outer:\n    options = object()\n    class Service(policy=lambda: options.factory):\n        pass", {"external.factory"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                source = "import external as options\nfrom external import Other\n" + source + "\n"
+                compile(source, "service.py", "exec")
+                tree = ast.parse(source)
+                class_node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
+    def test_generic_class_keywords_use_annotation_scope_bindings(self) -> None:
+        cases = [
+            ("class Service[T](option=T):\n    pass", set()),
+            ("class Service[T](option=lambda: T):\n    pass", set()),
+            ("class Service[T](option=[T for value in ()]):\n    pass", set()),
+            ("class Service[*Ts](option=Ts):\n    pass", set()),
+            ("class Service[**P](option=P):\n    pass", set()),
+            ("class Service[T](option=(T, Other)):\n    pass", {"external.Other"}),
+            ("@T\nclass Service[T](option=T):\n    pass", {"external.T"}),
+            ("class Service[T](option=T):\n    def method(self):\n        return T", set()),
+            ("class Service[T](option=T):\n    def method(self):\n        from external import T\n        return T", {"external.T"}),
+            ("class Outer[T]:\n    class Service(option=T):\n        pass", set()),
+            ("def build[T]():\n    class Service(option=T):\n        pass", set()),
+            ("class Service[T](option=T):\n    def method(self):\n        global T\n        return T", {"external.T"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                source = "from external import T, Ts, P, Other\n" + source + "\n"
+                compile(source, "service.py", "exec")
+                tree = ast.parse(source)
+                class_node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
+    def test_annotation_scopes_keep_function_defaults_and_decorators_enclosing(self) -> None:
+        source = (
+            "from external import T, Other\n"
+            "@T\n"
+            "def build[T](argument: T = T) -> T:\n"
+            "    return T\n"
+            "type Alias[T] = tuple[T, Other]\n"
+        )
+        compile(source, "service.py", "exec")
+        tree = ast.parse(source)
+        names = Names.build(tree, module=None, path=Path("service.py"))
+        function = tree.body[1]
+        self.assertIsInstance(function, ast.FunctionDef)
+
+        for node in [function.decorator_list[0], function.args.defaults[0]]:
+            self.assertEqual(("external.T", True), names.imported(node))
+            self.assertFalse(names.is_local(node))
+        for node in [function.args.args[0].annotation, function.returns, function.body[0].value]:
+            self.assertIsNone(names.imported(node))
+            self.assertTrue(names.is_local(node))
+        alias_references = [node for node in ast.walk(tree.body[2].value) if isinstance(node, ast.Name)]
+        for node in alias_references:
+            with self.subTest(name=node.id):
+                if node.id == "T":
+                    self.assertIsNone(names.imported(node))
+                    self.assertTrue(names.is_local(node))
+                if node.id == "Other":
+                    self.assertEqual(("external.Other", True), names.imported(node))
+                    self.assertFalse(names.is_local(node))
+
+    def test_class_keyword_comprehensions_resolve_walrus_bindings_in_order(self) -> None:
+        cases = [
+            ("[Bound.value for x in rows if (Bound := Local())]", set()),
+            ("{Bound.value for x in rows if (Bound := Local())}", set()),
+            ("(Bound.value for x in rows if (Bound := Local()))", set()),
+            ("{x: Bound.value for x in rows if (Bound := Local())}", set()),
+            ("[Bound.value for x in rows if (Bound := Other())]", {"external.Other"}),
+            ("[Bound.value for x in rows if (Bound := Bound.factory())]", {"external.Bound"}),
+            ("[Bound.value for x in rows if Bound.ready if (Bound := Local())]", {"external.Bound"}),
+            ("[Bound.value for x in rows if (Bound := Local()) if Bound.ready]", set()),
+            ("[Bound.value for x in rows if (Bound := Local()) for y in Bound.children]", set()),
+            ("{(Bound := Local()): Bound.value for x in rows}", set()),
+            ("{Bound.value: (Bound := Local()) for x in rows}", {"external.Bound"}),
+            ("{(Bound := Other()): Bound.value for x in rows}", {"external.Other"}),
+            ("[Bound.value for x in rows if flag and (Bound := Local())]", set()),
+            ("[Bound.value for x in rows if flag or (Bound := Local())]", {"external.Bound"}),
+            ("[Bound.value for x in rows if (flag and (Bound := Local())) or (other and (Bound := Local()))]", set()),
+            ("[Bound.value for x in rows if not (flag or not (Bound := Local()))]", set()),
+            ("[Bound.value for x in rows if ((Bound := Local()) if flag else (Bound := Local()))]", set()),
+            ("[Bound.value for x in rows if ((Bound := Local()) if flag else True)]", {"external.Bound"}),
+            ("[Bound.value for x in rows if 0 < 1 < (Bound := Local(2))]", set()),
+            ("[Bound.value for x in rows if 0 < 1 < (Bound := Other())]", {"external.Other"}),
+            ("[Bound.value for x in rows if 0 < 1 < (Bound := Bound.factory())]", {"external.Bound"}),
+            ("[Bound.value for x in rows if not (x < 1 < (Bound := Local(2)))]", {"external.Bound"}),
+            ("[Bound.value for x in rows if -3 < -2 < (Bound := Local(0))]", set()),
+            ("[Bound.value for x in rows if -3 < -2 < (flag and (Bound := Local(0)))]", {"external.Bound"}),
+            ("([Bound.value for x in rows if (Bound := Local())], Bound.value)", {"external.Bound"}),
+            ("[([Bound.value for y in rows if (Bound := Local())], Bound.value) for x in rows]", {"external.Bound"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                source = (
+                    "from external import Bound, Other\n"
+                    "class Local(int):\n    value = 1\n"
+                    "rows = ()\n"
+                    f"class Service(option={expression}):\n    pass\n"
+                )
+                compile(source, "service.py", "exec")
+                tree = ast.parse(source)
+                class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names, {"Local"}))
+
     def test_class_with_no_references_has_empty_dependencies(self) -> None:
         tree = ast.parse("class Widget:\n    pass\n")
         class_node = _first_class(tree)

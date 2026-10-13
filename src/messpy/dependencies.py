@@ -201,7 +201,7 @@ def _dependency_name(
     imported = names.imported(node, scope=scope)
     if imported is not None:
         return _imported_dependency(imported, tail)
-    if root in local_names or names.is_expression_local(node):
+    if root in local_names or names.is_local(node, scope=scope):
         return ""
     return _spelling_dependency(root, tail)
 

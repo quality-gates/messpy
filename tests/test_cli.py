@@ -6431,6 +6431,82 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertEqual(2, report["findings"][0]["line"])
             self.assertIn("value of 1.", report["findings"][0]["message"])
 
+    def test_coupling_class_keywords_respect_enclosing_locals_and_comprehension_order(self) -> None:
+        cases = [
+            ("def build(options):\n    class Service(Config, policy=options.factory):\n        pass", 0),
+            ("def build(options):\n    class Service(Config, policy=(options.factory, Other)):\n        pass", 1),
+            ("class Service(Config, option=[Bound.value for x in rows if (Bound := Local())]):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if (Bound := Other())]):\n    pass", 1),
+            ("class Service(Config, option={Bound.value: (Bound := Local()) for x in rows}):\n    pass", 1),
+            ("class Service(Config, option={(Bound := Local()): Bound.value for x in rows}):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if 0 < 1 < (Bound := Local(2))]):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if 0 < 1 < (Bound := Other())]):\n    pass", 1),
+            ("class Service(Config, option=[Bound.value for x in rows if not (x < 1 < (Bound := Local(2)))]):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for header, value in cases:
+                with self.subTest(header=header):
+                    source = directory / "scope.py"
+                    source.write_text(
+                        "from external import Bound, Other\n"
+                        "class Config:\n    def __init_subclass__(cls, **options):\n        pass\n"
+                        "class Local(int):\n    value = 1\nrows = ()\n" + header + "\n",
+                        encoding="utf-8",
+                    )
+                    compile(source.read_text(encoding="utf-8"), str(source), "exec")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
+    def test_coupling_generic_class_keywords_keep_type_parameters_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "generic_scope.py"
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for expression, value in [("T", 0), ("lambda: T", 0), ("(T, Other)", 1)]:
+                with self.subTest(expression=expression):
+                    source.write_text(
+                        "from external import T, Other\n"
+                        "class Config:\n    def __init_subclass__(cls, **options):\n        pass\n"
+                        f"class Service[T](Config, option={expression}):\n    pass\n",
+                        encoding="utf-8",
+                    )
+                    compile(source.read_text(encoding="utf-8"), str(source), "exec")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual(("Service", 5), (report["findings"][0]["context"], report["findings"][0]["line"]))
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
     def test_coupling_async_comprehension_targets_stay_local(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)
