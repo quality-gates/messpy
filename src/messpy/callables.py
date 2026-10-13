@@ -26,7 +26,7 @@ class CallableNode:
     that holds the node out to the module.
     """
 
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.Module | ast.GeneratorExp
     name: str
     kind: str
     owner: ast.ClassDef | None
@@ -42,6 +42,8 @@ class CallableNode:
 
     @property
     def parameter_count(self) -> int:
+        if not isinstance(self.node, _CALLABLE_TYPES):
+            return 0
         arguments = self.node.args
         return (
             len(arguments.posonlyargs)

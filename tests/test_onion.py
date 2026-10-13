@@ -545,10 +545,6 @@ class OnionAcceptanceTests(unittest.TestCase):
             [
                 "2: DomainAction [priority 2] The function save_report() writes the implicit output print. "
                 "Return it instead.",
-                "5: DomainAction [priority 2] The function <lambda>() reads the implicit input save_report. "
-                "Pass it as an argument instead.",
-                "5: DomainAction [priority 2] The function checkout() calls <lambda>(), "
-                "which reads the implicit input save_report. Move the action to the interaction layer.",
             ],
             report,
         )

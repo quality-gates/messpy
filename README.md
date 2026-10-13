@@ -93,3 +93,5 @@ artifacts:
 ## Maintainers
 
 Release process: [docs/releasing.md](https://github.com/quality-gates/messpy/blob/main/docs/releasing.md). Fuzzing: [docs/fuzzing.md](https://github.com/quality-gates/messpy/blob/main/docs/fuzzing.md). Exploratory testing feedback: [docs/exploratory-testing/](https://github.com/quality-gates/messpy/tree/main/docs/exploratory-testing).
+
+The installed-artifact check, `python scripts/verify_self_analysis.py MESSPY`, requires zero production structural and onion findings. It also checks explicitness report validity, selected production owners, and a short literal behavior matrix through the installed CLI. The shared explicitness corpus checks broader classification behavior. The CLI's real I/O and opaque operations are expected to produce explicitness findings; those findings are preserved.

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .callables import module_callables
 from .callgraph import CallGraph, CallSite, _module_nodes
 from .names import Names
+from .reachability import evaluated_children, live_statements
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
@@ -103,7 +104,8 @@ def _action_phrase(message: str) -> str:
 def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> list:
     from .analyzer import _ScopeChain, _ambient_read, _ambient_write, _name_scopes
 
-    chain = _ScopeChain((tree,), _name_scopes(tree), names=names)
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    chain = _ScopeChain((tree,), _name_scopes(tree), parents=parents, names=names)
     reads: dict[str, ast.AST] = {}
     writes: dict[str, ast.AST] = {}
     for node in _import_time_nodes(tree):
@@ -137,7 +139,7 @@ def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], a
 def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
     deferred = _annotations_are_deferred(tree)
     nodes: list[ast.AST] = []
-    for statement in tree.body:
+    for statement in live_statements(tree.body):
         nodes.extend(_import_time_node(statement, deferred))
     return nodes
 
@@ -170,7 +172,7 @@ def _import_time_node(node: ast.AST, deferred: bool) -> list[ast.AST]:
     if _is_type_alias(node):
         return []
     found = [node]
-    for child in ast.iter_child_nodes(node):
+    for child in evaluated_children(node):
         found.extend(_import_time_node(child, deferred))
     return found
 
@@ -196,7 +198,7 @@ def _import_time_class(node: ast.ClassDef, deferred: bool) -> list[ast.AST]:
         (*node.decorator_list, *node.bases, *(item.value for item in node.keywords)),
         deferred,
     )
-    for statement in node.body:
+    for statement in live_statements(node.body):
         found.extend(_import_time_node(statement, deferred))
     return found
 

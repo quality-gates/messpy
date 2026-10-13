@@ -6,7 +6,7 @@ import sys
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.rulesets import BuiltInRuleReference, _BUILT_IN_RULESETS, _CATALOG
+from messpy.rulesets import _BUILT_IN_RULESETS, _CATALOG
 
 
 BEHAVIOR = {
@@ -50,8 +50,9 @@ BEHAVIOR = {
     "CamelCasePropertyName": "Flags non-private property names that are not Python snake_case.",
     "CamelCaseParameterName": "Flags non-private parameter names that are not Python snake_case, after ordinary receiver and short-name exemptions.",
     "CamelCaseVariableName": "Flags non-private, non-constant variable names that are not Python snake_case.",
-    "ImplicitInput": "Flags functions that read data from outside their argument list: variables from the module or an enclosing function, and ambient sources such as `input`, `open` for reading, `os.environ`, `sys.argv`, the clock, and `random` / `secrets` calls.",
-    "ImplicitOutput": "Flags functions that send data out other than by `return`: `global` / `nonlocal` writes, changes to outer or argument objects, and ambient sinks such as `print`, `open` for writing, `sys.stdout`, `logging`, and `subprocess` or file-system calls.",
+    "ImplicitInput": "Flags callable and module bodies that read mutable outer or captured storage, or ambient sources such as `input`, `open` for reading, `os.environ`, `sys.argv`, standard streams, the clock, and `random` / `secrets` calls. Reads through parameters are explicit input.",
+    "ImplicitOutput": "Flags callable and module bodies that send data out other than by `return`: `global` / `nonlocal` writes, changes to outer or argument objects, and ambient sinks such as `print`, `open` for writing, stream writes, `logging`, and `subprocess` or file-system calls.",
+    "UnknownEffect": "Flags unresolved calls, injected callbacks, opaque external calls, and receiver effects excluded by the selected instance-state policy. Known actions can also have unknown effects.",
     "ImplicitInstanceInput": "Flags methods that read instance or class state through `self` / `cls`. Calls to other methods on the receiver stay quiet.",
     "ImplicitInstanceOutput": "Flags methods that assign, delete, or mutate instance or class state through `self` / `cls`. `__init__` and `__post_init__` stay quiet. `__new__` does not, because its receiver is the class.",
     "DomainAction": "Flags an action in a domain-layer module: an implicit input, an implicit output, a write to `self` / `cls` outside a constructor, ambient I/O at import time, or a call to another action in the same module.",
@@ -95,14 +96,25 @@ NOTES = {
         "Keyword trailing underscores and conventional short names stay quiet."
     ),
     "ImplicitInput": (
-        "Definitions, imports, builtins, and constants (`UPPER_CASE`, `Final`, `TypeAlias`) stay quiet. "
+        "Definitions, imports, builtins, and proven immutable constants stay quiet. Mutable uppercase or `Final` containers remain inputs. "
         "A name that is both imported and assigned, such as an `ImportError` fallback, counts as an import. "
-        "Each callable is checked on its own; calls to other functions are not followed."
+        "Known reads, writes, and unknown operations propagate through resolved same-file calls to a finite fixed point. "
+        "Function, lambda, coroutine, and generator bodies belong to their own owner. "
+        "Cold body effects transfer at established forcing operations rather than creation. "
+        "Load-time effects belong to `<module>`. Only literal dead branches are pruned. "
+        "Fixed scalar captures and fixed fresh built-in container captures stay quiet inside the supported subset."
     ),
     "ImplicitOutput": (
         "Mutation is recognized by assignment, `del`, and common mutator methods such as `append` and `update`. "
-        "Changes to local objects, `*args`, `**kwargs`, and a parameter that the function rebinds stay quiet. "
-        "The method receiver is left to `ImplicitInstanceOutput`."
+        "Ownership is observed at the mutation site. Aliases retain their origins, and branches join possible origins. "
+        "Fresh shallow copies have private outer storage and can retain caller-owned elements. "
+        "Writes to those reachable elements remain outputs. Private outer mutation stays quiet. "
+        "The method receiver is left to `ImplicitInstanceOutput`; excluded receiver facts retain `UnknownEffect`."
+    ),
+    "UnknownEffect": (
+        "Uses the native AST, lexical resolver, and call graph. Same-file calculations and modeled standard operations stay quiet. "
+        "Opaque descriptor, protocol, virtual, decorator, and deferred execution retain uncertainty. "
+        "A method name alone does not prove a custom method pure. See [the classifier contract](explicitness.md) for the analyzed subset."
     ),
     "DomainAction": (
         "Set `domain` to a comma-separated list of shell patterns matched against the file's absolute path. "
@@ -141,7 +153,7 @@ COMPONENT_BLURBS = {
     "cleancode": "Small structural smells that make code harder to read and change.",
     "design": "Module and class design hazards: exits, empties, coupling, globals, cohesion.",
     "controversial": "Strict CapWords classes and snake_case identifiers.",
-    "explicitness": "Implicit inputs and outputs: data that enters a function other than by its arguments, or leaves it other than by its return value.",
+    "explicitness": "Known implicit inputs and outputs, propagated callable effects, and unresolved operations reported as `UnknownEffect`.",
     "strictexplicitness": "`explicitness` plus instance and class state, so methods count `self` / `cls` data as implicit too.",
     "onion": "Actions and outer-layer imports in the domain layer. Configure `domain` and `outer-layers` before use.",
     "python": "Recommended low-noise default for ordinary projects.",
@@ -179,16 +191,16 @@ def render() -> str:
         "| Component | Rule | Priority | Default properties | What it catches |",
         "|---|---|---:|---|---|",
     ]
-    for rule in _CATALOG.values():
+    for name, priority, defaults in _CATALOG.values():
         properties = ", ".join(
-            f"`{_markdown(name)}={_markdown(value)}`" for name, value in rule.properties.items()
+            f"`{_markdown(key)}={_markdown(value)}`" for key, value in defaults
         ) or "—"
-        details = BEHAVIOR[rule.name]
-        note = NOTES.get(rule.name)
+        details = BEHAVIOR[name]
+        note = NOTES.get(name)
         if note:
             details = f"{details} {note}"
         lines.append(
-            f"| `{component_for[rule.name]}` | `{rule.name}` | {rule.priority} | {properties} | {_markdown(details)} |"
+            f"| `{component_for[name]}` | `{name}` | {priority} | {properties} | {_markdown(details)} |"
         )
     lines.extend(
         [
@@ -204,8 +216,8 @@ def render() -> str:
         rendered = []
         for reference in references:
             name = _reference_name(reference)
-            if isinstance(reference, BuiltInRuleReference):
-                overrides = ", ".join(f"{key}={value}" for key, value in reference.properties.items())
+            if not isinstance(reference, str):
+                overrides = ", ".join(f"{key}={value}" for key, value in reference[1])
                 rendered.append(f"`{name}` ({overrides})")
             else:
                 rendered.append(f"`{name}`")
@@ -245,8 +257,8 @@ def _markdown(value: str) -> str:
     return value.replace("|", "\\|").replace("\n", " ")
 
 
-def _reference_name(reference: str | BuiltInRuleReference) -> str:
-    return reference if isinstance(reference, str) else reference.name
+def _reference_name(reference: str | tuple[str, tuple[tuple[str, str], ...]]) -> str:
+    return reference if isinstance(reference, str) else reference[0]
 
 
 if __name__ == "__main__":
