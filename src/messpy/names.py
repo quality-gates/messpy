@@ -265,18 +265,24 @@ def _keyword_prefix_bindings(names: Names, root: str, siblings: list[ast.AST], c
 
 
 def _keyword_statement_bindings(names: Names, root: str, statement: ast.stmt, before: _ClassBinding | None) -> frozenset[_ClassBinding | None]:
+    if isinstance(statement, (ast.Return, ast.Raise)):
+        return frozenset()
     if isinstance(statement, ast.Delete) and _deleted_in(root, statement):
         return frozenset({None})
     if isinstance(statement, ast.If):
-        truth = _literal_truth(statement.test)
-        fields = ("body", "orelse") if truth is None else ("body" if truth else "orelse",)
-        found: set[_ClassBinding | None] = set()
-        for field in fields:
-            entry = _active_class_binding(names, root, statement, field, before)
-            found.update(_keyword_prefix_bindings(names, root, getattr(statement, field), None, frozenset({entry})))
-        return frozenset(found)
+        return _keyword_if_bindings(names, root, statement, before)
     assigned = _keyword_direct_binding(names, root, statement, before)
     return frozenset({before if assigned is None else assigned})
+
+
+def _keyword_if_bindings(names: Names, root: str, statement: ast.If, before: _ClassBinding | None) -> frozenset[_ClassBinding | None]:
+    truth = _literal_truth(statement.test)
+    fields = ("body", "orelse") if truth is None else ("body" if truth else "orelse",)
+    found: set[_ClassBinding | None] = set()
+    for field in fields:
+        entry = _active_class_binding(names, root, statement, field, before)
+        found.update(_keyword_prefix_bindings(names, root, getattr(statement, field), None, frozenset({entry})))
+    return frozenset(found)
 
 
 def _keyword_direct_binding(names: Names, root: str, statement: ast.stmt, before: _ClassBinding | None) -> _ClassBinding | None:

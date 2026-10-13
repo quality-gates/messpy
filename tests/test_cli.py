@@ -25,6 +25,118 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CommandAcceptanceTests(unittest.TestCase):
+    def test_coupling_class_keywords_ignore_terminating_if_origins(self) -> None:
+        cases = [
+            ("if flag:\n    factory=Local\nelse:\n    return", 0),
+            ("if flag:\n    factory=Local\nelse:\n    raise ValueError()", 0),
+            ("if flag:\n    return\nelse:\n    factory=Local", 0),
+            ("if flag:\n    raise ValueError()\nelse:\n    factory=Local", 0),
+            ("if flag:\n    factory=Local\n    return\nelse:\n    pass", 1),
+            ("if flag:\n    factory=Local\n    raise ValueError()\nelse:\n    pass", 1),
+            ("if flag:\n    factory=Local\nelse:\n    return\n    from other import Factory as factory", 0),
+            ("if flag:\n    if other:\n        return\n    factory=Local\nelse:\n    factory=Local", 0),
+            ("if flag:\n    if other:\n        factory=Local\n        return\nelse:\n    raise ValueError()", 1),
+            ("if True:\n    factory=Local\nelse:\n    return", 0),
+            ("if flag:\n    return\nelse:\n    raise ValueError()", 0),
+            ("def inner():\n    return\nif flag:\n    factory=Local", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8",
+            )
+            for index, (body, value) in enumerate(cases):
+                for header in ("option=factory", "metaclass=factory", "option=(lambda chosen=factory: chosen)"):
+                    with self.subTest(body=body, header=header):
+                        path = directory / f"terminal_{index}.py"
+                        source = (
+                            "class Config:\n    def __init_subclass__(cls, **options):\n        cls.options=options\n"
+                            "class Local(type): pass\ndef build(flag, other):\n"
+                            "    from external import Factory as factory\n"
+                            + "    " + body.replace("\n", "\n    ") + "\n"
+                            + f"    class Service(Config, {header}):\n        pass\n    return Service\n"
+                        )
+                        path.write_text(source, encoding="utf-8")
+                        node = next(item for item in ast.walk(ast.parse(source)) if isinstance(item, ast.ClassDef) and item.name == "Service")
+                        message = f"The class Service has a coupling between objects value of {value}. Consider to reduce the number of dependencies under 1."
+                        for format in ("text", "json"):
+                            stdout, stderr = StringIO(), StringIO()
+
+                            status = run([str(path), format, str(ruleset)], stdout, stderr)
+
+                            self.assertEqual((2 if value else 0, ""), (status, stderr.getvalue()))
+                            if format == "text":
+                                expected = f"{path.resolve().as_posix()}:{node.lineno}: CouplingBetweenObjects [priority 2] {message}\n" if value else ""
+                                self.assertEqual(expected, stdout.getvalue())
+                            else:
+                                report = json.loads(stdout.getvalue())
+                                self.assertEqual([], report["errors"])
+                                self.assertEqual(1 if value else 0, len(report["findings"]))
+                                if value:
+                                    finding = report["findings"][0]
+                                    self.assertEqual((path.resolve().as_posix(), node.lineno, "Service", message), (
+                                        finding["path"], finding["line"], finding["context"], finding["message"],
+                                    ))
+
+    def test_coupling_class_keywords_use_imports_and_header_locals(self) -> None:
+        cases = [
+            ("builtin_module_alias", "import custom_meta as type", "type.Factory", "pass", 1),
+            ("builtin_symbol_alias", "from custom_meta import Factory as type", "type", "pass", 1),
+            ("typing_module_alias", "import custom_meta as typing", "typing.Factory", "pass", 1),
+            ("conditional_builtin_alias", "if flag:\n    import custom_meta as type", "type.Factory", "pass", 1),
+            ("future_field", "from external import *", "Factory", "Factory = None", 1),
+            ("future_method", "from external import *", "Factory", "def Factory(self):\n        return None", 1),
+            ("future_lowercase_field", "from external import *", "factory.value", "factory = None", 1),
+            ("prior_module_class", "class Factory: pass", "Factory", "Factory = None", 0),
+            ("prior_module_value", "Factory = object()", "Factory", "Factory = None", 0),
+            ("genuine_builtin", "", "type", "pass", 0),
+            ("genuine_builtin_import", "import builtins as type", "type.type", "pass", 0),
+            ("genuine_typing_import", "from typing import Any as type", "type", "pass", 0),
+            ("genuine_protocol_import", "from collections.abc import Mapping as type", "type", "pass", 0),
+            ("deferred_lambda", "from external import *", "(lambda: Factory)", "Factory = None", 0),
+            ("deferred_generator", "from external import *", "(Factory for item in ())", "Factory = None", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for label, prefix, expression, body, value in cases:
+                with self.subTest(label=label):
+                    path = directory / f"{label}.py"
+                    source = f"{prefix}\nclass Service(option={expression}):\n    {body}\n"
+                    path.write_text(source, encoding="utf-8")
+                    line = prefix.count("\n") + 2
+                    message = (
+                        f"The class Service has a coupling between objects value of {value}. "
+                        "Consider to reduce the number of dependencies under 1."
+                    )
+                    for format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+
+                        status = run([str(path), format, str(ruleset)], stdout, stderr)
+
+                        self.assertEqual(2 if value else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if format == "text":
+                            expected = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] {message}\n" if value else ""
+                            self.assertEqual(expected, stdout.getvalue())
+                        else:
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            self.assertEqual(1 if value else 0, len(report["findings"]))
+                            if value:
+                                finding = report["findings"][0]
+                                self.assertEqual(path.resolve().as_posix(), finding["path"])
+                                self.assertEqual((line, "Service", "CouplingBetweenObjects", 2, message), (
+                                    finding["line"], finding["context"], finding["ruleName"], finding["priority"], finding["message"],
+                                ))
+
     def test_coupling_ordinary_class_import_and_delete_masks_restore_the_gate(self) -> None:
         cases = []
         for revoke in ("from external import Bound", "del Bound"):

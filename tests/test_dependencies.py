@@ -37,6 +37,87 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_class_keyword_imports_follow_only_normal_if_arms(self) -> None:
+        cases = [
+            ("if flag:\n    factory=Local\nelse:\n    return", set()),
+            ("if flag:\n    factory=Local\nelse:\n    raise ValueError()", set()),
+            ("if flag:\n    return\nelse:\n    factory=Local", set()),
+            ("if flag:\n    raise ValueError()\nelse:\n    factory=Local", set()),
+            ("if flag:\n    factory=Local\n    return\nelse:\n    pass", {"external.Factory"}),
+            ("if flag:\n    factory=Local\n    raise ValueError()\nelse:\n    pass", {"external.Factory"}),
+            ("if flag:\n    factory=Local\nelse:\n    return\n    from other import Factory as factory", set()),
+            ("if flag:\n    if other:\n        return\n    factory=Local\nelse:\n    factory=Local", set()),
+            ("if flag:\n    if other:\n        factory=Local\n        return\nelse:\n    raise ValueError()", {"external.Factory"}),
+            ("if True:\n    factory=Local\nelse:\n    return", set()),
+            ("if flag:\n    return\nelse:\n    raise ValueError()", set()),
+            ("def inner():\n    return\nif flag:\n    factory=Local", {"external.Factory"}),
+        ]
+        for body, expected in cases:
+            for header in ("option=factory", "metaclass=factory", "option=(lambda chosen=factory: chosen)"):
+                with self.subTest(body=body, header=header):
+                    source = (
+                        "class Config: pass\nclass Local(type): pass\ndef build(flag, other):\n"
+                        "    from external import Factory as factory\n"
+                        + "    " + body.replace("\n", "\n    ") + "\n"
+                        + f"    class Service(Config, {header}):\n        pass\n    return Service\n"
+                    )
+                    compile(source, "service.py", "exec", dont_inherit=True)
+                    tree = ast.parse(source)
+                    node = next(item for item in ast.walk(tree) if isinstance(item, ast.ClassDef) and item.name == "Service")
+                    names = Names.build(tree, module=None, path=Path("service.py"))
+
+                    self.assertEqual(
+                        frozenset(expected),
+                        measure_class_dependencies(_class_info(node), names, {"Config", "Local", "Service"}),
+                    )
+
+    def test_class_keyword_imports_override_builtin_spellings(self) -> None:
+        cases = [
+            ("import custom_meta as type", "type.Factory", {"custom_meta.Factory"}),
+            ("from custom_meta import Factory as type", "type", {"custom_meta.Factory"}),
+            ("import custom_meta as typing", "typing.Factory", {"custom_meta.Factory"}),
+            ("from custom_meta import Factory as list", "list", {"custom_meta.Factory"}),
+            ("if flag:\n    import custom_meta as type", "type.Factory", {"custom_meta.Factory"}),
+            ("import builtins as type", "type.type", set()),
+            ("from typing import Any as type", "type", set()),
+            ("from collections.abc import Mapping as type", "type", set()),
+            ("", "type", set()),
+            ("", "list[int]", set()),
+            ("type = object()", "type", set()),
+        ]
+        for imports, expression, expected in cases:
+            with self.subTest(imports=imports, expression=expression):
+                tree = ast.parse(f"{imports}\nclass Service(option={expression}):\n    pass\n")
+                node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
+    def test_class_keyword_reads_precede_future_members(self) -> None:
+        cases = [
+            ("", "Factory", "Factory = None", {"Factory"}, set()),
+            ("", "Factory", "def Factory(self):\n        return None", {"Factory"}, set()),
+            ("", "Factory.value", "Factory = None", {"Factory.value"}, set()),
+            ("", "factory.value", "factory = None", {"factory.value"}, set()),
+            ("class Factory: pass", "Factory", "Factory = None", set(), {"Factory"}),
+            ("Factory = object()", "Factory", "Factory = None", set(), set()),
+            ("", "Factory", "Factory = None", set(), {"Factory"}),
+            ("", "Helper", "Factory = None", set(), {"Helper"}),
+            ("", "(lambda: Factory)", "Factory = None", set(), set()),
+            ("", "(Factory for item in ())", "Factory = None", set(), set()),
+        ]
+        for prefix, expression, body, expected, module_names in cases:
+            with self.subTest(prefix=prefix, expression=expression, body=body, module_names=module_names):
+                source = f"from external import *\n{prefix}\nclass Service(option={expression}):\n    {body}\n"
+                tree = ast.parse(source)
+                node = next(item for item in tree.body if isinstance(item, ast.ClassDef) and item.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(
+                    frozenset(expected),
+                    measure_class_dependencies(_class_info(node, fields=("Factory", "factory")), names, module_names),
+                )
+
     def test_ordinary_class_masks_keep_while_test_reentry(self) -> None:
         cases = [
             ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', {"Bound.Factory"}),

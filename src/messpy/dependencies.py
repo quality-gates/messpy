@@ -29,18 +29,23 @@ class ClassInfo:
     has_unresolved_base: bool = False
 
 
+@dataclass(frozen=True)
+class _DependencyLocals:
+    ordinary: frozenset[str]
+    keyword: frozenset[str]
+
+
 def measure_class_dependencies(
     class_info: ClassInfo,
     names: Names,
     module_names: AbstractSet[str] = frozenset(),
 ) -> frozenset[str]:
     """Extract the set of external class and module dependencies referenced by a class."""
-    local_names = {
-        class_info.name,
-        *module_names,
-        *class_info.fields,
-        *(method.name for method in class_info.methods),
-    }
+    keyword_names = frozenset({class_info.name, *module_names})
+    local_names = _DependencyLocals(
+        ordinary=keyword_names | frozenset({*class_info.fields, *(method.name for method in class_info.methods)}),
+        keyword=keyword_names,
+    )
     dependencies: set[str] = set()
     for expression in [
         *class_info.node.bases,
@@ -61,7 +66,7 @@ def _dependency_state(
     node: ast.AST,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -80,7 +85,7 @@ def _dependency_annotation_state(
     node: ast.AnnAssign | ast.arg,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
     if isinstance(node, ast.arg):
@@ -95,7 +100,7 @@ def _dependency_reference(
     node: ast.AST,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str] | None:
     if isinstance(node, ast.Name):
@@ -111,7 +116,7 @@ def _dependency_children(
     node: ast.AST,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
     for child in ast.iter_child_nodes(node):
@@ -123,12 +128,12 @@ def _dependency_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
     scope_names = {*(argument.arg for argument in _arguments(node.args)), *_direct_bindings(node)}
     scope_names -= _function_import_names(node)
-    inner_names = local_names | scope_names
+    inner_names = _DependencyLocals(local_names.ordinary | scope_names, local_names.keyword)
     for decorator in node.decorator_list:
         dependencies = _dependency_state(decorator, names, scope, inner_names, dependencies)
     for argument in _arguments(node.args):
@@ -164,7 +169,7 @@ def _dependency_annotation(
     annotation: ast.expr | None,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
     expression = _annotation_expression(annotation)
@@ -177,24 +182,30 @@ def _with_dependency(
     node: ast.expr,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: _DependencyLocals,
     dependencies: set[str],
 ) -> set[str]:
-    found = _keyword_dependencies(node, names, scope, local_names)
+    found = _keyword_dependencies(node, names, scope, local_names.keyword)
     if found is None:
-        found = {_dependency_name(node, names, scope, local_names)}
+        found = {_dependency_name(node, names, scope, local_names.ordinary)}
     return dependencies | {dependency for dependency in found if dependency and not dependency.startswith(("typing.", "collections.abc.", "builtins."))}
 
 
-def _keyword_dependencies(node: ast.expr, names: Names, scope: ast.AST, local_names: set[str]) -> set[str] | None:
+def _keyword_dependencies(node: ast.expr, names: Names, scope: ast.AST, local_names: AbstractSet[str]) -> set[str] | None:
     binding = names.keyword_binding(node)
     if binding is None:
         return None
     root, *tail = _dotted_name(node).split(".")
-    if binding.local or root in dir(builtins) or root == "typing":
+    if binding.local:
         return set()
     found = {_imported_dependency(imported, tail) for imported in binding.imports}
-    if binding.unresolved and not names.is_class_keyword_target(node) and not _local_reference(root, node, names, scope, local_names):
+    if (
+        binding.unresolved
+        and root not in dir(builtins)
+        and root != "typing"
+        and not names.is_class_keyword_target(node)
+        and not _local_reference(root, node, names, scope, local_names)
+    ):
         found.add(_spelling_dependency(root, tail))
     return found
 
@@ -203,7 +214,7 @@ def _dependency_name(
     node: ast.expr,
     names: Names,
     scope: ast.AST,
-    local_names: set[str],
+    local_names: AbstractSet[str],
 ) -> str:
     dotted = _dotted_name(node)
     if not dotted:
@@ -221,7 +232,7 @@ def _dependency_name(
     return _spelling_dependency(root, tail)
 
 
-def _local_reference(root: str, node: ast.expr, names: Names, scope: ast.AST, local_names: set[str]) -> bool:
+def _local_reference(root: str, node: ast.expr, names: Names, scope: ast.AST, local_names: AbstractSet[str]) -> bool:
     return names.is_expression_local(node, scope=scope) or (
         root in local_names and not names.is_class_keyword_target(node)
     )
