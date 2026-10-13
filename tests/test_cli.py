@@ -25,6 +25,313 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CommandAcceptanceTests(unittest.TestCase):
+    def test_coupling_class_keywords_ignore_terminating_if_origins(self) -> None:
+        cases = [
+            ("if flag:\n    factory=Local\nelse:\n    return", 0),
+            ("if flag:\n    factory=Local\nelse:\n    raise ValueError()", 0),
+            ("if flag:\n    return\nelse:\n    factory=Local", 0),
+            ("if flag:\n    raise ValueError()\nelse:\n    factory=Local", 0),
+            ("if flag:\n    factory=Local\n    return\nelse:\n    pass", 1),
+            ("if flag:\n    factory=Local\n    raise ValueError()\nelse:\n    pass", 1),
+            ("if flag:\n    factory=Local\nelse:\n    return\n    from other import Factory as factory", 0),
+            ("if flag:\n    if other:\n        return\n    factory=Local\nelse:\n    factory=Local", 0),
+            ("if flag:\n    if other:\n        factory=Local\n        return\nelse:\n    raise ValueError()", 1),
+            ("if True:\n    factory=Local\nelse:\n    return", 0),
+            ("if flag:\n    return\nelse:\n    raise ValueError()", 0),
+            ("def inner():\n    return\nif flag:\n    factory=Local", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8",
+            )
+            for index, (body, value) in enumerate(cases):
+                for header in ("option=factory", "metaclass=factory", "option=(lambda chosen=factory: chosen)"):
+                    with self.subTest(body=body, header=header):
+                        path = directory / f"terminal_{index}.py"
+                        source = (
+                            "class Config:\n    def __init_subclass__(cls, **options):\n        cls.options=options\n"
+                            "class Local(type): pass\ndef build(flag, other):\n"
+                            "    from external import Factory as factory\n"
+                            + "    " + body.replace("\n", "\n    ") + "\n"
+                            + f"    class Service(Config, {header}):\n        pass\n    return Service\n"
+                        )
+                        path.write_text(source, encoding="utf-8")
+                        node = next(item for item in ast.walk(ast.parse(source)) if isinstance(item, ast.ClassDef) and item.name == "Service")
+                        message = f"The class Service has a coupling between objects value of {value}. Consider to reduce the number of dependencies under 1."
+                        for format in ("text", "json"):
+                            stdout, stderr = StringIO(), StringIO()
+
+                            status = run([str(path), format, str(ruleset)], stdout, stderr)
+
+                            self.assertEqual((2 if value else 0, ""), (status, stderr.getvalue()))
+                            if format == "text":
+                                expected = f"{path.resolve().as_posix()}:{node.lineno}: CouplingBetweenObjects [priority 2] {message}\n" if value else ""
+                                self.assertEqual(expected, stdout.getvalue())
+                            else:
+                                report = json.loads(stdout.getvalue())
+                                self.assertEqual([], report["errors"])
+                                self.assertEqual(1 if value else 0, len(report["findings"]))
+                                if value:
+                                    finding = report["findings"][0]
+                                    self.assertEqual((path.resolve().as_posix(), node.lineno, "Service", message), (
+                                        finding["path"], finding["line"], finding["context"], finding["message"],
+                                    ))
+
+    def test_coupling_class_keywords_use_imports_and_header_locals(self) -> None:
+        cases = [
+            ("builtin_module_alias", "import custom_meta as type", "type.Factory", "pass", 1),
+            ("builtin_symbol_alias", "from custom_meta import Factory as type", "type", "pass", 1),
+            ("typing_module_alias", "import custom_meta as typing", "typing.Factory", "pass", 1),
+            ("conditional_builtin_alias", "if flag:\n    import custom_meta as type", "type.Factory", "pass", 1),
+            ("future_field", "from external import *", "Factory", "Factory = None", 1),
+            ("future_method", "from external import *", "Factory", "def Factory(self):\n        return None", 1),
+            ("future_lowercase_field", "from external import *", "factory.value", "factory = None", 1),
+            ("prior_module_class", "class Factory: pass", "Factory", "Factory = None", 0),
+            ("prior_module_value", "Factory = object()", "Factory", "Factory = None", 0),
+            ("genuine_builtin", "", "type", "pass", 0),
+            ("genuine_builtin_import", "import builtins as type", "type.type", "pass", 0),
+            ("genuine_typing_import", "from typing import Any as type", "type", "pass", 0),
+            ("genuine_protocol_import", "from collections.abc import Mapping as type", "type", "pass", 0),
+            ("deferred_lambda", "from external import *", "(lambda: Factory)", "Factory = None", 0),
+            ("deferred_generator", "from external import *", "(Factory for item in ())", "Factory = None", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for label, prefix, expression, body, value in cases:
+                with self.subTest(label=label):
+                    path = directory / f"{label}.py"
+                    source = f"{prefix}\nclass Service(option={expression}):\n    {body}\n"
+                    path.write_text(source, encoding="utf-8")
+                    line = prefix.count("\n") + 2
+                    message = (
+                        f"The class Service has a coupling between objects value of {value}. "
+                        "Consider to reduce the number of dependencies under 1."
+                    )
+                    for format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+
+                        status = run([str(path), format, str(ruleset)], stdout, stderr)
+
+                        self.assertEqual(2 if value else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if format == "text":
+                            expected = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] {message}\n" if value else ""
+                            self.assertEqual(expected, stdout.getvalue())
+                        else:
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            self.assertEqual(1 if value else 0, len(report["findings"]))
+                            if value:
+                                finding = report["findings"][0]
+                                self.assertEqual(path.resolve().as_posix(), finding["path"])
+                                self.assertEqual((line, "Service", "CouplingBetweenObjects", 2, message), (
+                                    finding["line"], finding["context"], finding["ruleName"], finding["priority"], finding["message"],
+                                ))
+
+    def test_coupling_ordinary_class_import_and_delete_masks_restore_the_gate(self) -> None:
+        cases = []
+        for revoke in ("from external import Bound", "del Bound"):
+            cases.extend([
+                ("class Service:\n    (Bound := Local())\n    " + revoke + "\n    field=Bound.Factory", 1),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    class Service(Bound.Factory):\n        pass", 1),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    @Bound.decorate\n    class Service:\n        pass", 1),
+            ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    before=Bound.Factory\n    from external import Bound", 0),
+            ("class Service:\n    (Bound := Local())\n    if flag:\n        before=Bound.Factory\n        from external import Bound\n    else:\n        before=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    while False:\n        from external import Bound\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    if flag:\n        from external import Bound\n        field=Bound.Factory", 1),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ValueError()\n    except ValueError as Bound:\n        pass\n    finally:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ExceptionGroup(\"errors\",[ValueError(),TypeError()])\n    except* ValueError as Bound:\n        pass\n    except* TypeError:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in ():\n        from external import Bound\n    field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in []:\n        del Bound\n    field=Bound.Factory\n", 0),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except LocalError as Bound:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise TypeError()\n    except ValueError as Bound:\n        pass\n    except TypeError:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for Bound in (Local(),Local()):\n        field=Bound.Factory\n        from external import Bound\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        before=Bound.Factory\n        from external import Bound\n    except ValueError:\n        pass", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError as Bound:\n        pass\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError:\n        pass\n    else:\n        from external import Bound\n    finally:\n        field=Bound.Factory", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,):\n        before=Bound.Factory\n        from external import Bound", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        if spare==0:\n            del Bound", 1),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1", 1),
+            ("class Outer:\n    global Bound\n    if True:\n        (Bound:=Local())\n        class Service(option=Bound.Factory): pass", 1),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    finally:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n    field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        (Bound := Local())\n", 0),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while (Bound := Local()) and spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Bound.Factory)\n    finally:\n        field=Bound\n", 1),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound := LocalError):\n        field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise ValueError()\n        (Bound:=Local())\n    except ValueError:\n        field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        break", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        if spare==0:\n            from external import Bound\n            break\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        continue\n        (Bound:=Local())", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        if spare==0:\n            continue\n        (Bound:=Local())", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            break", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            continue", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", 0),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound:=LocalError):\n        pass\n    finally:\n        field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if (Bound:=Local()):\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    spare=0\n    while (Bound:=Local()) and spare<1:\n        spare+=1\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    try:\n        (Bound:=Local())\n    except ValueError:\n        pass\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    while False:\n        from external import Bound\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in ():\n        from external import Bound\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if flag and (Bound:=Local()):\n        field=Bound.Factory\n    else:\n        field=LocalFactory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    field=LocalFactory\n    while flag and (Bound:=Local()):\n        field=Bound.Factory\n        flag=False", 0),
+        ])
+        cases.extend([
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    field=Bound.Factory", 0),
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n        continue\n    field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    try:\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 1),
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n", 1),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppressor():\n            from external import Bound\n            raise ValueError()", 1),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        try:\n            with Suppressor():\n                from external import Bound\n                raise ValueError()\n        finally:\n            (Bound:=Local())", 0),
+        ])
+        cases.extend([
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        pass\n    field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(result=(Local(),None)) as (Bound, spare):\n        field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as spare, FailedEntry() as Bound:\n        pass\n    field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as (spare, Bound):\n        pass\n    field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, FailedEntry() as spare:\n        pass\n    field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(Bound.Factory) as Bound:\n        field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, Context(Bound.Factory) as spare:\n        field=Bound.Factory\n', 0),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False\n        (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', 1),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        (Bound:=Local())\n        assert False\n    except AssertionError:\n        field=Bound.Factory\n', 0),
+        ])
+        cases.extend([
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', 0),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Bound.Factory)\n    except AssertionError:\n        field=Bound\n', 1),
+            ('class Context:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context():\n        (Bound:=Local())\n    field=Bound.Factory\n', 0),
+        ])
+        cases.extend([
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with (Bound:=Context()) as holder[Bound.Factory]:\n        field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(Bound:=Local()) as holder[Bound.Factory]:\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=(Bound:=Local())\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]: object=(Bound:=Local())\n    field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory]:\n        field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory], Context(Bound.Factory):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in (None,):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[(Bound:=Local()).Factory]=holder[Bound.Factory]=None\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=0\n    holder[Bound.Factory]+=(Bound:=0)\n    field=Local.Factory', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),None):\n        field=Local.Factory\n        from external import Bound', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in ():\n        pass\n    field=Bound.Factory', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder={LocalFactory:0}\n    holder[(Bound:=Local()).Factory]+=len([Bound.Factory])\n    field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(result=(Local(),None)) as (Bound, holder[Bound.Factory]):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for Bound, holder[Bound.Factory] in ((Local(),None),):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    Bound=holder[Bound.Factory]=Local()\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Bound.Factory)] in (None,):\n        field=Bound', 1),
+        ])
+        cases.extend([
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', 1),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        break\n    field=LocalFactory', 0),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n        continue\n    field=LocalFactory', 1),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and (Bound:=Local()) and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    while (Bound:=Bound.Factory):\n        field=Bound\n        break', 1),
+            ('class Service:\n    (Bound:=Local())\n    while False and Bound.Factory:\n        from external import Bound\n    field=Bound.Factory', 0),
+        ])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            ruleset = project / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for index, (body, expected) in enumerate(cases):
+                with self.subTest(body=body):
+                    source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                    path = project / ("ordinary_" + str(index) + ".py")
+                    path.write_text(source, encoding="utf-8")
+                    compile(source, str(path), "exec", dont_inherit=True)
+                    line = next(node.lineno for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    for report_format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+                        status = run([str(path), report_format, str(ruleset)], stdout, stderr)
+                        self.assertEqual(2 if expected else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if report_format == "json":
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            self.assertEqual(1 if expected else 0, len(report["findings"]))
+                            if expected:
+                                finding = report["findings"][0]
+                                self.assertEqual(("Service", line, "CouplingBetweenObjects"), (finding["context"], finding["line"], finding["ruleName"]))
+                                self.assertIn("value of 1.", finding["message"])
+                        else:
+                            message = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            self.assertEqual(message, stdout.getvalue())
+
+    def test_coupling_eager_keyword_import_order_triggers_the_gate(self) -> None:
+        cases = [
+            ("from external import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as factory\nfactory=object()\nclass Service(option=factory):\n    pass", 0),
+            ("if flag:\n    from external import Factory as factory\nelse:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", 2),
+            ("from external import Factory as factory\nfrom external import Factory as alias\nclass Service(first=factory, second=alias):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as Bound\nclass Outer:\n    spare=flag and (Bound := object())\n    class Service(option=Bound.value):\n        pass", 1),
+            ("from external import Factory as Service\nclass Outer:\n    spare: object=flag and (Service := object())\n    class Service(option=Service.value):\n        pass", 1),
+            ("from external import Factory as factory\nclass Service(option=lambda value=factory: value):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as factory\nclass Service(option=lambda: factory):\n    pass\nfactory=object()", 0),
+            ("from external import Factory as factory\nwhile False:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass", 1),
+            ("from external import Factory as factory\nwhile flag:\n    from genuine import Factory as factory\n    flag=False\nclass Service(option=factory):\n    pass", 1),
+            ("class Service(option=Service if False else None):\n    pass", 0),
+            ("class Service(option=lambda value=(Service if False else None): value):\n    pass", 0),
+            ("class Service(option=[Service for spare in ()]):\n    pass", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            ruleset = project / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for index, (source, expected) in enumerate(cases):
+                with self.subTest(source=source):
+                    path = project / ("service_" + str(index) + ".py")
+                    compile(source, str(path), "exec", dont_inherit=True)
+                    path.write_text(source, encoding="utf-8")
+                    line = next(node.lineno for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    for report_format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+                        status = run([str(path), report_format, str(ruleset)], stdout, stderr)
+                        self.assertEqual(2 if expected else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if report_format == "json":
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            findings = report["findings"]
+                            self.assertEqual(1 if expected else 0, len(findings))
+                            if findings:
+                                self.assertEqual(("Service", line, "CouplingBetweenObjects"), (findings[0]["context"], findings[0]["line"], findings[0]["ruleName"]))
+                                self.assertIn("value of " + str(expected) + ".", findings[0]["message"])
+                        else:
+                            message = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            self.assertEqual(message, stdout.getvalue())
+
     def test_directory_scan_recurses_over_python_files_in_path_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)
@@ -6093,6 +6400,661 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertEqual("", errors)
             self.assertIn(rule_name, report)
         self.assertEqual((0, "", ""), (goto_status, goto_stdout.getvalue(), goto_stderr.getvalue()))
+
+    def test_coupling_class_keywords_trigger_the_configured_gate(self) -> None:
+        cases = [
+            ("metaclass", "from custom_meta import CustomMeta\n", "metaclass=CustomMeta", 1),
+            ("symbol_alias", "from custom_meta import CustomMeta as Meta\n", "metaclass=Meta", 1),
+            ("module_alias", "import custom_meta as meta\n", "metaclass=meta.CustomMeta", 1),
+            ("base_control", "from custom_meta import CustomMeta\n", "CustomMeta", 1),
+            (
+                "expression", "from factories import choose\nfrom custom_meta import CustomMeta\n",
+                "policy=choose(CustomMeta)", 2,
+            ),
+            ("unpacking", "from custom_meta import CustomMeta\n", "**{'metaclass': CustomMeta}", 1),
+            (
+                "deduplicated", "from custom_meta import CustomMeta\n",
+                "CustomMeta, metaclass=CustomMeta, policy=CustomMeta", 1,
+            ),
+            ("literals", "", "metaclass=type, total=False, label='CustomMeta', policy=list[int]", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for name, imports, header, value in cases:
+                with self.subTest(name=name):
+                    source = directory / f"{name}.py"
+                    source.write_text(f"{imports}\nclass Service({header}):\n    pass\n", encoding="utf-8")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(source.resolve().as_posix(), finding["path"])
+                        self.assertEqual(imports.count("\n") + 2, finding["line"])
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertEqual(2, finding["priority"])
+                        self.assertEqual("Service", finding["context"])
+                        self.assertEqual(
+                            f"The class Service has a coupling between objects value of {value}. "
+                            "Consider to reduce the number of dependencies under 1.",
+                            finding["message"],
+                        )
+
+    def test_coupling_class_keyword_comprehension_targets_stay_local(self) -> None:
+        cases = [
+            ("list", "[item.value for item in ()]", 0),
+            ("set", "{item.value for item in ()}", 0),
+            ("dict", "{item.key: item.value for item in ()}", 0),
+            ("generator", "(item.value for item in ())", 0),
+            ("symbol_shadow", "[Item for Item in ()]", 0),
+            ("condition", "[item.value for item in () if item.enabled]", 0),
+            ("unpacking", "[(key.value, item.value) for key, *item in ()]", 0),
+            ("nested", "[[item.value for item in item.children] for item in ()]", 0),
+            ("outer_iter", "[item.value for item in item.records]", 1),
+            ("symbol_outer_iter", "[Item.value for Item in Item.records]", 1),
+            ("external_condition", "[item.value for item in () if Checker(item)]", 1),
+            ("later_iter", "[(item.value, other.value) for item in () for other in Other.records]", 1),
+            ("sibling", "([item.value for item in ()], item.records)", 1),
+            ("separate_comprehension", "[Item.value for Item in ()] + [Item.value for other in ()]", 1),
+            ("unbound", "[Unknown.value for item in ()]", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for name, expression, value in cases:
+                with self.subTest(name=name):
+                    source = directory / f"{name}.py"
+                    source.write_text(
+                        "import external as item\n"
+                        "from external import Item, Other\n"
+                        "from checks import Checker\n"
+                        "class Config:\n"
+                        "    def __init_subclass__(cls, **options):\n"
+                        "        pass\n"
+                        "\n"
+                        f"class Service(Config, options={expression}):\n"
+                        "    pass\n",
+                        encoding="utf-8",
+                    )
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(("Service", 8), (finding["context"], finding["line"]))
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertIn("value of 1.", finding["message"])
+
+    def test_coupling_lambda_expression_scopes_keep_defaults_and_outer_dependencies(self) -> None:
+        cases = [
+            ("lambda item: item.value", 0),
+            ("lambda Item: Item", 0),
+            ("lambda Item, /: Item.value", 0),
+            ("lambda *, Item: Item.value", 0),
+            ("lambda *Items: Items[0].value", 0),
+            ("lambda **Items: Items['key'].value", 0),
+            ("lambda Item, /, Other=None, *Items, Key=None, **Options: (Item, Other, Items, Key, Options)", 0),
+            ("lambda: ((Item := object()), Item.value)", 0),
+            ("lambda item=item.value: item.value", 1),
+            ("lambda Item=Item.factory(): Item.value", 1),
+            ("lambda *, Item=Other.factory(): Item.value", 1),
+            ("lambda Item=Other.factory(), *Items, Key=Item.factory(), **Options: (Item, Items, Key, Options)", 2),
+            ("lambda item: Other.value", 1),
+            ("lambda Item: lambda: Item.value", 0),
+            ("lambda Item: lambda Item=Item.value: Item.value", 0),
+            ("lambda: lambda Item=Item.factory(): Item.value", 1),
+            ("[(lambda item=item.value: item.value) for item in ()]", 0),
+            ("[(lambda Item=Other.factory(): Item.value) for Item in ()]", 1),
+            ("lambda Item=[Item.value for Item in Other.records]: Item.value", 1),
+            ("lambda item: [other.value for other in item.records]", 0),
+            ("lambda item: [item.value for item in Other.records]", 1),
+            ("lambda: ((Item := Other()), Item.value)", 1),
+            ("lambda Item: (lambda: [Other.value for Other in Item.records])", 0),
+            ("(lambda Item: Item.value, Item.value)", 1),
+            ("(lambda Item: Item.value)(Other())", 1),
+            ("lambda: ((Nested := lambda Item: Item.value), Nested())", 0),
+            ("lambda: (lambda Item=(Bound := object()): Bound.value)", 0),
+            ("lambda: (lambda Item=(Bound := Other()): Bound.value)", 1),
+            ("lambda: ((lambda Item=(Bound := Other()): Item.value), Bound.value)", 1),
+            ("lambda: ([(lambda: Item.value) for Item in ()], Item.value)", 1),
+            ("lambda: [(Item := Other()) for item in ()]", 1),
+            ("lambda Item=(lambda Other: Other.value): Item.value", 0),
+            ("lambda Item=(lambda Other=Other.factory(): Other.value): Item.value", 1),
+            ("lambda: Unknown.value", 1),
+            ("lambda arg=(Bound := object()): Bound.value", 0),
+            ("lambda *, arg=(Bound := object()): Bound.value", 0),
+            ("lambda arg=(Bound := Other()): Bound.value", 1),
+            ("lambda arg=(Bound := Bound.factory()): Bound.value", 1),
+            ("lambda first=(Bound := Other()), second=Bound: Bound.value", 1),
+            ("lambda first=(Bound := Other()), *, second=Bound: Bound.value", 1),
+            ("lambda arg=(False and (Bound := object())): Bound.value", 1),
+            ("lambda arg=(True and (Bound := object())): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if True else None): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if False else None): Bound.value", 1),
+            ("lambda arg=((Bound := object()) if flag else (Bound := object())): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if flag else None): Bound.value", 1),
+            ("lambda arg=[(Bound := object()) for value in ()]: Bound.value", 1),
+            ("lambda arg=((Bound := object()) for value in ()): Bound.value", 1),
+            ("((lambda arg=(Bound := object()): arg), Bound.value)", 0),
+            ("(Bound.value, (lambda arg=(Bound := object()): Bound.value))", 1),
+            ("[(lambda arg=(Bound := object()): arg), Bound.value]", 0),
+            ("{(lambda arg=(Bound := object()): arg): Bound.value}", 0),
+            ("{Bound.value: (lambda arg=(Bound := object()): Bound.value)}", 1),
+            ("Other(lambda arg=(Bound := object()): arg, Bound.value)", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for index, (expression, value) in enumerate(cases):
+                with self.subTest(expression=expression):
+                    source = directory / f"lambda_{index}.py"
+                    source.write_text(
+                        "import external as item\n"
+                        "from external import Item, Other, Items, Key, Options, Bound, Nested\n"
+                        "class Config:\n"
+                        "    def __init_subclass__(cls, **options):\n"
+                        "        pass\n"
+                        "\n"
+                        f"class Service(Config, option={expression}):\n"
+                        "    pass\n",
+                        encoding="utf-8",
+                    )
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(("Service", 7), (finding["context"], finding["line"]))
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertEqual(
+                            f"The class Service has a coupling between objects value of {value}. "
+                            "Consider to reduce the number of dependencies under 1.",
+                            finding["message"],
+                        )
+
+    def test_coupling_lambda_default_bindings_work_in_module_and_function_headers(self) -> None:
+        cases = [
+            ("", "lambda arg=(Bound := object()): Bound.value", 0),
+            ("from external import Bound\n", "lambda arg=(Bound := object()): Bound.value", 0),
+            ("from external import Bound, Other\n", "lambda arg=(Bound := Other()): Bound.value", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for imports, expression, value in cases:
+                for nested in [False, True]:
+                    with self.subTest(imports=imports, expression=expression, nested=nested):
+                        source = directory / "default_binding.py"
+                        header = f"class Service(Config, option={expression}):\n    pass\n"
+                        if nested:
+                            header = "def build():\n" + "\n".join("    " + line for line in header.splitlines()) + "\n"
+                        source.write_text(
+                            imports + "class Config:\n"
+                            "    def __init_subclass__(cls, **options):\n"
+                            "        pass\n\n" + header,
+                            encoding="utf-8",
+                        )
+                        stdout, stderr = StringIO(), StringIO()
+
+                        status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                        self.assertEqual(2 if value else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        report = json.loads(stdout.getvalue())
+                        self.assertEqual([], report["errors"])
+                        self.assertEqual(1 if value else 0, len(report["findings"]))
+                        if value:
+                            self.assertEqual(5 + imports.count("\n") + nested, report["findings"][0]["line"])
+                            self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_nested_class_lambda_defaults_preserve_global_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "class_namespace.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Config:\n"
+                "    def __init_subclass__(cls, **options):\n"
+                "        pass\n"
+                "class Outer:\n"
+                "    class Service(Config, option=lambda arg=(Bound := object()): Bound.value):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual(1, len(report["findings"]))
+            self.assertEqual(("Service", 6, "CouplingBetweenObjects"), (
+                report["findings"][0]["context"], report["findings"][0]["line"], report["findings"][0]["ruleName"],
+            ))
+            self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_default_initializer_keeps_one_canonical_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "class_initializer.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Service:\n"
+                "    callback = lambda arg=(Bound := Bound.factory()): Bound.value\n"
+                "    later = Bound.value\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="2"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(0, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual([], report["findings"])
+
+    def test_coupling_conditional_class_default_keeps_outer_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "conditional_initializer.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Service:\n"
+                "    if False:\n"
+                "        callback = lambda arg=(Bound := object()): arg\n"
+                "    later = Bound.value\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual(1, len(report["findings"]))
+            self.assertEqual("Service", report["findings"][0]["context"])
+            self.assertEqual(2, report["findings"][0]["line"])
+            self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_keywords_retain_active_blocks_and_conditional_paths(self) -> None:
+        cases = [
+            ("class Outer:\n    for item in rows:\n        class Service(Config, option=item.value):\n            pass", 0),
+            ("class Outer:\n    policy=Local()\n    if flag:\n        spare=1\n    class Service(Config, option=policy.value):\n        pass", 0),
+            ("class Service(Config, option=Bound.value if flag and (Bound := Local()) else None):\n    pass", 0),
+            ("class Service(Config, option=Bound.value if flag or (Bound := Local()) else None):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "blocks.py"
+                    source.write_text("from external import Bound\nclass Config:\n    pass\nclass Local:\n    value=1\nrows=()\nflag=True\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_nested_class_binding_order_preserves_base_and_keyword_gates(self) -> None:
+        cases = [
+            ("class Service(external.Factory):\n        pass\n    external = object()", 1),
+            ("@external.decorate\n    class Service:\n        pass\n    external = object()", 1),
+            ("class Service(Config, option=external.Factory):\n        pass\n    external = object()", 1),
+            ("external = object()\n    class Service(Config, option=external.Factory):\n        pass", 0),
+            ("external = object()\n    import genuine as external\n    class Service(Config, option=external.Factory):\n        pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "order.py"
+                    source.write_text("import external\nclass Config:\n    pass\nclass Outer:\n    " + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_keywords_share_completed_branch_effects(self) -> None:
+        cases = [
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        item=Local()\n    else:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    item=Local()\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    item=Local()\n    if flag:\n        del item\n        item=Local()\n    else:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        if other:\n            item=Local()\n        else:\n            item=Local()\n    else:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 1),
+            ("from external import Bound\nclass Service(Config, first=(flag and (Bound := None)) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=(spare := (flag and (Bound := None))) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=((Bound := Local) if flag else None) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=flag and (Bound := Local), second=Bound.value):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "shared_bindings.py"
+                    source.write_text("class Config:\n    pass\nclass Local:\n    value=1\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_keywords_use_header_binding_proofs(self) -> None:
+        cases = [
+            ("import external as Service\nclass Service(metaclass=Service.Factory):\n    pass", 1),
+            ("from external import Meta as Service\nclass Service(metaclass=Service):\n    pass", 1),
+            ("import external as Service\nimport external as Alias\nclass Service(metaclass=Service.Factory, policy=Alias.Factory):\n    pass", 1),
+            ("def build():\n    import external as Service\n    class Service(metaclass=Service.Factory):\n        pass", 1),
+            ("class Service:\n    Factory=type\nclass Service(metaclass=Service.Factory):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, option=(flag and (Bound := object())) and Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, option=(flag or (Bound := object())) and Bound.value):\n    pass", 1),
+            ("from external import Item as item\nclass Outer:\n    with manager as item:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    with manager as item:\n        from genuine import Item as item\n    class Service(Config, option=item.value):\n        pass", 1),
+            ("import external as Service\nclass Service(metaclass=next(Service.Factory for spare in (1,))):\n    pass", 1),
+            ("import external as Service\nclass Service(metaclass=consume(lambda: Service.Factory)):\n    pass", 1),
+            ("class Service(Config, option=lambda: Service.value):\n    value=1", 0),
+            ("import external as Service\nclass Service(Config, option=lambda: Service.value):\n    value=1", 1),
+            ("def build():\n    import external as Service\n    def inner():\n        nonlocal Service\n        class Service(metaclass=Service.Factory):\n            pass\n    Service=Local\n    inner()", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "bindings.py"
+                    source.write_text("class Config:\n    pass\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    @unittest.skipIf(sys.version_info >= (3, 14), "assignment expressions in annotations are invalid on Python 3.14")
+    def test_coupling_class_keywords_use_eager_annotation_assignments(self) -> None:
+        definitions = ["def configure(arg: (Bound := object())):\n        pass", "def configure() -> (Bound := object()):\n        pass", "def configure(arg: (lambda value=(Bound := object()): value)):\n        pass"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for definition in definitions:
+                with self.subTest(definition=definition):
+                    source = directory / "annotation.py"
+                    source.write_text("from external import Bound\nclass Config:\n    pass\ndef build():\n    " + definition + "\n    class Service(Config, option=Bound.value):\n        pass\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual([], report["findings"])
+
+    def test_coupling_class_keywords_use_nested_definition_header_locals(self) -> None:
+        cases = [
+            ("def configure(arg=(Bound := object())):\n        pass", 0),
+            ("class Configure(option=(Bound := object())):\n        pass", 0),
+            ("def configure():\n        Bound = object()", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for definition, value in cases:
+                with self.subTest(definition=definition):
+                    source = directory / "headers.py"
+                    source.write_text("from external import Bound\nclass Config:\n    pass\ndef build():\n    " + definition + "\n    class Service(Config, option=Bound.value):\n        pass\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_keywords_respect_enclosing_locals_and_comprehension_order(self) -> None:
+        cases = [
+            ("def build(options):\n    class Service(Config, policy=options.factory):\n        pass", 0),
+            ("def build(options):\n    class Service(Config, policy=(options.factory, Other)):\n        pass", 1),
+            ("class Service(Config, option=[Bound.value for x in rows if (Bound := Local())]):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if (Bound := Other())]):\n    pass", 1),
+            ("class Service(Config, option={Bound.value: (Bound := Local()) for x in rows}):\n    pass", 1),
+            ("class Service(Config, option={(Bound := Local()): Bound.value for x in rows}):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if 0 < 1 < (Bound := Local(2))]):\n    pass", 0),
+            ("class Service(Config, option=[Bound.value for x in rows if 0 < 1 < (Bound := Other())]):\n    pass", 1),
+            ("class Service(Config, option=[Bound.value for x in rows if not (x < 1 < (Bound := Local(2)))]):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for header, value in cases:
+                with self.subTest(header=header):
+                    source = directory / "scope.py"
+                    source.write_text(
+                        "from external import Bound, Other\n"
+                        "class Config:\n    def __init_subclass__(cls, **options):\n        pass\n"
+                        "class Local(int):\n    value = 1\nrows = ()\n" + header + "\n",
+                        encoding="utf-8",
+                    )
+                    compile(source.read_text(encoding="utf-8"), str(source), "exec")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
+    def test_coupling_generic_class_keywords_keep_type_parameters_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "generic_scope.py"
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for expression, value in [("T", 0), ("lambda: T", 0), ("(T, Other)", 1)]:
+                with self.subTest(expression=expression):
+                    source.write_text(
+                        "from external import T, Other\n"
+                        "class Config:\n    def __init_subclass__(cls, **options):\n        pass\n"
+                        f"class Service[T](Config, option={expression}):\n    pass\n",
+                        encoding="utf-8",
+                    )
+                    compile(source.read_text(encoding="utf-8"), str(source), "exec")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual(("Service", 5), (report["findings"][0]["context"], report["findings"][0]["line"]))
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_async_comprehension_targets_stay_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "async_comprehension.py"
+            source.write_text(
+                "import external as item\n"
+                "class Config:\n"
+                "    def __init_subclass__(cls, **options):\n"
+                "        pass\n"
+                "async def build():\n"
+                "    class Service(Config, options=[item.value async for item in item.records]):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual([], report["errors"])
+        self.assertEqual(1, len(report["findings"]))
+        self.assertEqual(("Service", 6), (report["findings"][0]["context"], report["findings"][0]["line"]))
+        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_nested_class_keywords_do_not_couple_the_outer_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "nested.py"
+            source.write_text(
+                "from custom_meta import CustomMeta\n"
+                "class Outer:\n"
+                "    class Inner(metaclass=CustomMeta):\n"
+                "        pass\n"
+                "def build():\n"
+                "    from custom_meta import CustomMeta as Meta\n"
+                "    class Local(metaclass=Meta):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual([], report["errors"])
+        self.assertEqual([("Inner", 3), ("Local", 7)], [
+            (finding["context"], finding["line"]) for finding in report["findings"]
+        ])
+        for finding in report["findings"]:
+            self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+            self.assertIn("value of 1.", finding["message"])
 
     def test_design_metrics_find_dependency_state_and_cohesion_hazards(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
