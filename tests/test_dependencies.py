@@ -37,6 +37,83 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_nested_class_headers_preserve_existing_base_and_decorator_dependencies(self) -> None:
+        cases = [
+            ("class Service(external.Factory):\n        pass\n    external = object()", {"external.Factory"}),
+            ("@external.decorate\n    class Service:\n        pass\n    external = object()", {"external.decorate"}),
+            ("external = object()\n    class Service(external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    @external.decorate\n    class Service:\n        pass", {"external.decorate"}),
+            ("class Service(option=external.Factory):\n        pass\n    external = object()", {"external.Factory"}),
+            ("external = object()\n    class Service(option=external.Factory):\n        pass", set()),
+            ("external = object()\n    import genuine as external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("if flag:\n        external = object()\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    if flag:\n        import genuine as external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    del external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external: object\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    spare = object()\n    del spare\n    class Service(option=external.Factory):\n        pass", set()),
+            ("external = object()\n    if flag:\n        del external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    if flag:\n        del external\n        class Service(option=external.Factory):\n            pass", {"external.Factory"}),
+            ("external = object()\n    class Inner:\n        class Service(option=external.Factory):\n            pass", {"external.Factory"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "import external\nclass Outer:\n    " + body + "\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
+    def test_class_keywords_include_enclosing_bindings_from_evaluated_definition_headers(self) -> None:
+        cases = [
+            ("def configure(arg=(Bound := object())):\n        pass", set()),
+            ("def configure(*, arg=(Bound := object())):\n        pass", set()),
+            ("async def configure(arg=(Bound := object())):\n        pass", set()),
+            ("@(Bound := decorate)\n    def configure():\n        pass", set()),
+            ("def configure(arg: (Bound := object())):\n        pass", set()),
+            ("def configure() -> (Bound := object()):\n        pass", set()),
+            ("class Configure((Bound := Base)):\n        pass", set()),
+            ("class Configure(option=(Bound := object())):\n        pass", set()),
+            ("@(Bound := decorate)\n    class Configure:\n        pass", set()),
+            ("def configure(arg=(Bound := Other())):\n        pass", set()),
+            ("def configure():\n        Bound = object()", {"external.Bound"}),
+            ("class Configure:\n        Bound = object()", {"external.Bound"}),
+            ("def configure(arg=lambda: (Bound := object())):\n        pass", {"external.Bound"}),
+            ("def configure(arg=(lambda value=(Bound := object()): value)):\n        pass", set()),
+            ("def configure(arg: (lambda value=(Bound := object()): value)):\n        pass", set()),
+            ("def configure(arg=(Bound := object())):\n        pass\n    from genuine import Bound", {"genuine.Bound"}),
+            ("global Bound\n    def configure(arg=(Bound := object())):\n        pass", {"external.Bound"}),
+            ("if False:\n        def configure(arg=(Bound := object())):\n            pass", set()),
+        ]
+        for definition, expected in cases:
+            with self.subTest(definition=definition):
+                source = "from external import Bound, Other\ndef build():\n    " + definition + "\n    class Service(option=Bound.value):\n        pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
+    @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
+    def test_class_keyword_bindings_exclude_lazy_type_expressions(self) -> None:
+        cases = [
+            ("def configure[T](arg=(Bound := object())):\n        pass", set()),
+            ("def configure[T: (lambda: (Bound := object()))]():\n        pass", {"external.Bound"}),
+            ("class Configure[T: (lambda: (Bound := object()))]:\n        pass", {"external.Bound"}),
+            ("type Alias = (lambda: (Bound := object()))", {"external.Bound"}),
+        ]
+        for definition, expected in cases:
+            with self.subTest(definition=definition):
+                source = "from external import Bound\ndef build():\n    " + definition + "\n    class Service(option=Bound.value):\n        pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
     def test_class_keywords_resolve_enclosing_function_bindings(self) -> None:
         cases = [
             ("def build(options):\n    class Service(policy=options.factory):\n        pass", set()),

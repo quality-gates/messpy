@@ -198,10 +198,12 @@ def _dependency_name(
     root, *tail = dotted.split(".")
     if root in dir(builtins) or root == "typing":
         return ""
+    if names.is_class_keyword_local(node):
+        return ""
     imported = names.imported(node, scope=scope)
     if imported is not None:
         return _imported_dependency(imported, tail)
-    if root in local_names or names.is_local(node, scope=scope):
+    if root in local_names or names.is_expression_local(node, scope=scope):
         return ""
     return _spelling_dependency(root, tail)
 

@@ -8,6 +8,7 @@ comprehension targets, and relative imports. It does not look in other files.
 from __future__ import annotations
 
 import ast
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,13 +86,93 @@ class Names:
         """Whether the reference root resolves to an expression or enclosing scope local."""
         return _is_local(self, node, scope)
 
+    def is_expression_local(self, node: ast.expr, *, scope: ast.AST | None = None) -> bool:
+        """Whether an expression or type parameter scope binds the reference root."""
+        return _is_expression_local(self, node, scope)
+
+    def is_class_keyword_local(self, node: ast.expr) -> bool:
+        """Whether a class keyword reference has an established local binding."""
+        return _in_class_keyword(self, node) and _is_local(self, node, None)
+
 
 def _is_local(names: Names, node: ast.expr, scope: ast.AST | None) -> bool:
     if _root_masked(names, node):
         return True
     root = _root_name(node)
-    record, bound = _resolved_record(names, root, _scopes_for(names, node, scope))
-    return bound and record is not names._records[id(names._tree)] and root not in record.imports
+    for enclosing in _local_scopes(names, node, scope):
+        record = names._records[id(enclosing)]
+        if root in record.global_names:
+            return False
+        if root in record.nonlocal_names:
+            continue
+        if root in record.imports:
+            return False
+        if isinstance(enclosing, ast.ClassDef):
+            if root in record.bound:
+                return _class_local_before(names, root, node, enclosing)
+        elif root in _lexical_assigned(enclosing, record):
+            return True
+    return False
+
+
+def _local_scopes(names: Names, node: ast.expr, scope: ast.AST | None) -> list[_Scope]:
+    scopes: list[_Scope] = []
+    class_seen = False
+    for enclosing in _scopes_for(names, node, scope)[:-1]:
+        if isinstance(enclosing, ast.ClassDef):
+            if class_seen:
+                continue
+            class_seen = True
+        scopes.append(enclosing)
+    return scopes
+
+
+def _lexical_assigned(scope: _Scope, record: _ScopeRecord) -> AbstractSet[str]:
+    if isinstance(scope, _FUNCTION):
+        return _scope_assigned(scope, include_definition_headers=True)
+    return record.bound
+
+
+def _is_expression_local(names: Names, node: ast.expr, scope: ast.AST | None) -> bool:
+    if _root_masked(names, node):
+        return True
+    record, bound = _resolved_record(names, _root_name(node), _scopes_for(names, node, scope))
+    return bound and any(record is names._records[id(annotation)] for annotation in names._annotations.values())
+
+
+def _in_class_keyword(names: Names, node: ast.AST) -> bool:
+    current = node
+    while id(current) in names._parents:
+        parent = names._parents[id(current)]
+        if isinstance(current, ast.keyword) and isinstance(parent, ast.ClassDef):
+            return True
+        current = parent
+    return False
+
+
+def _class_local_before(names: Names, root: str, node: ast.AST, scope: ast.ClassDef) -> bool:
+    local = False
+    for statement in scope.body:
+        if statement is node or _contains(node, statement, names._parents):
+            return local if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) else False
+        binding = _class_binding_kind(names, root, statement)
+        if binding is not None:
+            local = binding
+    return local
+
+
+def _class_binding_kind(names: Names, root: str, statement: ast.stmt) -> bool | None:
+    if isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)):
+        return False
+    if root in _imports_in(names._package, statement) or (
+        isinstance(statement, ast.Delete) and any(root in _stored_names(target) for target in statement.targets)
+    ):
+        return False
+    if isinstance(statement, ast.AnnAssign) and statement.value is None:
+        return None
+    if root in _assigned_in(statement, include_lambda_defaults=False):
+        return isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign, *_FUNCTION, ast.ClassDef))
+    return None
 
 
 def _package(module: tuple[str, ...] | None, path: Path) -> tuple[str, ...] | None:
@@ -401,12 +482,15 @@ def _declared_in(node: ast.AST, kind: type[ast.Global] | type[ast.Nonlocal]) -> 
     return found
 
 
-def _scope_assigned(scope: ast.AST) -> set[str]:
+def _scope_assigned(scope: ast.AST, *, include_definition_headers: bool = False) -> set[str]:
     names: set[str] = set()
     if isinstance(scope, _FUNCTION):
         names.update(_parameter_names(scope))
     for statement in _statements(scope):
-        names.update(_assigned_in(statement, include_lambda_defaults=not isinstance(scope, ast.ClassDef)))
+        names.update(_assigned_in(
+            statement, include_lambda_defaults=not isinstance(scope, ast.ClassDef),
+            include_definition_headers=include_definition_headers,
+        ))
     return names
 
 
@@ -420,18 +504,30 @@ def _parameter_names(scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
     return names
 
 
-def _assigned_in(node: ast.AST, *, include_lambda_defaults: bool = True) -> set[str]:
+def _assigned_in(
+    node: ast.AST, *, include_lambda_defaults: bool = True, include_definition_headers: bool = False
+) -> set[str]:
     if isinstance(node, ast.Lambda):
         return _assigned_lambda_defaults(node) if include_lambda_defaults else set()
     if isinstance(node, (ast.Import, ast.ImportFrom)):
         return set()
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return {node.name}
+        return _assigned_definition(node, include_definition_headers)
     found = _pattern_names(node)
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
         found.add(node.id)
     for child in _assigned_children(node):
-        found.update(_assigned_in(child, include_lambda_defaults=include_lambda_defaults))
+        found.update(_assigned_in(
+            child, include_lambda_defaults=include_lambda_defaults, include_definition_headers=include_definition_headers
+        ))
+    return found
+
+
+def _assigned_definition(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, include_header: bool) -> set[str]:
+    found = {node.name}
+    if include_header:
+        for expression in _definition_header(node):
+            found.update(_assigned_in(expression, include_definition_headers=True))
     return found
 
 
@@ -692,10 +788,26 @@ def _evaluated_definition_bindings(
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, bindings: dict[int, frozenset[str]]
 ) -> set[str]:
     found: set[str] = set()
-    for child in ast.iter_child_nodes(node):
-        if not isinstance(child, ast.stmt):
-            found.update(bindings[id(child)])
+    for child in _definition_header(node):
+        found.update(bindings[id(child)])
     return found
+
+
+def _definition_header(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    if isinstance(node, ast.ClassDef):
+        return [*node.decorator_list, *node.bases, *(keyword.value for keyword in node.keywords)]
+    return [
+        *node.decorator_list,
+        *(default for default in [*node.args.defaults, *node.args.kw_defaults] if default is not None),
+        *_function_annotations(node),
+    ]
+
+
+def _function_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.AST]:
+    arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+    arguments.extend(argument for argument in (node.args.vararg, node.args.kwarg) if argument is not None)
+    annotations = [*(argument.annotation for argument in arguments), node.returns]
+    return [annotation for annotation in annotations if annotation is not None]
 
 
 def _evaluated_lambda_defaults(node: ast.Lambda, bindings: dict[int, frozenset[str]]) -> set[str]:
