@@ -35,7 +35,7 @@ from .callgraph import (
     build_call_graph,
 )
 from .rulesets import LoadedRule
-from .ownership import Origin, Ownership, Storage, argument_ownership, augmented_mutation
+from .ownership import CallableBody, Origin, Ownership, OwnershipProgram, Storage, argument_ownership, augmented_mutation, project_storage
 from .reachability import live_statements
 
 
@@ -1627,40 +1627,40 @@ def _argument_ownership(
     nodes: Sequence[ast.AST],
     chain: _ScopeChain,
     parameters: AbstractSet[str],
-    graph: CallGraph | None = None,
+    program: OwnershipProgram | None = None,
 ) -> Ownership:
     external = _external_storage(nodes, chain)
     calls = _call_kinds(nodes, chain, frozenset())
-    nonlinking = _nonlinking_local_calls(callable_info.node, nodes, graph) if graph is not None else frozenset()
-    ownership = argument_ownership(
-        callable_info.node, set(parameters), external, calls, _method_receiver(callable_info), nonlinking
+    program = program or OwnershipProgram({id(callable_info.node): _ownership_body(callable_info, chain)})
+    return argument_ownership(
+        callable_info.node, set(parameters), external, calls, _method_receiver(callable_info), program
     )
-    if graph is None:
-        return ownership
-    returned = _returned_call_storages(callable_info, nodes, chain, ownership, graph)
-    return replace(ownership, returned=returned) if returned else ownership
 
 
-def _nonlinking_local_calls(caller: ast.AST, nodes: Sequence[ast.AST], graph: CallGraph) -> frozenset[int]:
-    safe = set()
-    for node in nodes:
-        if not isinstance(node, ast.Call):
-            continue
-        site = graph.call_site(caller, node)
-        if site is not None and _cannot_link_arguments(site.callee):
-            safe.add(id(node))
-    return frozenset(safe)
+def _ownership_program(owners, names, graph, parents, scopes) -> OwnershipProgram:
+    bodies = {}
+    targets = {}
+    for owner in owners:
+        chain = _ScopeChain((owner.node, *owner.enclosing), scopes, parents=parents, names=names, graph=graph)
+        bodies[id(owner.node)] = _ownership_body(owner, chain)
+        for node in _evaluated_nodes(owner.node):
+            if isinstance(node, ast.Call):
+                site = graph.call_site(owner.node, node)
+                if site is not None:
+                    targets[id(node)] = site.callee
+    return OwnershipProgram(bodies, targets)
 
 
-def _cannot_link_arguments(target: ast.AST) -> bool:
-    if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        return False
-    for node in ast.walk(target):
-        if isinstance(node, (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr)):
-            return False
-        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            return False
-    return True
+def _ownership_body(owner: CallableNode, chain: _ScopeChain) -> CallableBody:
+    from .execution import cold_body, transformed_callable
+
+    nodes = _evaluated_nodes(owner.node)
+    scope = chain.name_scopes[id(owner.node)]
+    local = (scope.variables | scope.definitions | scope.imports) - scope.global_names - scope.nonlocal_names
+    return CallableBody(
+        owner.node, local, _external_storage(nodes, chain), _call_kinds(nodes, chain, frozenset()),
+        _method_receiver(owner), cold_body(owner.node), transformed_callable(owner.node, chain.qualified_name),
+    )
 
 
 def _external_storage(nodes: Sequence[ast.AST], chain: _ScopeChain) -> dict[str, Storage]:
@@ -1712,78 +1712,9 @@ def _call_result_kind(node: ast.Call, chain: _ScopeChain) -> str:
         return builtin
     if builtin in _ELEMENT_CALLS:
         return "element"
-    return "fresh" if builtin in _FRESH_CALLS or name.startswith("math.") or _empty_constructor(node, chain) else ""
-
-
-def _returned_call_storages(
-    callable_info: CallableNode,
-    nodes: Sequence[ast.AST],
-    chain: _ScopeChain,
-    ownership: Ownership,
-    graph: CallGraph,
-) -> dict[int, Storage]:
-    returned: dict[int, Storage] = {}
-    for node in nodes:
-        if not isinstance(node, ast.Call):
-            continue
-        site = graph.call_site(callable_info.node, node)
-        if site is not None:
-            returned[id(node)] = _returned_storage(site.callee, node, chain, ownership)
-    return returned
-
-
-def _returned_storage(
-    target: ast.AST,
-    call: ast.Call,
-    caller_chain: _ScopeChain,
-    caller_ownership: Ownership,
-) -> Storage:
-    if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) or _deferred_body(target):
-        return Storage(opaque=True)
-    relative = _relative_return_storage(target, caller_chain)
-    return _instantiate_storage(relative, target, call, caller_ownership)
-
-
-def _deferred_body(target: ast.AST) -> bool:
-    if isinstance(target, ast.AsyncFunctionDef):
-        return True
-    return isinstance(target, ast.FunctionDef) and any(
-        isinstance(node, (ast.Yield, ast.YieldFrom)) for node in _evaluated_nodes(target)
-    )
-
-
-def _return_values(target: ast.FunctionDef | ast.Lambda) -> list[ast.expr]:
-    if isinstance(target, ast.Lambda):
-        return [target.body]
-    nodes = _evaluated_nodes(target)
-    values = [node.value or ast.Constant(None) for node in nodes if isinstance(node, ast.Return)]
-    live = live_statements(target.body)
-    if not live or not isinstance(live[-1], (ast.Return, ast.Raise)):
-        values.append(ast.Constant(None))
-    return values
-
-
-def _relative_return_storage(target: ast.FunctionDef | ast.Lambda, caller_chain: _ScopeChain) -> Storage:
-    nodes = _evaluated_nodes(target)
-    parameters = {argument.arg for argument in _arguments(target.args)}
-    local = parameters | {
-        node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
-    }
-    external = {
-        name: storage for name, storage in _external_storage(nodes, caller_chain).items()
-        if name not in local and _module_level_name(name, caller_chain)
-    }
-    calls = _call_kinds(nodes, caller_chain, local)
-    ownership = argument_ownership(target, parameters, external, calls)
-    storage = Storage(kinds=frozenset())
-    for value in _return_values(target):
-        storage = storage.join(ownership.value(value, value))
-    return storage
-
-
-def _module_level_name(name: str, chain: _ScopeChain) -> bool:
-    kind, scope = chain.binding(name)
-    return kind == "unbound" or scope is chain.scopes[-1]
+    if _empty_constructor(node, chain):
+        return "record"
+    return "fresh" if builtin in _FRESH_CALLS or name.startswith("math.") else ""
 
 
 def _instantiate_storage(
@@ -1792,23 +1723,27 @@ def _instantiate_storage(
     call: ast.Call,
     caller_ownership: Ownership,
 ) -> Storage:
-    instantiated = Storage(
-        _kept_origins(storage.outer, target), _kept_origins(storage.reachable, target), storage.kinds, storage.opaque, storage.deep
+    instantiated = replace(
+        storage, outer=_kept_origins(storage.outer, target), reachable=_kept_origins(storage.reachable, target),
+        slots=tuple((key, _instantiate_storage(child, target, call, caller_ownership)) for key, child in storage.slots),
+        references=frozenset(),
     )
     for origin in storage.outer | storage.reachable:
         if origin.scope != id(target):
             continue
-        value = _bound_argument(target, call, origin.name)
-        if value is None or isinstance(value, ast.Starred):
-            # A parameter without an argument gets its default, which the definition shares between calls.
-            actual = Storage(opaque=True)
-        else:
-            actual = caller_ownership.value(value, call)
+        actual = _argument_storage(origin, target, call, caller_ownership)
         if origin in storage.outer:
-            instantiated = instantiated.join(replace(actual, kinds=frozenset()))
+            instantiated = actual if not instantiated.outer and not instantiated.slots else instantiated.join(actual)
         if origin in storage.reachable:
             instantiated = instantiated.join(Storage(reachable=actual.everything, kinds=frozenset(), deep=actual.reaches_unknown))
     return instantiated
+
+
+def _argument_storage(origin: Origin, target: ast.AST, call: ast.Call, ownership: Ownership) -> Storage:
+    value = _bound_argument(target, call, origin.name)
+    if value is None or isinstance(value, ast.Starred):
+        return Storage(opaque=True)
+    return project_storage(ownership.value(value, call), origin.path)
 
 
 def _kept_origins(origins: frozenset[Origin], target: ast.AST) -> frozenset[Origin]:

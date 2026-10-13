@@ -31,6 +31,10 @@ Storage facts distinguish the outer allocation from reachable contents. A shallo
 
 Aliases and rebinding are evaluated at the operation site. Branches join possible origins, and loops compute a fixed point. Escaping or opaque storage retains uncertainty.
 
+Lexical bindings refer to cells, and containers and plain records refer to allocations with independent member slots. Replacing one established slot removes its old alias; sibling slots keep their own origins. Invoked same-file helpers and established closures update that same allocation state. Creating an uncalled closure leaves the creator's bindings unchanged.
+
+Ownership execution tracks at most four active callable bodies, sixteen literal slots, sixteen relative paths per origin, and eight selectors per path. Recursive or deeper ownership execution makes passed and captured storage uncertain. Excess relative paths collapse to a shared prefix with an uncertainty selector. These bounds preserve uncertainty instead of proving unchecked storage private; effect summaries still transfer established ambient and parameter-relative effects through recursive call graphs.
+
 Each callable has a finite effect summary. Resolved calls substitute parameter-relative effects with actual argument storage. A helper that mutates a parameter remains an action; calling it with fresh private storage can be a calculation. Ambient and unknown effects survive substitution. Recursive call cycles join facts to a fixed point.
 
 Creating or returning a function or lambda does not execute its body. Its findings belong to that callable. Invoking an established callback transfers its effects. Injected or unresolved callbacks report `UnknownEffect` without inventing input or output evidence. `sorted`, `min`, `max`, and established list `sort` calls execute their `key` callback.

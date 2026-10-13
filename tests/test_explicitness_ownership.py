@@ -89,7 +89,8 @@ class OwnershipTests(unittest.TestCase):
             "    pair[0].append(1)\n"
         )
         self.assertEqual(2, status)
-        self.assertIn("probe.py:6: UnknownEffect", report)
+        self.assertIn("probe.py:6: ImplicitOutput", report)
+        self.assertNotIn("UnknownEffect", report)
 
     def test_later_rebinding_does_not_erase_earlier_mutation(self):
         self.assertEqual((2, "probe.py:2: ImplicitOutput [priority 3] The function change() writes the implicit output values. Return it instead.\n"), self.analyze("def change(values):\n    values.append(1)\n    values = []\n"))
