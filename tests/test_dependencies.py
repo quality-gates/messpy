@@ -37,6 +37,103 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_conditional_path_proofs_preserve_base_and_decorator_contract(self) -> None:
+        cases = [
+            ("class Service(Bound.Factory if flag and (Bound := local_namespace) else object):\n    pass", {"external.Factory"}),
+            ("@(Bound.decorate if flag and (Bound := local_namespace) else identity)\nclass Service:\n    pass", {"external.decorate"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "import external as Bound\n" + body + "\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(_first_class(tree)), names))
+
+    def test_class_keyword_future_eager_bindings_do_not_capture_enclosing_parameters(self) -> None:
+        for later in ["def configure(arg=(options := object())):\n            pass", "callback=lambda arg=(options := object()): arg"]:
+            with self.subTest(later=later):
+                source = "import external as options\ndef build(options):\n    class Outer:\n        class Service(policy=options.factory):\n            pass\n        " + later + "\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset({"options.factory"}), measure_class_dependencies(_class_info(node), names))
+
+    def test_class_keyword_active_blocks_preserve_local_bindings(self) -> None:
+        cases = [
+            ("for item in rows:\n        class Service(option=item.value):\n            pass", set()),
+            ("with manager as item:\n        class Service(option=item.value):\n            pass", set()),
+            ("try:\n        raise ValueError\n    except ValueError as item:\n        class Service(option=item.value):\n            pass", set()),
+            ("if flag:\n        item = object()\n        class Service(option=item.value):\n            pass", set()),
+            ("item=object()\n    if flag:\n        spare=1\n    class Service(option=item.value):\n        pass", set()),
+            ("item=object()\n    for spare in rows:\n        pass\n    class Service(option=item.value):\n        pass", set()),
+            ("item=object()\n    with manager as spare:\n        pass\n    class Service(option=item.value):\n        pass", set()),
+            ("if flag:\n        class Service(option=item.value):\n            pass", {"external.Item"}),
+            ("for spare in rows:\n        class Service(option=item.value):\n            pass", {"external.Item"}),
+            ("item=object()\n    if flag:\n        from external import Item as item\n    class Service(option=item.value):\n        pass", {"item.value"}),
+            ("for item in rows:\n        from genuine import Item as item\n        class Service(option=item.value):\n            pass", {"item.value"}),
+            ("for item in rows:\n        del item\n        class Service(option=item.value):\n            pass", {"item.value"}),
+            ("while flag:\n        item=object()\n        class Service(option=item.value):\n            pass", set()),
+            ("with first as spare, second as item:\n        if flag:\n            class Service(option=item.value):\n                pass", set()),
+            ("if flag:\n        def configure(arg=(item := object())):\n            pass\n        class Service(option=item.value):\n            pass", set()),
+            ("if flag:\n        def configure():\n            item=object()\n        class Service(option=item.value):\n            pass", {"external.Item"}),
+            ("item=object()\n    if False:\n        del item\n    class Service(option=item.value):\n        pass", set()),
+            ("if True:\n        item=object()\n    class Service(option=item.value):\n        pass", set()),
+            ("match value:\n        case item:\n            class Service(option=item.value):\n                pass", set()),
+            ("for item in rows:\n        class Service(option=lambda: item.value):\n            pass", {"external.Item"}),
+            ("for item in rows:\n        class Service(option=[item.value for spare in ()]):\n            pass", {"external.Item"}),
+            ("for item in rows:\n        class Service(option=lambda argument=item.value: argument):\n            pass", set()),
+            ("item=object()\n    try:\n        from genuine import Item as item\n    finally:\n        class Service(option=item.value):\n            pass", {"item.value"}),
+            ("item=object()\n    try:\n        from genuine import Item as item\n        raise ValueError\n    except ValueError:\n        class Service(option=item.value):\n            pass", {"item.value"}),
+            ("try:\n        raise ValueError\n    except (item := Error):\n        class Service(option=item.value):\n            pass", set()),
+            ("match (item := object()):\n        case _:\n            class Service(option=item.value):\n                pass", set()),
+            ("try:\n        item=object()\n    except ValueError:\n        pass\n    else:\n        class Service(option=item.value):\n            pass", set()),
+            ("item=object()\n    for spare in rows:\n        class Service(option=item.value):\n            pass\n        from genuine import Item as item", {"item.value"}),
+            ("item=object()\n    try:\n        item=object()\n    finally:\n        class Service(option=item.value):\n            pass", set()),
+            ("item=object()\n    try:\n        raise ValueError\n    except ValueError as item:\n        pass\n    class Service(option=item.value):\n        pass", {"item.value"}),
+            ("item=object()\n    if flag:\n        item=object()\n    class Service(option=item.value):\n        pass", set()),
+            ("callback=lambda arg=(item := object()): arg\n    from genuine import Item as item\n    class Service(option=item.value):\n        pass", {"genuine.Item"}),
+            ("callback=lambda arg=(item := object()): arg\n    try:\n        from genuine import Item as item\n    finally:\n        class Service(option=item.value):\n            pass", {"genuine.Item"}),
+            ("for spare in ((item := object()), 1):\n        class Service(option=item.value):\n            pass\n        from genuine import Item as item", {"item.value"}),
+            ("for spare in (item := rows):\n        pass\n    else:\n        class Service(option=item.value):\n            pass", set()),
+            ("try:\n        raise TypeError\n    except (item := ValueError):\n        pass\n    except TypeError:\n        class Service(option=item.args):\n            pass", set()),
+            ("callback=lambda arg=(item := object()): arg\n    if False:\n        from genuine import Item as item\n    class Service(option=item.value):\n        pass", set()),
+            ("callback=lambda arg=(item := object()): arg\n    if False:\n        del item\n    class Service(option=item.value):\n        pass", set()),
+            ("for spare in (item := rows):\n        item=object()\n        class Service(option=item.value):\n            pass", set()),
+            ("for item in (item := rows):\n        class Service(option=item.value):\n            pass\n        from genuine import Item as item", set()),
+            ("for spare in (item := rows):\n        from genuine import Item as item\n    else:\n        class Service(option=item.value):\n            pass", {"item.value"}),
+            ("callback=lambda arg=(item := object()): arg\n    if flag:\n        if False:\n            from genuine import Item as item\n    class Service(option=item.value):\n        pass", set()),
+            ("try:\n        raise TypeError\n    except (item := ValueError):\n        from genuine import Item as item\n    except TypeError:\n        class Service(option=item.args):\n            pass", set()),
+            ("try:\n        raise ExceptionGroup('errors', [ValueError(), TypeError()])\n    except* (item := ValueError):\n        from genuine import Item as item\n    except* TypeError:\n        class Service(option=item.value):\n            pass", {"item.value"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Item as item\nclass Outer:\n    " + body + "\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
+    def test_class_keyword_conditional_branches_use_truth_path_bindings(self) -> None:
+        cases = [
+            ("Bound.value if flag and (Bound := object()) else None", set()),
+            ("None if flag or (Bound := object()) else Bound.value", set()),
+            ("Bound.value if not (flag or (Bound := object())) else None", set()),
+            ("Bound.value if flag or (Bound := object()) else None", {"external.Bound"}),
+            ("None if flag and (Bound := object()) else Bound.value", {"external.Bound"}),
+            ("Bound.value if flag and (Bound := Other()) else None", {"external.Other"}),
+            ("Bound.value if flag else None", {"external.Bound"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                source = "from external import Bound, Other\n" + f"class Service(option={expression}):\n    pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(_first_class(tree)), names))
+
     def test_nested_class_headers_preserve_existing_base_and_decorator_dependencies(self) -> None:
         cases = [
             ("class Service(external.Factory):\n        pass\n    external = object()", {"external.Factory"}),

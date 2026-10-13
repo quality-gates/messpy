@@ -6431,6 +6431,33 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertEqual(2, report["findings"][0]["line"])
             self.assertIn("value of 1.", report["findings"][0]["message"])
 
+    def test_coupling_class_keywords_retain_active_blocks_and_conditional_paths(self) -> None:
+        cases = [
+            ("class Outer:\n    for item in rows:\n        class Service(Config, option=item.value):\n            pass", 0),
+            ("class Outer:\n    policy=Local()\n    if flag:\n        spare=1\n    class Service(Config, option=policy.value):\n        pass", 0),
+            ("class Service(Config, option=Bound.value if flag and (Bound := Local()) else None):\n    pass", 0),
+            ("class Service(Config, option=Bound.value if flag or (Bound := Local()) else None):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "blocks.py"
+                    source.write_text("from external import Bound\nclass Config:\n    pass\nclass Local:\n    value=1\nrows=()\nflag=True\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
     def test_coupling_nested_class_binding_order_preserves_base_and_keyword_gates(self) -> None:
         cases = [
             ("class Service(external.Factory):\n        pass\n    external = object()", 1),
