@@ -47,6 +47,12 @@ class _BindingEffects:
 
 
 @dataclass(frozen=True)
+class _ClassBinding:
+    local: bool
+    imported: _ImportBinding | None = None
+
+
+@dataclass(frozen=True)
 class Names:
     """The imported names of one module.
 
@@ -74,6 +80,7 @@ class Names:
         records.update({id(scope): _annotation_record(scope) for scope in annotations.values()})
         effects = _expression_bindings(tree)
         masks = _expression_masks(tree, effects)
+        effects = _keyword_expression_bindings(tree, effects)
         keyword_masks = _expression_masks(tree, effects, conditional_paths=True)
         return cls(tree, package, parents, records, masks, annotations, effects, keyword_masks)
 
@@ -99,8 +106,15 @@ class Names:
         """Whether a class keyword reference has an established local binding."""
         return _is_class_keyword_local(self, node)
 
+    def is_class_keyword_target(self, node: ast.expr) -> bool:
+        """Whether a keyword reads the name assigned by its class statement."""
+        return _is_class_keyword_target(self, node)
+
 
 def _is_class_keyword_local(names: Names, node: ast.expr) -> bool:
+    binding = _class_keyword_binding(names, node)
+    if binding is not None:
+        return binding.local
     return _in_class_keyword(names, node) and (
         _masked_root(node, names._keyword_masks) or _is_local(names, node, None)
     )
@@ -165,67 +179,127 @@ def _is_expression_local(names: Names, node: ast.expr, scope: ast.AST | None) ->
 
 
 def _in_class_keyword(names: Names, node: ast.AST) -> bool:
+    return _class_keyword_owner(names, node) is not None
+
+
+def _class_keyword_owner(names: Names, node: ast.AST) -> ast.ClassDef | None:
     current = node
     while id(current) in names._parents:
         parent = names._parents[id(current)]
         if isinstance(current, ast.keyword) and isinstance(parent, ast.ClassDef):
-            return True
+            return parent
         current = parent
-    return False
+    return None
+
+
+def _is_class_keyword_target(names: Names, node: ast.expr) -> bool:
+    owner = _class_keyword_owner(names, node)
+    return owner is not None and owner.name == _root_name(node)
+
+
+def _class_keyword_binding(names: Names, node: ast.expr) -> _ClassBinding | None:
+    if not _is_class_keyword_target(names, node):
+        return None
+    if _query_root_masked(names, node):
+        return _ClassBinding(True)
+    root = _root_name(node)
+    for scope in [*_local_scopes(names, node, None), names._tree]:
+        record = names._records[id(scope)]
+        if root in record.global_names:
+            return None
+        if root in record.nonlocal_names:
+            continue
+        binding = _keyword_scope_binding(names, root, node, scope, record)
+        if binding is not None:
+            return binding
+    return None
+
+
+def _keyword_scope_binding(names: Names, root: str, node: ast.AST, scope: _Scope, record: _ScopeRecord) -> _ClassBinding | None:
+    if isinstance(scope, _AnnotationScope):
+        return _ClassBinding(True) if root in record.bound else None
+    binding = _class_binding_before(names, root, node, scope)
+    if binding is not None:
+        return binding
+    if isinstance(scope, ast.ClassDef) and root in record.bound:
+        return _ClassBinding(False, names._records[id(names._tree)].imports.get(root))
+    if root in record.imports:
+        return _ClassBinding(False, record.imports[root])
+    if root in _lexical_assigned(scope, record):
+        return _ClassBinding(True)
+    return None
 
 
 def _class_local_before(names: Names, root: str, node: ast.AST, scope: ast.ClassDef) -> bool:
+    binding = _class_binding_before(names, root, node, scope)
+    return binding is not None and binding.local
+
+
+def _class_binding_before(names: Names, root: str, node: ast.AST, scope: ast.AST) -> _ClassBinding | None:
+    binding = _ClassBinding(True) if isinstance(scope, _FUNCTION) and root in _parameter_names(scope) else None
+    for parent, field, siblings, child in _binding_statement_path(names, node, scope):
+        if field == "body" and parent is not scope:
+            if isinstance(parent, _FUNCTION):
+                return None
+            if isinstance(parent, ast.ClassDef):
+                return binding
+        binding = _active_class_binding(names, root, parent, field, binding)
+        binding = _class_prefix_binding(names, root, siblings, child, binding)
+    return binding
+
+
+def _binding_statement_path(names: Names, node: ast.AST, scope: ast.AST) -> list[tuple[ast.AST, str, list[ast.AST], ast.AST]]:
     path: list[tuple[ast.AST, ast.AST]] = []
     current = node
     while current is not scope and id(current) in names._parents:
         parent = names._parents[id(current)]
         path.append((parent, current))
         current = parent
-    local = False
+    statements: list[tuple[ast.AST, str, list[ast.AST], ast.AST]] = []
     for parent, child in reversed(path):
         for field, siblings in ast.iter_fields(parent):
             if isinstance(siblings, list) and child in siblings:
-                local = _active_class_binding(names, root, parent, field, local)
-                local = _class_prefix_binding(names, root, siblings, child, local)
-    return local
+                statements.append((parent, field, siblings, child))
+    return statements
 
 
-def _class_prefix_binding(names: Names, root: str, siblings: list[ast.AST], child: ast.AST | None, local: bool) -> bool:
+def _class_prefix_binding(names: Names, root: str, siblings: list[ast.AST], child: ast.AST | None, binding: _ClassBinding | None) -> _ClassBinding | None:
     for statement in siblings:
         if statement is child:
             break
         if isinstance(statement, ast.stmt):
-            binding = _class_binding_kind(names, root, statement)
-            if binding is not None:
-                local = binding
+            assigned = _statement_binding(names, root, statement)
+            if assigned is not None:
+                binding = assigned
         elif isinstance(statement, ast.ExceptHandler):
-            local = _handler_prefix_binding(names, root, statement, local)
-    return local
+            binding = _handler_prefix_binding(names, root, statement, binding)
+    return binding
 
 
-def _handler_prefix_binding(names: Names, root: str, handler: ast.ExceptHandler, local: bool) -> bool:
+def _handler_prefix_binding(names: Names, root: str, handler: ast.ExceptHandler, binding: _ClassBinding | None) -> _ClassBinding | None:
     if handler.type is not None and root in names._effects.definite[id(handler.type)]:
-        local = True
+        binding = _ClassBinding(True)
     parent = names._parents[id(handler)]
     if isinstance(parent, ast.TryStar) and _class_root_externalized(root, handler):
-        return False
-    return local
+        return _ClassBinding(False)
+    return binding
 
 
-def _active_class_binding(names: Names, root: str, parent: ast.AST, field: str, local: bool) -> bool:
-    local = _block_entry_binding(names, root, parent, field, local)
-    return local or root in _block_bindings(names, parent, field)
+def _active_class_binding(names: Names, root: str, parent: ast.AST, field: str, binding: _ClassBinding | None) -> _ClassBinding | None:
+    binding = _block_entry_binding(names, root, parent, field, binding)
+    return _ClassBinding(True) if root in _block_bindings(names, parent, field) else binding
 
 
-def _block_entry_binding(names: Names, root: str, parent: ast.AST, field: str, local: bool) -> bool:
+def _block_entry_binding(names: Names, root: str, parent: ast.AST, field: str, binding: _ClassBinding | None) -> _ClassBinding | None:
     if isinstance(parent, (ast.Try, ast.TryStar)):
         if field == "orelse":
-            return _class_prefix_binding(names, root, parent.body, None, local)
-        if field in ("handlers", "finalbody"):
-            return local and not _class_root_externalized(root, parent)
+            return _class_prefix_binding(names, root, parent.body, None, binding)
+        if field in ("handlers", "finalbody") and _class_root_externalized(root, parent):
+            return _ClassBinding(False)
     if isinstance(parent, (ast.For, ast.AsyncFor, ast.While)) and field in ("body", "orelse"):
-        return local and not any(_class_root_externalized(root, child) for child in parent.body)
-    return local
+        if any(_class_root_externalized(root, child) for child in parent.body):
+            return _ClassBinding(False)
+    return binding
 
 
 def _block_bindings(names: Names, parent: ast.AST, field: str) -> AbstractSet[str]:
@@ -279,11 +353,30 @@ def _with_block_bindings(names: Names, node: ast.With | ast.AsyncWith) -> Abstra
 
 
 def _class_binding_kind(names: Names, root: str, statement: ast.stmt) -> bool | None:
-    if isinstance(statement, ast.If) and _literal_truth(statement.test) is not None:
-        return _known_class_branch(names, root, statement)
     if isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)):
         return False if _class_root_externalized(root, statement) else None
     return _class_direct_binding(names, root, statement)
+
+
+def _statement_binding(names: Names, root: str, statement: ast.stmt) -> _ClassBinding | None:
+    if isinstance(statement, (ast.Import, ast.ImportFrom)):
+        imported = _imports_in(names._package, statement).get(root)
+        return _ClassBinding(False, imported) if imported is not None else None
+    if isinstance(statement, ast.If) and _literal_truth(statement.test) is not None:
+        return _known_class_branch(names, root, statement)
+    if isinstance(statement, (ast.With, ast.AsyncWith)):
+        return _completed_with_binding(root, statement)
+    local = _class_binding_kind(names, root, statement)
+    return _ClassBinding(local) if local is not None else None
+
+
+def _completed_with_binding(root: str, statement: ast.With | ast.AsyncWith) -> _ClassBinding | None:
+    if _class_root_externalized(root, statement):
+        return _ClassBinding(False)
+    target = statement.items[0].optional_vars
+    if isinstance(target, ast.Name) and target.id == root:
+        return _ClassBinding(True)
+    return None
 
 
 def _class_direct_binding(names: Names, root: str, statement: ast.stmt) -> bool | None:
@@ -298,11 +391,11 @@ def _class_direct_binding(names: Names, root: str, statement: ast.stmt) -> bool 
     return None
 
 
-def _known_class_branch(names: Names, root: str, statement: ast.If) -> bool | None:
+def _known_class_branch(names: Names, root: str, statement: ast.If) -> _ClassBinding | None:
     branch = statement.body if _literal_truth(statement.test) else statement.orelse
-    state: bool | None = None
+    state: _ClassBinding | None = None
     for child in branch:
-        binding = _class_binding_kind(names, root, child)
+        binding = _statement_binding(names, root, child)
         if binding is not None:
             state = binding
     return state
@@ -363,6 +456,9 @@ def _qualified(names: Names, node: ast.expr, scope: ast.AST | None) -> str:
 def _imported(names: Names, node: ast.expr, scope: ast.AST | None) -> tuple[str, bool] | None:
     if _query_root_masked(names, node):
         return None
+    keyword = _class_keyword_binding(names, node)
+    if keyword is not None and keyword.imported is not None:
+        return keyword.imported.canonical, keyword.imported.symbol
     root = _root_name(node)
     if not root:
         return None
@@ -740,8 +836,8 @@ def _masked_children(
     node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects, conditional_paths: bool
 ) -> list[_MaskedNode]:
     masked = _statement_masks(node, masked, class_namespace, conditional_paths)
-    if isinstance(node, ast.IfExp) and conditional_paths:
-        return _conditional_masked_children(node, masked, class_namespace, bindings)
+    if conditional_paths and isinstance(node, (ast.IfExp, ast.BoolOp)):
+        return _truth_masked_children(node, masked, class_namespace, bindings)
     if isinstance(node, ast.ClassDef):
         return _class_header_masked_children(node, masked, class_namespace, bindings, conditional_paths)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -791,11 +887,12 @@ def _condition_path_bindings(
     truth: bool,
     bindings: dict[int, frozenset[str]],
     conditions: dict[tuple[int, bool], frozenset[str]],
+    *, reachable: bool = False,
 ) -> set[str]:
     if isinstance(node, ast.BoolOp):
-        return _boolean_condition_bindings(node, truth, conditions)
+        return _boolean_condition_bindings(node, truth, conditions, reachable=reachable)
     if isinstance(node, ast.IfExp):
-        return _conditional_condition_bindings(node, truth, conditions)
+        return _conditional_condition_bindings(node, truth, conditions, reachable=reachable)
     if isinstance(node, ast.Compare) and truth:
         return _comparison_condition_bindings(node, bindings)
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
@@ -814,6 +911,7 @@ def _boolean_condition_bindings(
     node: ast.BoolOp,
     truth: bool,
     conditions: dict[tuple[int, bool], frozenset[str]],
+    *, reachable: bool = False,
 ) -> set[str]:
     prefix: set[str] = set()
     if isinstance(node.op, ast.And) == truth:
@@ -822,25 +920,67 @@ def _boolean_condition_bindings(
         return prefix
     paths: list[set[str]] = []
     for value in node.values:
-        paths.append(prefix | set(conditions[(id(value), truth)]))
+        if not reachable or _truth_possible(value, truth):
+            paths.append(prefix | set(conditions[(id(value), truth)]))
+        if reachable and not _truth_possible(value, not truth):
+            break
         prefix.update(conditions[(id(value), not truth)])
-    return set.intersection(*paths)
+    return set.intersection(*paths) if paths else set()
 
 
 def _conditional_condition_bindings(
     node: ast.IfExp,
     truth: bool,
     conditions: dict[tuple[int, bool], frozenset[str]],
+    *, reachable: bool = False,
 ) -> set[str]:
     test_truth = _literal_truth(node.test)
     if test_truth is not None:
         branch = node.body if test_truth else node.orelse
         return set(conditions[(id(node.test), test_truth)] | conditions[(id(branch), truth)])
     paths = [
-        conditions[(id(node.test), True)] | conditions[(id(node.body), truth)],
-        conditions[(id(node.test), False)] | conditions[(id(node.orelse), truth)],
+        set(conditions[(id(node.test), branch_truth)] | conditions[(id(branch), truth)])
+        for branch_truth, branch in [(True, node.body), (False, node.orelse)]
+        if not reachable or (_truth_possible(node.test, branch_truth) and _truth_possible(branch, truth))
     ]
-    return set(paths[0] & paths[1])
+    return set.intersection(*paths) if paths else set()
+
+
+def _truth_possible(node: ast.AST, truth: bool) -> bool:
+    literal = _literal_truth(node)
+    if literal is not None:
+        return literal == truth
+    if isinstance(node, ast.NamedExpr):
+        return _truth_possible(node.value, truth)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return _truth_possible(node.operand, not truth)
+    if isinstance(node, ast.BoolOp):
+        return _boolean_truth_possible(node, truth)
+    if isinstance(node, ast.IfExp):
+        return _conditional_truth_possible(node, truth)
+    return True
+
+
+def _boolean_truth_possible(node: ast.BoolOp, truth: bool) -> bool:
+    possibilities = [_truth_possible(value, truth) for value in node.values]
+    return all(possibilities) if isinstance(node.op, ast.And) == truth else any(possibilities)
+
+
+def _conditional_truth_possible(node: ast.IfExp, truth: bool) -> bool:
+    return any(
+        _truth_possible(node.test, branch_truth) and _truth_possible(branch, truth)
+        for branch_truth, branch in [(True, node.body), (False, node.orelse)]
+    )
+
+
+def _keyword_expression_bindings(tree: ast.Module, bindings: _BindingEffects) -> _BindingEffects:
+    conditions: dict[tuple[int, bool], frozenset[str]] = {}
+    for node in reversed(_module_nodes(tree)):
+        for truth in (False, True):
+            conditions[(id(node), truth)] = frozenset(
+                bindings.definite[id(node)] | _condition_path_bindings(node, truth, bindings.definite, conditions, reachable=True)
+            )
+    return _BindingEffects(bindings.definite, conditions)
 
 
 def _class_header_masked_children(
@@ -866,7 +1006,10 @@ def _keyword_class_body(statements: list[ast.stmt], bindings: _BindingEffects) -
     masked: frozenset[str] = frozenset()
     for statement in statements:
         children.append((statement, masked, True))
-        masked = _retained_class_masks(masked | bindings.definite[id(statement)], statement)
+        effects = bindings.definite[id(statement)]
+        if isinstance(statement, (ast.With, ast.AsyncWith)):
+            effects = bindings.definite[id(statement.items[0].context_expr)]
+        masked = _retained_class_masks(masked | effects, statement)
     return children
 
 
@@ -903,6 +1046,25 @@ def _conditional_masked_children(
         (node.body, masked | bindings.conditional[(id(node.test), True)], class_namespace),
         (node.orelse, masked | bindings.conditional[(id(node.test), False)], class_namespace),
     ]
+
+
+def _truth_masked_children(
+    node: ast.IfExp | ast.BoolOp, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects
+) -> list[_MaskedNode]:
+    if isinstance(node, ast.BoolOp):
+        return _boolean_masked_children(node, masked, class_namespace, bindings)
+    return _conditional_masked_children(node, masked, class_namespace, bindings)
+
+
+def _boolean_masked_children(
+    node: ast.BoolOp, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects
+) -> list[_MaskedNode]:
+    children: list[_MaskedNode] = []
+    truth = isinstance(node.op, ast.And)
+    for value in node.values:
+        children.append((value, masked, class_namespace))
+        masked = masked | bindings.conditional[(id(value), truth)]
+    return children
 
 
 def _sequence_masked_children(

@@ -37,6 +37,81 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_class_keyword_reads_precede_the_target_name_binding(self) -> None:
+        cases = [
+            ("import external as Service\nclass Service(metaclass=Service.Factory):\n    pass", {"external.Factory"}),
+            ("from external import Meta as Service\nclass Service(metaclass=Service):\n    pass", {"external.Meta"}),
+            ("import external as Service\nimport external as Alias\nclass Service(metaclass=Service.Factory, policy=Alias.Factory):\n    pass", {"external.Factory"}),
+            ("def build():\n    import external as Service\n    class Service(metaclass=Service.Factory):\n        pass", {"external.Factory"}),
+            ("class Outer:\n    import external as Service\n    class Service(metaclass=Service.Factory):\n        pass", {"external.Factory"}),
+            ("class Service:\n    Factory=type\nclass Service(metaclass=Service.Factory):\n    pass", set()),
+            ("Service=type\nclass Service(metaclass=Service):\n    pass", set()),
+            ("def build(Service):\n    class Service(option=Service.value):\n        pass", set()),
+            ("class Outer:\n    Service=object()\n    class Service(option=Service.value):\n        pass", set()),
+            ("import external as Service\nclass Service(option=lambda: Service.value):\n    pass", {"external.value"}),
+            ("import external as Service\nclass Service(option=(lambda: Service.value)()):\n    pass", {"external.value"}),
+            ("import external as Service\nclass Service(option=(Service.value for spare in ())):\n    pass", {"external.value"}),
+            ("import external as Service\nclass Service(option=(spare for spare in Service.rows)):\n    pass", {"external.rows"}),
+            ("import external as Service\nclass Service(metaclass=next(Service.Factory for spare in (1,))):\n    pass", {"external.Factory"}),
+            ("import external as Service\nclass Service(metaclass=consume(Service.Factory for spare in (1,))):\n    pass", {"external.Factory"}),
+            ("import external as Service\nclass Service(metaclass=consume(lambda: Service.Factory)):\n    pass", {"external.Factory"}),
+            ("class Service(option=lambda: Service.value):\n    value=1", set()),
+            ("class Service(option=(Service.value for spare in (1,))):\n    value=1", set()),
+            ("import external as Service\nclass Service(option=lambda Service=object(): Service.value):\n    pass", set()),
+            ("import external as Service\nclass Service(option=(Service.value for Service in rows)):\n    pass", set()),
+            ("def build():\n    import external as Service\n    def inner():\n        nonlocal Service\n        class Service(metaclass=Service.Factory):\n            pass\n    Service=Local\n    inner()", set()),
+            ("def build():\n    import external as Service\n    def inner():\n        nonlocal Service\n        class Service(metaclass=Service.Factory):\n            pass\n    inner()", {"external.Factory"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in reversed(list(ast.walk(tree))) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                module_names = {part.name for part in tree.body if isinstance(part, ast.ClassDef)}
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, module_names))
+
+    def test_class_keyword_boolean_operands_use_reached_path_bindings(self) -> None:
+        cases = [
+            ("(flag and (Bound := object())) and Bound.value", set()),
+            ("(flag or (Bound := object())) or Bound.value", set()),
+            ("(not (flag or (Bound := object()))) and Bound.value", set()),
+            ("(flag or (Bound := object())) and Bound.value", {"external.Bound"}),
+            ("(flag and (Bound := object())) or Bound.value", {"external.Bound"}),
+            ("((Bound := Other()) and True) and Bound.value", {"external.Other"}),
+            ("((Bound := object()) and flag) and Bound.value", set()),
+            ("((flag and (Bound := object())) or False) and Bound.value", set()),
+            ("(flag and (Bound := object())) and (Bound.value, Other.value)", {"external.Other"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                source = "from external import Bound, Other\nclass Service(option=" + expression + "):\n    pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(_first_class(tree)), names))
+
+    def test_class_keyword_completed_with_proves_only_guaranteed_targets(self) -> None:
+        cases = [
+            ("with manager as item:\n        pass", set()),
+            ("with manager as item:\n        from genuine import Item as item", {"item.value"}),
+            ("with manager as item:\n        del item", {"item.value"}),
+            ("with manager as (item, spare):\n        pass", {"item.value"}),
+            ("with manager as spare, second as item:\n        pass", {"item.value"}),
+            ("with manager as item, second as spare:\n        pass", set()),
+            ("with manager as spare, (item := second) as other:\n        pass", {"item.value"}),
+            ("if True:\n        with manager as item:\n            pass", set()),
+            ("if flag:\n        with manager as item:\n            pass", {"item.value"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Item as item\nclass Outer:\n    " + body + "\n    class Service(option=item.value):\n        pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
     def test_conditional_path_proofs_preserve_base_and_decorator_contract(self) -> None:
         cases = [
             ("class Service(Bound.Factory if flag and (Bound := local_namespace) else object):\n    pass", {"external.Factory"}),
@@ -168,8 +243,6 @@ class ClassDependencyTests(unittest.TestCase):
             ("def configure(*, arg=(Bound := object())):\n        pass", set()),
             ("async def configure(arg=(Bound := object())):\n        pass", set()),
             ("@(Bound := decorate)\n    def configure():\n        pass", set()),
-            ("def configure(arg: (Bound := object())):\n        pass", set()),
-            ("def configure() -> (Bound := object()):\n        pass", set()),
             ("class Configure((Bound := Base)):\n        pass", set()),
             ("class Configure(option=(Bound := object())):\n        pass", set()),
             ("@(Bound := decorate)\n    class Configure:\n        pass", set()),
@@ -178,7 +251,6 @@ class ClassDependencyTests(unittest.TestCase):
             ("class Configure:\n        Bound = object()", {"external.Bound"}),
             ("def configure(arg=lambda: (Bound := object())):\n        pass", {"external.Bound"}),
             ("def configure(arg=(lambda value=(Bound := object()): value)):\n        pass", set()),
-            ("def configure(arg: (lambda value=(Bound := object()): value)):\n        pass", set()),
             ("def configure(arg=(Bound := object())):\n        pass\n    from genuine import Bound", {"genuine.Bound"}),
             ("global Bound\n    def configure(arg=(Bound := object())):\n        pass", {"external.Bound"}),
             ("if False:\n        def configure(arg=(Bound := object())):\n            pass", set()),
@@ -192,6 +264,23 @@ class ClassDependencyTests(unittest.TestCase):
                 names = Names.build(tree, module=None, path=Path("service.py"))
 
                 self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names))
+
+    @unittest.skipIf(sys.version_info >= (3, 14), "assignment expressions in annotations are invalid on Python 3.14")
+    def test_class_keyword_bindings_include_eager_annotation_assignments(self) -> None:
+        for definition in ["def configure(arg: (Bound := object())):\n        pass", "def configure() -> (Bound := object()):\n        pass", "def configure(arg: (lambda value=(Bound := object()): value)):\n        pass"]:
+            with self.subTest(definition=definition):
+                source = "from external import Bound\ndef build():\n    " + definition + "\n    class Service(option=Bound.value):\n        pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(), measure_class_dependencies(_class_info(node), names))
+
+    @unittest.skipIf(sys.version_info < (3, 14), "annotation assignment expressions become invalid on Python 3.14")
+    def test_annotation_assignments_are_compiler_rejected(self) -> None:
+        for source in ["def configure(arg: (Bound := object())): pass", "def configure() -> (Bound := object()): pass", "def configure(arg: (lambda value=(Bound := object()): value)): pass"]:
+            with self.subTest(source=source), self.assertRaisesRegex(SyntaxError, "named expression cannot be used within an annotation"):
+                compile(source, "service.py", "exec", dont_inherit=True)
 
     @unittest.skipIf(sys.version_info < (3, 12), "type parameter syntax requires Python 3.12")
     def test_class_keyword_bindings_exclude_lazy_type_expressions(self) -> None:

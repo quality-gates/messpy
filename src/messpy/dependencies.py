@@ -203,9 +203,15 @@ def _dependency_name(
     imported = names.imported(node, scope=scope)
     if imported is not None:
         return _imported_dependency(imported, tail)
-    if root in local_names or names.is_expression_local(node, scope=scope):
+    if _local_reference(root, node, names, scope, local_names):
         return ""
     return _spelling_dependency(root, tail)
+
+
+def _local_reference(root: str, node: ast.expr, names: Names, scope: ast.AST, local_names: set[str]) -> bool:
+    return names.is_expression_local(node, scope=scope) or (
+        root in local_names and not names.is_class_keyword_target(node)
+    )
 
 
 def _imported_dependency(imported: tuple[str, bool], tail: list[str]) -> str:

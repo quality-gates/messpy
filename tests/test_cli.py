@@ -6488,11 +6488,66 @@ class CommandAcceptanceTests(unittest.TestCase):
                         self.assertEqual("Service", report["findings"][0]["context"])
                         self.assertIn("value of 1.", report["findings"][0]["message"])
 
+    def test_coupling_class_keywords_use_header_binding_proofs(self) -> None:
+        cases = [
+            ("import external as Service\nclass Service(metaclass=Service.Factory):\n    pass", 1),
+            ("from external import Meta as Service\nclass Service(metaclass=Service):\n    pass", 1),
+            ("import external as Service\nimport external as Alias\nclass Service(metaclass=Service.Factory, policy=Alias.Factory):\n    pass", 1),
+            ("def build():\n    import external as Service\n    class Service(metaclass=Service.Factory):\n        pass", 1),
+            ("class Service:\n    Factory=type\nclass Service(metaclass=Service.Factory):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, option=(flag and (Bound := object())) and Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, option=(flag or (Bound := object())) and Bound.value):\n    pass", 1),
+            ("from external import Item as item\nclass Outer:\n    with manager as item:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    with manager as item:\n        from genuine import Item as item\n    class Service(Config, option=item.value):\n        pass", 1),
+            ("import external as Service\nclass Service(metaclass=next(Service.Factory for spare in (1,))):\n    pass", 1),
+            ("import external as Service\nclass Service(metaclass=consume(lambda: Service.Factory)):\n    pass", 1),
+            ("class Service(Config, option=lambda: Service.value):\n    value=1", 0),
+            ("import external as Service\nclass Service(Config, option=lambda: Service.value):\n    value=1", 1),
+            ("def build():\n    import external as Service\n    def inner():\n        nonlocal Service\n        class Service(metaclass=Service.Factory):\n            pass\n    Service=Local\n    inner()", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "bindings.py"
+                    source.write_text("class Config:\n    pass\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    @unittest.skipIf(sys.version_info >= (3, 14), "assignment expressions in annotations are invalid on Python 3.14")
+    def test_coupling_class_keywords_use_eager_annotation_assignments(self) -> None:
+        definitions = ["def configure(arg: (Bound := object())):\n        pass", "def configure() -> (Bound := object()):\n        pass", "def configure(arg: (lambda value=(Bound := object()): value)):\n        pass"]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for definition in definitions:
+                with self.subTest(definition=definition):
+                    source = directory / "annotation.py"
+                    source.write_text("from external import Bound\nclass Config:\n    pass\ndef build():\n    " + definition + "\n    class Service(Config, option=Bound.value):\n        pass\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual([], report["findings"])
+
     def test_coupling_class_keywords_use_nested_definition_header_locals(self) -> None:
         cases = [
             ("def configure(arg=(Bound := object())):\n        pass", 0),
-            ("def configure(arg: (Bound := object())):\n        pass", 0),
-            ("def configure() -> (Bound := object()):\n        pass", 0),
             ("class Configure(option=(Bound := object())):\n        pass", 0),
             ("def configure():\n        Bound = object()", 1),
         ]
