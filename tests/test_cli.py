@@ -6145,6 +6145,94 @@ class CommandAcceptanceTests(unittest.TestCase):
                             finding["message"],
                         )
 
+    def test_coupling_class_keyword_comprehension_targets_stay_local(self) -> None:
+        cases = [
+            ("list", "[item.value for item in ()]", 0),
+            ("set", "{item.value for item in ()}", 0),
+            ("dict", "{item.key: item.value for item in ()}", 0),
+            ("generator", "(item.value for item in ())", 0),
+            ("symbol_shadow", "[Item for Item in ()]", 0),
+            ("condition", "[item.value for item in () if item.enabled]", 0),
+            ("unpacking", "[(key.value, item.value) for key, *item in ()]", 0),
+            ("nested", "[[item.value for item in item.children] for item in ()]", 0),
+            ("outer_iter", "[item.value for item in item.records]", 1),
+            ("symbol_outer_iter", "[Item.value for Item in Item.records]", 1),
+            ("external_condition", "[item.value for item in () if Checker(item)]", 1),
+            ("later_iter", "[(item.value, other.value) for item in () for other in Other.records]", 1),
+            ("sibling", "([item.value for item in ()], item.records)", 1),
+            ("separate_comprehension", "[Item.value for Item in ()] + [Item.value for other in ()]", 1),
+            ("unbound", "[Unknown.value for item in ()]", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for name, expression, value in cases:
+                with self.subTest(name=name):
+                    source = directory / f"{name}.py"
+                    source.write_text(
+                        "import external as item\n"
+                        "from external import Item, Other\n"
+                        "from checks import Checker\n"
+                        "class Config:\n"
+                        "    def __init_subclass__(cls, **options):\n"
+                        "        pass\n"
+                        "\n"
+                        f"class Service(Config, options={expression}):\n"
+                        "    pass\n",
+                        encoding="utf-8",
+                    )
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(("Service", 8), (finding["context"], finding["line"]))
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertIn("value of 1.", finding["message"])
+
+    def test_coupling_async_comprehension_targets_stay_local(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "async_comprehension.py"
+            source.write_text(
+                "import external as item\n"
+                "class Config:\n"
+                "    def __init_subclass__(cls, **options):\n"
+                "        pass\n"
+                "async def build():\n"
+                "    class Service(Config, options=[item.value async for item in item.records]):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual([], report["errors"])
+        self.assertEqual(1, len(report["findings"]))
+        self.assertEqual(("Service", 6), (report["findings"][0]["context"], report["findings"][0]["line"]))
+        self.assertIn("value of 1.", report["findings"][0]["message"])
+
     def test_coupling_nested_class_keywords_do_not_couple_the_outer_class(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

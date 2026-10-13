@@ -63,6 +63,10 @@ class Names:
         """The root import at ``node``, as ``(canonical, from_import)``, or None."""
         return _imported(self, node, scope)
 
+    def is_comprehension_local(self, node: ast.expr) -> bool:
+        """Whether an enclosing comprehension binds the reference root."""
+        return _root_masked(self, node)
+
 
 def _package(module: tuple[str, ...] | None, path: Path) -> tuple[str, ...] | None:
     if not module:

@@ -102,6 +102,56 @@ class ClassDependencyTests(unittest.TestCase):
 
                 self.assertEqual(frozenset(expected), dependencies)
 
+    def test_class_keyword_comprehension_targets_are_local_dependencies(self) -> None:
+        expressions = [
+            "[item.value for item in ()]",
+            "{item.value for item in ()}",
+            "{item.key: item.value for item in ()}",
+            "(item.value for item in ())",
+            "[Item for Item in ()]",
+            "[item.value for item in () if item.enabled]",
+            "[(key.value, item.value) for key, *item in ()]",
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                tree = ast.parse(
+                    "from external import Item\n"
+                    "import external as item\n"
+                    f"class Service(options={expression}):\n    pass\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset(), dependencies)
+
+    def test_class_keyword_comprehensions_keep_outer_dependencies(self) -> None:
+        cases = [
+            ("[item.value for item in item.records]", {"external.records"}),
+            ("[Item.value for Item in Item.records]", {"external.Item"}),
+            ("[item.value for item in () if Checker(item)]", {"checks.Checker"}),
+            ("[(item.value, other.value) for item in () for other in Other.records]", {"external.Other"}),
+            ("[[item.value for item in item.children] for item in ()]", set()),
+            ("([item.value for item in ()], item.records)", {"external.records"}),
+            ("[Item.value for Item in ()] + [Item.value for other in ()]", {"external.Item"}),
+            ("[Unknown.value for item in ()]", {"Unknown.value"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                tree = ast.parse(
+                    "import external as item\n"
+                    "from external import Item, Other\n"
+                    "from checks import Checker\n"
+                    f"class Service(options={expression}):\n    pass\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset(expected), dependencies)
+
     def test_class_keywords_preserve_dependency_exclusions(self) -> None:
         tree = ast.parse(
             "from typing import TypedDict as Record\n"
