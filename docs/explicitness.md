@@ -1,54 +1,58 @@
 # Explicitness classifier contract
 
-`messpy` is a syntax-only analyzer. It parses Python source and does not import modules, run code, inspect runtime objects, or trust type annotations as proof of behavior.
+`messpy` parses Python source without importing modules, running code, inspecting runtime objects, or treating annotations as proof of behavior.
 
-The `explicitness` ruleset classifies callable bodies into three observable outcomes:
+The `explicitness` ruleset reports three kinds of findings:
 
-- `ImplicitInput` means the callable reads data that does not arrive through its parameters.
-- `ImplicitOutput` means the callable sends data out through ambient I/O, outer storage, or caller-owned reachable storage rather than through `return`.
-- `UnknownEffect` means the callable performs an operation whose effects are not established by the analyzer.
+- `ImplicitInput`: data read from ambient state, mutable module storage, or mutable captured storage.
+- `ImplicitOutput`: data sent through ambient I/O or writes to outer or caller-owned reachable storage.
+- `UnknownEffect`: an operation whose behavior the analyzer cannot establish.
 
-A clean report means the callable is a calculation only inside the supported subset below. It does not prove purity for arbitrary runtime values.
+Reading a parameter, including its reachable contents, is explicit input. Writing through a parameter is an output. A calculation has no findings inside the supported subset below. A clean report does not prove purity for arbitrary runtime objects.
 
-## Supported calculation subset
+## Supported calculations
 
-The analyzer treats these operations as established when their bindings are not shadowed:
+When bindings are established and not shadowed, the analyzer supports:
 
-- Exact built-in scalar arithmetic and comparisons over ordinary built-in values.
-- Plain built-in containers created in the callable, including list, dict, set, and tuple literals.
-- Modeled pure built-ins such as `len`, `sum`, `min`, `max`, `sorted`, and simple numeric constructors.
-- Resolved same-file functions, methods on `self` or `cls`, lambdas, and returned callables when the call target is established by lexical scope resolution.
-- Plain empty classes used as local records.
-- Fixed captures from an enclosing function when the captured binding is not later mutated. This includes scalar captures and fresh built-in containers whose contents are read later under the documented built-in numeric-value assumptions.
+- Scalar arithmetic and comparisons under ordinary built-in numeric and scalar value assumptions.
+- Plain built-in containers created locally, including list, dict, set, tuple, and comprehension results.
+- Modeled built-ins such as `len`, `sum`, `min`, `max`, `sorted`, and scalar constructors.
+- Resolved same-file functions, methods on `self` or `cls`, lambdas, and returned callable aliases.
+- Plain empty record classes and simple frozen dataclasses with literal field declarations, no inheritance, and no custom initialization hooks.
+- Fixed scalar captures and proven private container captures whose binding and contents cannot change between reads.
 
-Dynamic user objects that override arithmetic, comparison, iteration, container construction, or descriptor behavior are outside this supported subset unless their effects are resolved as same-file callables. Type annotations alone do not certify runtime values.
+Immutable constants require a fixed binding and established immutable contents. Uppercase spelling or a `Final` annotation does not make a mutable container immutable. Tuple, frozenset, and read-only mapping contents are checked recursively.
 
-## Effect summaries
+Captured parameters used as scalars can be calculations under the built-in value assumption. Reading a captured shared container, including through a resolved helper, is implicit input. A private container capture remains a calculation only when its uses establish that no other operation can mutate or escape it.
 
-Each callable has a finite summary of semantic facts:
+## Ownership and calls
 
-- Parameter-relative reads and writes.
-- Ambient reads and writes.
-- Unresolved operations with a stable reason.
-- Returned callable aliases, returned storage provenance, and local callable aliases.
-- A completeness flag that is false when any unknown effect remains.
+Storage facts distinguish the outer allocation from reachable contents. A shallow copy such as `list(values)` has a private outer container but can still contain caller-owned elements. Mutating the copy itself is local; mutating an element reached through it is an `ImplicitOutput`.
 
-Calls are propagated to a fixed point over the finite set of callable identities and effect facts. Recursive cycles terminate because facts are joined monotonically and provenance strings are stable.
+Aliases and rebinding are evaluated at the operation site. Branches join possible origins, and loops compute a fixed point. Escaping or opaque storage retains uncertainty.
 
-When a call is resolved, parameter-relative effects are substituted with the actual argument storage at that call site. Mutating caller-owned argument storage remains an action. Mutating fresh private outer storage can stay local to the caller. Ambient and unknown effects are never erased by private-argument substitution.
+Each callable has a finite effect summary. Resolved calls substitute parameter-relative effects with actual argument storage. A helper that mutates a parameter remains an action; calling it with fresh private storage can be a calculation. Ambient and unknown effects survive substitution. Recursive call cycles join facts to a fixed point.
 
-## Storage ownership
+Creating or returning a function or lambda does not execute its body. Its findings belong to that callable. Invoking an established callback transfers its effects. Injected or unresolved callbacks report `UnknownEffect` without inventing input or output evidence. `sorted`, `min`, `max`, and established list `sort` calls execute their `key` callback.
 
-Storage facts distinguish the outer allocation from reachable contents.
+## Deferred execution
 
-A fresh shallow copy, such as `list(values)`, gives the caller a private outer container. The elements can still be caller-owned. Mutating the copied container itself is local. Mutating an element reached through the copy is an `ImplicitOutput`.
+Python coroutine and generator bodies are cold. Calling a known async function or generator function creates a deferred value; it does not transfer body effects to the creating caller. The body still has its own findings.
 
-Aliases and rebinding are evaluated at the operation site. Branches and loops join possible origins. If ownership escapes or cannot be established, the analyzer keeps uncertainty rather than certifying a calculation.
+`await`, supported asyncio schedulers, iteration, `yield from`, and modeled consuming built-ins transfer established deferred effects to the forcing operation. Named generator bodies keep their function owner. Generator expressions use `<genexpr>`; constructing one evaluates its outermost iterable in the factory and leaves its body deferred. A resolved factory returning a generator expression can preserve that deferred body through consumption.
 
-## Callback execution
+Deferred tracking supports direct creation and fixed local aliases. An unresolved awaitable reports `UnknownEffect`. Forcing a possibly deferred local binding after uncertain rebinding also reports `UnknownEffect`, unless operation-site storage establishes an ordinary built-in value. Arbitrary iterator pipelines, external scheduler behavior, and dynamic deferred-value factories are outside the precise lifecycle model.
 
-Creating or returning a callback does not execute its body in the factory summary. The callback body is analyzed under its own callable owner.
+## Module initialization and pruning
 
-Invoking an established callback carries its effects to the caller. Invoking an injected callback or other unresolved callable reports `UnknownEffect`. Unknown callback calls do not fabricate `ImplicitInput` or `ImplicitOutput` findings when there is no evidence for those effects.
+Load-time statements, function defaults, decorators, class bases, and class body expressions belong to `<module>` or their enclosing executing callable. Nested function bodies remain separate. Known decorator effects execute at definition time; invoking a callable transformed by an unestablished decorator remains unknown.
 
-Generators, async scheduling, lazy iteration, decorators with dynamic behavior, descriptor dispatch, monkey-patching, imports outside the analyzed file, and dynamic attribute lookup are unsupported unless the operation is explicitly modeled. Unsupported behavior remains unknown.
+Only literal branch conditions are pruned. For example, `if False` is dead, while `if not True` is retained. The same rule applies when checking capture stability and storage mutation.
+
+## Protocols and limits
+
+Declared same-file descriptors, operator protocols, iteration protocols, and virtual overrides provide evidence of dynamic dispatch. Operations on opaque receivers then report `UnknownEffect`; established ordinary built-in storage stays precise. Custom context managers also retain uncertainty.
+
+Imports outside the analyzed file, arbitrary runtime monkey-patching, dynamic attributes, unmodeled decorators, and user-defined protocols without local evidence are outside the supported calculation assumptions. A method name or type annotation alone never establishes a pure call. Receiver state remains subject to the selected policy: `strictexplicitness` includes instance inputs and outputs; excluded receiver effects can remain unknown in `explicitness`.
+
+Findings identify the owning callable and the operation line. Transferred findings use the call or forcing line. The report deduplicates repeated semantic effects per owner; it is an effect summary, rather than an execution count.

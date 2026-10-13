@@ -668,7 +668,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         status, report, errors = _analyze(
             "def outer(seed):\n"
             "    type Result = dict[str, str]\n"
-            "    extra = seed\n"
+            "    extra = seed * 2\n"
             "    def create() -> Result:\n"
             "        return Result(extra)\n"
             "    return create\n",

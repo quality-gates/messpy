@@ -21,19 +21,9 @@ _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 def constant_truth(test: ast.expr) -> bool | None:
     """The truth Python gives a literal test, or None when the test needs a runtime value."""
+    # Only a literal constant is pruned. The analysis does not evaluate an expression such as "not False".
     if isinstance(test, ast.Constant):
         return bool(test.value)
-    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-        truth = constant_truth(test.operand)
-        return None if truth is None else not truth
-    if isinstance(test, ast.BoolOp):
-        # A falsy value ends an and chain. A truthy value ends an or chain.
-        decisive = isinstance(test.op, ast.Or)
-        for value in test.values:
-            truth = constant_truth(value)
-            if truth is None or truth is decisive:
-                return truth
-        return not decisive
     return None
 
 
@@ -51,6 +41,10 @@ def evaluated_children(node: ast.AST) -> list[ast.AST]:
         return _comprehension_children(node)
     if isinstance(node, ast.comprehension):
         return [node.target, node.iter, *_until_false(node.ifs)]
+    return _ordinary_children(node)
+
+
+def _ordinary_children(node: ast.AST) -> list[ast.AST]:
     children: list[ast.AST] = []
     for _field, value in ast.iter_fields(node):
         if isinstance(value, ast.AST):

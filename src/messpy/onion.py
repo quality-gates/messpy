@@ -104,7 +104,8 @@ def _action_phrase(message: str) -> str:
 def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> list:
     from .analyzer import _ScopeChain, _ambient_read, _ambient_write, _name_scopes
 
-    chain = _ScopeChain((tree,), _name_scopes(tree), names=names)
+    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    chain = _ScopeChain((tree,), _name_scopes(tree), parents=parents, names=names)
     reads: dict[str, ast.AST] = {}
     writes: dict[str, ast.AST] = {}
     for node in _import_time_nodes(tree):
