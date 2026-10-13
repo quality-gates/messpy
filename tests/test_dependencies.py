@@ -37,6 +37,351 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_ordinary_class_masks_keep_while_test_reentry(self) -> None:
+        cases = [
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        break\n    field=LocalFactory', set()),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n        continue\n    field=LocalFactory', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and (Bound:=Local()) and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    while (Bound:=Bound.Factory):\n        field=Bound\n        break', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    while False and Bound.Factory:\n        from external import Bound\n    field=Bound.Factory', set()),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                module_names = {statement.name for statement in tree.body if isinstance(statement, ast.ClassDef)}
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, module_names))
+
+    def test_ordinary_class_masks_keep_target_evaluation_order(self) -> None:
+        cases = [
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with (Bound:=Context()) as holder[Bound.Factory]:\n        field=Bound.Factory', set()),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(Bound:=Local()) as holder[Bound.Factory]:\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=(Bound:=Local())\n    field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),):\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]: object=(Bound:=Local())\n    field=Bound.Factory', set()),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory]:\n        field=Bound.Factory', set()),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory], Context(Bound.Factory):\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in (None,):\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[(Bound:=Local()).Factory]=holder[Bound.Factory]=None\n    field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=0\n    holder[Bound.Factory]+=(Bound:=0)\n    field=Local.Factory', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),None):\n        field=Local.Factory\n        from external import Bound', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in ():\n        pass\n    field=Bound.Factory', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder={LocalFactory:0}\n    holder[(Bound:=Local()).Factory]+=len([Bound.Factory])\n    field=Bound.Factory', set()),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(result=(Local(),None)) as (Bound, holder[Bound.Factory]):\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for Bound, holder[Bound.Factory] in ((Local(),None),):\n        field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    Bound=holder[Bound.Factory]=Local()\n    field=Bound.Factory', set()),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Bound.Factory)] in (None,):\n        field=Bound', {"Bound.Factory"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                module_names = {statement.name for statement in tree.body if isinstance(statement, ast.ClassDef)}
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, module_names))
+                annotation = next((statement for statement in node.body if isinstance(statement, ast.AnnAssign)), None)
+                if annotation is not None:
+                    self.assertFalse(names.imported(annotation.target.slice, scope=node))
+
+    def test_ordinary_class_masks_keep_with_targets_and_failed_assertions(self) -> None:
+        cases = [
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        field=Bound.Factory\n', set()),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        pass\n    field=Bound.Factory\n', set()),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(result=(Local(),None)) as (Bound, spare):\n        field=Bound.Factory\n', set()),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as spare, FailedEntry() as Bound:\n        pass\n    field=Bound.Factory\n', {"Bound.Factory"}),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as (spare, Bound):\n        pass\n    field=Bound.Factory\n', {"Bound.Factory"}),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, FailedEntry() as spare:\n        pass\n    field=Bound.Factory\n', set()),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(Bound.Factory) as Bound:\n        field=Bound.Factory\n', {"Bound.Factory"}),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, Context(Bound.Factory) as spare:\n        field=Bound.Factory\n', set()),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False\n        (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', {"Bound.Factory"}),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        (Bound:=Local())\n        assert False\n    except AssertionError:\n        field=Bound.Factory\n', set()),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', set()),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Bound.Factory)\n    except AssertionError:\n        field=Bound\n', {"Bound.Factory"}),
+            ('class Context:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context():\n        (Bound:=Local())\n    field=Bound.Factory\n', set()),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                module_names = {statement.name for statement in tree.body if isinstance(statement, ast.ClassDef)}
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, module_names))
+
+    def test_ordinary_class_masks_allow_suppressed_raises(self) -> None:
+        cases = [
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    try:\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n", {"Bound.Factory"}),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppressor():\n            from external import Bound\n            raise ValueError()", {"Bound.Factory"}),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        try:\n            with Suppressor():\n                from external import Bound\n                raise ValueError()\n        finally:\n            (Bound:=Local())", set()),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "LocalFactory", "Suppress", "Suppressor", "Service"}))
+
+    def test_ordinary_class_masks_keep_abrupt_completion_paths(self) -> None:
+        cases = [
+            ("class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise ValueError()\n        (Bound:=Local())\n    except ValueError:\n        field=Bound.Factory", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n        (Bound:=Local())\n    field=Bound.Factory", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        break", set()),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        if spare==0:\n            from external import Bound\n            break\n        (Bound:=Local())\n    field=Bound.Factory", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        continue\n        (Bound:=Local())", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        if spare==0:\n            continue\n        (Bound:=Local())", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            break", set()),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            continue", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", {"Bound.Factory"}),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", set()),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound:=LocalError):\n        pass\n    finally:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if (Bound:=Local()):\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    spare=0\n    while (Bound:=Local()) and spare<1:\n        spare+=1\n    else:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    try:\n        (Bound:=Local())\n    except ValueError:\n        pass\n    field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    while False:\n        from external import Bound\n    else:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    for spare in ():\n        from external import Bound\n    else:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if flag and (Bound:=Local()):\n        field=Bound.Factory\n    else:\n        field=LocalFactory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    field=LocalFactory\n    while flag and (Bound:=Local()):\n        field=Bound.Factory\n        flag=False", set()),
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    field=Bound.Factory", set()),
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    else:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n    field=Bound.Factory", set()),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n        continue\n    field=Bound.Factory", set()),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "LocalFactory", "FalsyLocal", "LocalError", "Service"}))
+
+    def test_ordinary_class_masks_keep_ordered_local_renewals(self) -> None:
+        cases = [
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    finally:\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n    field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        (Bound := Local())\n", set()),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while (Bound := Local()) and spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Bound.Factory)\n    finally:\n        field=Bound\n", {"Bound.Factory"}),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound := LocalError):\n        field=Bound.Factory", set()),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "LocalFactory", "LocalError", "Service"}))
+
+    def test_ordinary_class_masks_follow_exception_and_loop_edges(self) -> None:
+        cases = [
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ValueError()\n    except ValueError as Bound:\n        pass\n    finally:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ExceptionGroup(\"errors\",[ValueError(),TypeError()])\n    except* ValueError as Bound:\n        pass\n    except* TypeError:\n        field=Bound.Factory\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    for spare in ():\n        from external import Bound\n    field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    for spare in []:\n        del Bound\n    field=Bound.Factory\n", set()),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except LocalError as Bound:\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise TypeError()\n    except ValueError as Bound:\n        pass\n    except TypeError:\n        field=Bound.Factory\n", set()),
+            ("class Service:\n    (Bound := Local())\n    for Bound in (Local(),Local()):\n        field=Bound.Factory\n        from external import Bound\n", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        before=Bound.Factory\n        from external import Bound\n    except ValueError:\n        pass", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError as Bound:\n        pass\n    else:\n        field=Bound.Factory", set()),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError:\n        pass\n    else:\n        from external import Bound\n    finally:\n        field=Bound.Factory", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,):\n        before=Bound.Factory\n        from external import Bound", set()),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        if spare==0:\n            del Bound", {"Bound.Factory"}),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1", {"Bound.Factory"}),
+            ("class Outer:\n    global Bound\n    if True:\n        (Bound:=Local())\n        class Service(option=Bound.Factory): pass", {"external.Bound"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "LocalFactory", "LocalError", "Outer", "Service"}))
+
+    def test_ordinary_class_masks_preserve_before_import_and_inactive_paths(self) -> None:
+        cases = [
+            ("before=Bound.Factory\n    from external import Bound", set()),
+            ("if flag:\n        before=Bound.Factory\n        from external import Bound", set()),
+            ("if flag:\n        before=Bound.Factory\n        from external import Bound\n    else:\n        before=Bound.Factory", set()),
+            ("if False:\n        from external import Bound\n    else:\n        field=Bound.Factory", set()),
+            ("while False:\n        from external import Bound\n    field=Bound.Factory", set()),
+            ("if flag:\n        while False:\n            from external import Bound\n    field=Bound.Factory", set()),
+            ("from external import Other\n    field=Bound.Factory", set()),
+            ("del spare\n    field=Bound.Factory", set()),
+            ("field=Bound.Factory", set()),
+            ("if flag:\n        from external import Bound\n        field=Bound.Factory", {"Bound.Factory"}),
+            ("if flag:\n        from external import Bound\n    field=Bound.Factory", {"Bound.Factory"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Bound\nclass Local:\n    Factory=type\nclass Service:\n    spare=0\n    (Bound := Local())\n    " + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "Service"}))
+
+    def test_class_namespace_imports_and_deletes_end_ordinary_expression_masks(self) -> None:
+        for revoke in ("from external import Bound", "del Bound"):
+            cases = [
+                ("class Service:\n    (Bound := Local())\n    " + revoke + "\n    field=Bound.Factory", {"Bound.Factory"}),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    class Service(Bound.Factory):\n        pass", {"Bound.Factory"}),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    @Bound.decorate\n    class Service:\n        pass", {"Bound.decorate"}),
+            ]
+            for body, expected in cases:
+                with self.subTest(revoke=revoke, body=body):
+                    source = "from external import Bound\nclass Local:\n    Factory=type\n" + body
+                    compile(source, "service.py", "exec", dont_inherit=True)
+                    tree = ast.parse(source)
+                    node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    names = Names.build(tree, module=None, path=Path("service.py"))
+                    self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "Service", "Outer"}))
+
+    def test_eager_keyword_import_query_preserves_unimported_self_roots(self) -> None:
+        cases = [
+            ("class Service(option=Service if False else None):\n    pass", set()),
+            ("class Service(option=lambda value=(Service if False else None): value):\n    pass", set()),
+            ("class Service(option=[Service for spare in ()]):\n    pass", set()),
+            ("class Service(option=lambda: Service):\n    pass", set()),
+            ("from external import Factory as Service\nclass Service(option=Service if False else None):\n    pass", {"external.Factory"}),
+            ("if flag:\n    from external import Factory as Service\nclass Service(option=Service if False else None):\n    pass", {"external.Factory"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Service"}))
+
+    def test_eager_keyword_import_order_and_possible_origins(self) -> None:
+        cases = [
+            ("from external import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", {"external.Factory"}),
+            ("from external import Factory as factory\nfactory=object()\nclass Service(option=factory):\n    pass", set()),
+            ("from external import Factory as factory\ndel factory\nfrom genuine import Factory as factory\nclass Service(option=factory):\n    pass", {"genuine.Factory"}),
+            ("import external as factory\nclass Service(option=factory.Factory):\n    pass\ndel factory", {"external.Factory"}),
+            ("if flag:\n    from external import Factory as factory\nelse:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", {"external.Factory", "genuine.Factory"}),
+            ("if flag:\n    from external import Factory as factory\nelse:\n    from external import Factory as factory\nfrom external import Factory as alias\nclass Service(first=factory, second=alias):\n    pass\nfactory=object()", {"external.Factory"}),
+            ("from external import Factory as factory\nif False:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", {"external.Factory"}),
+            ("from external import Factory as factory\nif flag:\n    factory=object()\nclass Service(option=factory):\n    pass\nfactory=object()", {"external.Factory"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Service"}))
+
+    def test_eager_keyword_import_query_declines_unmodeled_loops(self) -> None:
+        cases = [
+            "while False:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass",
+            "while flag:\n    from genuine import Factory as factory\n    flag=False\nclass Service(option=factory):\n    pass",
+            "while flag:\n    class Service(option=factory):\n        pass\n    flag=False",
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                source = "from external import Factory as factory\n" + body
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertIsNone(names.keyword_binding(node.keywords[0].value))
+                self.assertEqual(1, len(measure_class_dependencies(_class_info(node), names, {"Service"})))
+
+    def test_eager_keyword_imports_preserve_nested_and_relative_context(self) -> None:
+        cases = [
+            ("def build():\n    from external import Factory as factory\n    class Service(option=factory):\n        pass\n    factory=object()", {"external.Factory"}),
+            ("class Outer:\n    from external import Factory as factory\n    class Service(option=factory):\n        pass\n    factory=object()", {"external.Factory"}),
+            ("from external import Factory as factory\nclass Outer:\n    factory=object()\n    class Service(option=[factory for spare in (1,)]):\n        pass\nfactory=object()", {"external.Factory"}),
+            ("from .external import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", {"package.external.Factory"}),
+            ("from . import external as factory\nclass Service(option=factory.Factory):\n    pass\nfactory=object()", {"package.external"}),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=("package", "service"), path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Service", "Outer"}))
+
+    def test_eager_keyword_import_query_keeps_deferred_reads_on_existing_path(self) -> None:
+        cases = [
+            ("lambda value=factory: value", {"external.Factory"}),
+            ("lambda: factory", set()),
+            ("[factory for spare in (1,)]", {"external.Factory"}),
+            ("(spare for spare in (factory,))", {"external.Factory"}),
+            ("(factory for spare in (1,))", set()),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                source = "from external import Factory as factory\nclass Service(option=" + expression + "):\n    pass\nfactory=object()"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(tree.body[1]), names, {"Service"}))
+
+    def test_keyword_conditional_rhs_stores_are_not_definite_bindings(self) -> None:
+        statements = [
+            "spare=flag and (Bound := object())",
+            "spare=flag or (Bound := object())",
+            "spare: object=flag and (Bound := object())",
+            "spare=0\n    spare += flag and (Bound := object())",
+            "spare=(Bound := object()) if flag else None",
+            "spare=(holder := (flag and (Bound := object())))",
+        ]
+        for statement in statements:
+            for root in ("Bound", "Service"):
+                with self.subTest(statement=statement, root=root):
+                    source = "from external import Factory as " + root + "\nclass Outer:\n    " + statement.replace("Bound", root) + "\n    class Service(option=" + root + ".value):\n        pass\n"
+                    compile(source, "service.py", "exec", dont_inherit=True)
+                    tree = ast.parse(source)
+                    node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    names = Names.build(tree, module=None, path=Path("service.py"))
+                    self.assertEqual(frozenset({"external.Factory"}), measure_class_dependencies(_class_info(node), names, {"Service", "Outer"}))
+        for statement in ("Bound=flag and object()", "spare=(Bound := object())", "spare: object=(Bound := object())", "spare=0\n    spare += (Bound := 1)"):
+            with self.subTest(statement=statement):
+                tree = ast.parse("from external import Factory as Bound\nclass Outer:\n    " + statement + "\n    class Service(option=Bound.value):\n        pass\n")
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(), measure_class_dependencies(_class_info(node), names, {"Service", "Outer"}))
+
+    def test_class_keyword_import_precedes_a_later_alias_store(self) -> None:
+        source = (
+            "class Config:\n"
+            "    def __init_subclass__(cls, **options):\n"
+            "        cls.options = options\n"
+            "class Local:\n"
+            "    value = 1\n"
+            "from external import Factory as factory\n"
+            "class Service(Config, option=factory):\n"
+            "    pass\n"
+            "factory=object()\n"
+        )
+        compile(source, "service.py", "exec", dont_inherit=True)
+        tree = ast.parse(source)
+        node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "Service")
+        names = Names.build(tree, module=None, path=Path("service.py"))
+        self.assertEqual(frozenset({"external.Factory"}), measure_class_dependencies(_class_info(node), names, {"Config", "Local", "Service"}))
+
     def test_class_keyword_shared_effects_preserve_generic_name_queries(self) -> None:
         source = "from external import Bound\nclass Local:\n    value=1\nclass Service(first=(flag and (Bound := None)) or (Bound := Local), second=Bound.value):\n    later=Bound.value\n"
         tree = ast.parse(source)
@@ -80,20 +425,20 @@ class ClassDependencyTests(unittest.TestCase):
             ("item=Local()\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
             ("item=Local()\n    if flag:\n        del item\n        item=Local()\n    else:\n        pass", set()),
             ("item=Local()\n    if flag:\n        if other:\n            from genuine import Item as item\n            item=Local()\n    else:\n        pass", set()),
-            ("item=Local()\n    if flag:\n        from genuine import Item as item\n    else:\n        pass", {"item.value"}),
-            ("item=Local()\n    if flag:\n        del item\n    else:\n        pass", {"item.value"}),
+            ("item=Local()\n    if flag:\n        from genuine import Item as item\n    else:\n        pass", {"genuine.Item"}),
+            ("item=Local()\n    if flag:\n        del item\n    else:\n        pass", {"external.Item"}),
             ("(item := Local())\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
             ("item=Local()\n    flag and (item := Local())\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
             ("if (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
             ("item=Local()\n    if flag and (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
-            ("if flag and (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", {"item.value"}),
+            ("if flag and (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", {"external.Item"}),
             ("if flag:\n        if other:\n            item=Local()\n        else:\n            item=Local()\n    else:\n        item=Local()", set()),
             ("if flag:\n        item=Local()\n    elif other:\n        item=Local()\n    else:\n        item=Local()", set()),
             ("if flag:\n        with manager as item:\n            pass\n    else:\n        item=Local()", set()),
             ("if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        item=Local()", set()),
             ("if flag:\n        del item\n        item=Local()\n    else:\n        item=Local()", set()),
-            ("if flag:\n        item=Local()\n    else:\n        pass", {"item.value"}),
-            ("if flag:\n        item=Local()\n        del item\n    else:\n        item=Local()", {"item.value"}),
+            ("if flag:\n        item=Local()\n    else:\n        pass", {"external.Item"}),
+            ("if flag:\n        item=Local()\n        del item\n    else:\n        item=Local()", {"external.Item"}),
             ("if flag:\n        def configure():\n            item=Local()\n    else:\n        def configure():\n            item=Local()", {"external.Item"}),
         ]
         for body, expected in cases:
@@ -214,7 +559,7 @@ class ClassDependencyTests(unittest.TestCase):
             ("item=object()\n    with manager as spare:\n        pass\n    class Service(option=item.value):\n        pass", set()),
             ("if flag:\n        class Service(option=item.value):\n            pass", {"external.Item"}),
             ("for spare in rows:\n        class Service(option=item.value):\n            pass", {"external.Item"}),
-            ("item=object()\n    if flag:\n        from external import Item as item\n    class Service(option=item.value):\n        pass", {"item.value"}),
+            ("item=object()\n    if flag:\n        from external import Item as item\n    class Service(option=item.value):\n        pass", {"external.Item"}),
             ("for item in rows:\n        from genuine import Item as item\n        class Service(option=item.value):\n            pass", {"item.value"}),
             ("for item in rows:\n        del item\n        class Service(option=item.value):\n            pass", {"item.value"}),
             ("while flag:\n        item=object()\n        class Service(option=item.value):\n            pass", set()),
@@ -285,9 +630,9 @@ class ClassDependencyTests(unittest.TestCase):
             ("external = object()\n    @external.decorate\n    class Service:\n        pass", {"external.decorate"}),
             ("class Service(option=external.Factory):\n        pass\n    external = object()", {"external.Factory"}),
             ("external = object()\n    class Service(option=external.Factory):\n        pass", set()),
-            ("external = object()\n    import genuine as external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    import genuine as external\n    class Service(option=external.Factory):\n        pass", {"genuine.Factory"}),
             ("if flag:\n        external = object()\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
-            ("external = object()\n    if flag:\n        import genuine as external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
+            ("external = object()\n    if flag:\n        import genuine as external\n    class Service(option=external.Factory):\n        pass", {"genuine.Factory"}),
             ("external = object()\n    del external\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
             ("external: object\n    class Service(option=external.Factory):\n        pass", {"external.Factory"}),
             ("external = object()\n    spare = object()\n    del spare\n    class Service(option=external.Factory):\n        pass", set()),

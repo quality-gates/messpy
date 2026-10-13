@@ -47,9 +47,34 @@ class _BindingEffects:
 
 
 @dataclass(frozen=True)
+class _ClassMaskFlow:
+    """Masks for each statement exit; None means that no path has that exit."""
+
+    normal: frozenset[str] | None
+    breaks: frozenset[str] | None = None
+    continues: frozenset[str] | None = None
+    raises: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
+class _MaskProjection:
+    masks: dict[int, frozenset[str]]
+    frames: dict[int, frozenset[str]]
+
+
+@dataclass(frozen=True)
 class _ClassBinding:
     local: bool
     imported: _ImportBinding | None = None
+
+
+@dataclass(frozen=True)
+class KeywordBinding:
+    """Possible imports and local bindings at an eager class keyword read."""
+
+    local: bool
+    imports: frozenset[tuple[str, bool]]
+    unresolved: bool
 
 
 @dataclass(frozen=True)
@@ -79,7 +104,9 @@ class Names:
         annotations = _annotation_scopes(tree)
         records.update({id(scope): _annotation_record(scope) for scope in annotations.values()})
         effects = _expression_bindings(tree)
-        masks = _expression_masks(tree, effects)
+        # Limit renewal to roots covered by the existing mask rules.
+        ordinary_roots = _mask_projection(tree, effects).frames
+        masks = _expression_masks(tree, effects, ordinary_roots=ordinary_roots)
         effects = _expression_bindings(tree, reachable=True)
         keyword_masks = _expression_masks(tree, effects, conditional_paths=True)
         return cls(tree, package, parents, records, masks, annotations, effects, keyword_masks)
@@ -109,6 +136,161 @@ class Names:
     def is_class_keyword_target(self, node: ast.expr) -> bool:
         """Whether a keyword reads the name assigned by its class statement."""
         return _is_class_keyword_target(self, node)
+
+    def keyword_binding(self, node: ast.expr) -> KeywordBinding | None:
+        """Resolve an eager keyword read without changing deferred name queries."""
+        return _keyword_binding(self, node)
+
+
+def _keyword_binding(names: Names, node: ast.expr) -> KeywordBinding | None:
+    if not _eager_class_keyword(names, node):
+        return None
+    if not _keyword_prefix_supported(names, _root_name(node), node):
+        return None
+    if _query_root_masked(names, node):
+        return KeywordBinding(True, frozenset(), False)
+    bindings = _keyword_bindings(names, _root_name(node), node, [*_local_scopes(names, node, None), names._tree])
+    return _keyword_result(bindings) if bindings is not None else None
+
+
+def _keyword_result(bindings: frozenset[_ClassBinding | None]) -> KeywordBinding:
+    imports = frozenset((binding.imported.canonical, binding.imported.symbol) for binding in bindings if binding is not None and binding.imported is not None)
+    local = all(binding is not None and binding.local for binding in bindings)
+    unresolved = any(binding is None or (not binding.local and binding.imported is None) for binding in bindings)
+    return KeywordBinding(local, imports, unresolved)
+
+
+def _keyword_prefix_supported(names: Names, root: str, node: ast.AST) -> bool:
+    for scope in _local_scopes(names, node, None):
+        record = names._records[id(scope)]
+        if root in record.global_names or root in record.nonlocal_names:
+            return False
+    for parent, _, siblings, child in _binding_statement_path(names, node, names._tree):
+        if isinstance(parent, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)):
+            return False
+        if not _keyword_statements_supported(root, siblings, child):
+            return False
+    return True
+
+
+def _keyword_statements_supported(root: str, siblings: list[ast.AST], child: ast.AST) -> bool:
+    for statement in siblings:
+        if statement is child:
+            break
+        if _keyword_unknown_block(root, statement):
+            return False
+    return True
+
+
+def _keyword_unknown_block(root: str, node: ast.AST) -> bool:
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try, ast.TryStar, ast.Match)):
+        return root in _assigned_in(node) or _class_root_externalized(root, node)
+    if isinstance(node, (ast.ClassDef, *_FUNCTION)):
+        return False
+    return any(_keyword_unknown_block(root, child) for child in ast.iter_child_nodes(node))
+
+
+def _eager_class_keyword(names: Names, node: ast.AST) -> bool:
+    owner = _class_keyword_owner(names, node)
+    if owner is None:
+        return False
+    current = node
+    while current is not owner:
+        parent = names._parents[id(current)]
+        if isinstance(parent, ast.Lambda) and _in_body(node, parent, names._parents):
+            return False
+        if isinstance(parent, ast.GeneratorExp) and _in_comprehension_body(node, parent, names._parents):
+            return False
+        current = parent
+    return True
+
+
+def _keyword_bindings(names: Names, root: str, node: ast.AST, scopes: list[_Scope]) -> frozenset[_ClassBinding | None] | None:
+    scope, *outer = scopes
+    record = names._records[id(scope)]
+    if isinstance(scope, _AnnotationScope):
+        return frozenset({_ClassBinding(True)}) if root in record.bound else _keyword_bindings(names, root, node, outer)
+    bindings = _keyword_bindings_before(names, root, node, scope)
+    if bindings is None:
+        return None
+    if isinstance(scope, ast.ClassDef):
+        if root in _lexical_assigned(scope, record) or root in record.imports:
+            outer = [names._tree]
+        return _keyword_class_fallback(names, root, node, outer, bindings)
+    return _keyword_outer_bindings(names, root, node, scopes, bindings)
+
+
+def _keyword_outer_bindings(names: Names, root: str, node: ast.AST, scopes: list[_Scope], bindings: frozenset[_ClassBinding | None]) -> frozenset[_ClassBinding | None] | None:
+    scope, *outer = scopes
+    record = names._records[id(scope)]
+    if None not in bindings:
+        return bindings
+    if isinstance(scope, _FUNCTION) and root in _lexical_assigned(scope, record):
+        return (bindings - {None}) | {_ClassBinding(True)}
+    fallback = _keyword_bindings(names, root, node, outer) if outer else frozenset({None})
+    return (bindings - {None}) | fallback if fallback is not None else None
+
+
+def _keyword_class_fallback(names: Names, root: str, node: ast.AST, outer: list[_Scope], bindings: frozenset[_ClassBinding | None]) -> frozenset[_ClassBinding | None] | None:
+    retained = bindings - {None}
+    if None not in bindings:
+        return retained
+    fallback = _keyword_bindings(names, root, node, outer)
+    return retained | fallback if fallback is not None else None
+
+
+def _keyword_bindings_before(names: Names, root: str, node: ast.AST, scope: ast.AST) -> frozenset[_ClassBinding | None] | None:
+    initial = _ClassBinding(True) if isinstance(scope, _FUNCTION) and root in _parameter_names(scope) else None
+    bindings = frozenset({initial})
+    for parent, field, siblings, child in _binding_statement_path(names, node, scope):
+        if field == "body" and parent is not scope:
+            if isinstance(parent, _FUNCTION):
+                return None
+            if isinstance(parent, ast.ClassDef):
+                return bindings
+        bindings = frozenset(_active_class_binding(names, root, parent, field, binding) for binding in bindings)
+        bindings = _keyword_prefix_bindings(names, root, siblings, child, bindings)
+    return bindings
+
+
+def _keyword_prefix_bindings(names: Names, root: str, siblings: list[ast.AST], child: ast.AST | None, bindings: frozenset[_ClassBinding | None]) -> frozenset[_ClassBinding | None]:
+    for statement in siblings:
+        if statement is child:
+            break
+        if isinstance(statement, ast.stmt):
+            bindings = frozenset(result for binding in bindings for result in _keyword_statement_bindings(names, root, statement, binding))
+        elif isinstance(statement, ast.ExceptHandler):
+            bindings = frozenset(_handler_prefix_binding(names, root, statement, binding) for binding in bindings)
+    return bindings
+
+
+def _keyword_statement_bindings(names: Names, root: str, statement: ast.stmt, before: _ClassBinding | None) -> frozenset[_ClassBinding | None]:
+    if isinstance(statement, ast.Delete) and _deleted_in(root, statement):
+        return frozenset({None})
+    if isinstance(statement, ast.If):
+        truth = _literal_truth(statement.test)
+        fields = ("body", "orelse") if truth is None else ("body" if truth else "orelse",)
+        found: set[_ClassBinding | None] = set()
+        for field in fields:
+            entry = _active_class_binding(names, root, statement, field, before)
+            found.update(_keyword_prefix_bindings(names, root, getattr(statement, field), None, frozenset({entry})))
+        return frozenset(found)
+    assigned = _keyword_direct_binding(names, root, statement, before)
+    return frozenset({before if assigned is None else assigned})
+
+
+def _keyword_direct_binding(names: Names, root: str, statement: ast.stmt, before: _ClassBinding | None) -> _ClassBinding | None:
+    if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        return _ClassBinding(True) if _keyword_evaluated_local(names, root, statement) else None
+    return _statement_binding(names, root, statement, before)
+
+
+def _keyword_evaluated_local(names: Names, root: str, statement: ast.Assign | ast.AnnAssign | ast.AugAssign) -> bool:
+    if root in names._effects.definite[id(statement)]:
+        return True
+    if isinstance(statement, ast.Assign):
+        return any(root in _stored_names(target) for target in statement.targets)
+    return statement.value is not None and root in _stored_names(statement.target)
 
 
 def _is_class_keyword_local(names: Names, node: ast.expr) -> bool:
@@ -827,26 +1009,37 @@ def _pattern_names(node: ast.AST) -> set[str]:
 
 
 def _expression_masks(
-    tree: ast.Module, bindings: _BindingEffects, *, conditional_paths: bool = False
+    tree: ast.Module, bindings: _BindingEffects, *, conditional_paths: bool = False,
+    ordinary_roots: dict[int, frozenset[str]] | None = None
 ) -> dict[int, frozenset[str]]:
+    return _mask_projection(tree, bindings, conditional_paths=conditional_paths, ordinary_roots=ordinary_roots).masks
+
+
+def _mask_projection(
+    tree: ast.Module, bindings: _BindingEffects, *, conditional_paths: bool = False,
+    ordinary_roots: dict[int, frozenset[str]] | None = None
+) -> _MaskProjection:
     masks: dict[int, frozenset[str]] = {}
+    frames: dict[int, frozenset[str]] = {}
     pending: list[_MaskedNode] = [(tree, frozenset(), False)]
     while pending:
         node, masked, class_namespace = pending.pop()
+        frames[id(node)] = masked
         if masked and isinstance(node, (ast.Name, ast.Attribute)):
             masks[id(node)] = masked
-        pending.extend(_masked_children(node, masked, class_namespace, bindings, conditional_paths))
-    return masks
+        pending.extend(_masked_children(node, masked, class_namespace, bindings, conditional_paths, ordinary_roots))
+    return _MaskProjection(masks, frames)
 
 
 def _masked_children(
-    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects, conditional_paths: bool
+    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects, conditional_paths: bool,
+    ordinary_roots: dict[int, frozenset[str]] | None = None
 ) -> list[_MaskedNode]:
     masked = _statement_masks(node, masked, class_namespace, conditional_paths)
     if conditional_paths and isinstance(node, (ast.IfExp, ast.BoolOp)):
         return _truth_masked_children(node, masked, class_namespace, bindings)
     if isinstance(node, ast.ClassDef):
-        return _class_header_masked_children(node, masked, class_namespace, bindings, conditional_paths)
+        return _class_header_masked_children(node, masked, class_namespace, bindings, conditional_paths, ordinary_roots)
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return [
             (child, frozenset(), False) if isinstance(child, ast.stmt) else (child, masked, class_namespace)
@@ -855,7 +1048,7 @@ def _masked_children(
     if isinstance(node, ast.Lambda):
         return _lambda_masked_children(node, masked, class_namespace, bindings)
     if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return _ordinary_masked_children(node, masked, class_namespace, bindings)
+        return _ordinary_masked_children(node, masked, class_namespace, bindings, ordinary_roots)
     return _comprehension_masked_children(node, masked, class_namespace, bindings)
 
 
@@ -994,11 +1187,12 @@ def _conditional_truth_possible(node: ast.IfExp, truth: bool) -> bool:
 
 
 def _class_header_masked_children(
-    node: ast.ClassDef, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects, conditional_paths: bool
+    node: ast.ClassDef, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects, conditional_paths: bool,
+    ordinary_roots: dict[int, frozenset[str]] | None = None
 ) -> list[_MaskedNode]:
     header = [*node.decorator_list, *node.bases, *node.keywords]
     children = _sequence_masked_children(header, masked, class_namespace, bindings)
-    body = _sequence_masked_children(node.body, frozenset(), True, bindings)
+    body = _ordinary_class_body(node.body, frozenset(), bindings, roots=ordinary_roots) if ordinary_roots is not None else _sequence_masked_children(node.body, frozenset(), True, bindings)
     if conditional_paths:
         body = _keyword_class_body(node.body, bindings)
     children.extend(body)
@@ -1035,7 +1229,20 @@ def _lambda_masked_children(
 
 
 def _ordinary_masked_children(
-    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects
+    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects,
+    ordinary_roots: dict[int, frozenset[str]] | None
+) -> list[_MaskedNode]:
+    if class_namespace and ordinary_roots is not None and isinstance(node, (ast.Tuple, ast.List)) and isinstance(node.ctx, ast.Store):
+        return _ordinary_target_sequence(node.elts, masked, bindings, ordinary_roots.get(id(node), frozenset()))
+    if isinstance(node, ast.expr):
+        return _ordinary_expression_children(node, masked, class_namespace, bindings)
+    if class_namespace and ordinary_roots is not None:
+        return _class_statement_children(node, masked, bindings, ordinary_roots.get(id(node), frozenset()))
+    return [(child, masked, class_namespace) for child in ast.iter_child_nodes(node)]
+
+
+def _ordinary_expression_children(
+    node: ast.expr, masked: frozenset[str], class_namespace: bool, bindings: _BindingEffects
 ) -> list[_MaskedNode]:
     if isinstance(node, ast.IfExp):
         branch_mask = masked | bindings.definite[id(node.test)]
@@ -1043,9 +1250,356 @@ def _ordinary_masked_children(
     if isinstance(node, ast.Dict):
         children = [part for pair in zip(node.keys, node.values) for part in pair if part is not None]
         return _sequence_masked_children(children, masked, class_namespace, bindings)
-    if isinstance(node, ast.expr):
-        return _sequence_masked_children(list(ast.iter_child_nodes(node)), masked, class_namespace, bindings)
-    return [(child, masked, class_namespace) for child in ast.iter_child_nodes(node)]
+    return _sequence_masked_children(list(ast.iter_child_nodes(node)), masked, class_namespace, bindings)
+
+
+def _class_statement_children(node: ast.AST, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> list[_MaskedNode]:
+    found: list[_MaskedNode] = []
+    for field, value in ast.iter_fields(node):
+        if isinstance(value, list):
+            children = [child for child in value if isinstance(child, ast.AST)]
+            found.extend(_ordinary_class_field(node, field, children, masked, bindings, retain))
+        elif isinstance(value, ast.AST):
+            entry = _ordinary_target_masks(node, field, masked, bindings, retain)
+            found.append((value, entry, True))
+    return found
+
+
+def _ordinary_target_masks(node: ast.AST, field: str, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)) and field in ("target", "test"):
+        return _ordinary_loop_read_masks(node, masked, bindings, retain)
+    preceding = _ordinary_target_input(node, field)
+    return masked | (retain & bindings.definite[id(preceding)]) if preceding is not None else masked
+
+
+def _ordinary_target_input(node: ast.AST, field: str) -> ast.AST | None:
+    if isinstance(node, ast.withitem) and field == "optional_vars":
+        return node.context_expr
+    if isinstance(node, (ast.Assign, ast.AnnAssign)) and field in ("target", "targets"):
+        return node.value
+    if isinstance(node, ast.AugAssign) and field == "value":
+        return node.target
+    return None
+
+
+def _ordinary_target_sequence(children: list[ast.AST], masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> list[_MaskedNode]:
+    found: list[_MaskedNode] = []
+    for child in children:
+        found.append((child, masked, True))
+        masked = masked | (retain & (bindings.definite[id(child)] | frozenset(_stored_names(child))))
+    return found
+
+
+def _ordinary_class_field(
+    node: ast.AST, field: str, children: list[ast.AST], masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]
+) -> list[_MaskedNode]:
+    if field == "targets" and isinstance(node, ast.Assign):
+        entry = _ordinary_target_masks(node, field, masked, bindings, retain)
+        return _ordinary_target_sequence(children, entry, bindings, retain)
+    if field == "items" and isinstance(node, (ast.With, ast.AsyncWith)):
+        return _ordinary_with_items(node, masked, bindings, retain)
+    if field in ("body", "orelse", "finalbody"):
+        entry = _ordinary_clause_masks(node, field, masked, bindings, retain)
+        return _ordinary_class_body(children, entry, bindings, retain=retain)
+    if field == "handlers" and isinstance(node, (ast.Try, ast.TryStar)):
+        return _ordinary_handler_children(node, masked, bindings, retain)
+    return [(child, masked, True) for child in children]
+
+
+def _ordinary_class_body(
+    children: list[ast.AST], masked: frozenset[str], bindings: _BindingEffects, *, retain: frozenset[str] | None = None,
+    roots: dict[int, frozenset[str]] | None = None
+) -> list[_MaskedNode]:
+    """Carry existing local proofs through a class statement prefix."""
+    found: list[_MaskedNode] = []
+    for child in children:
+        found.append((child, masked, True))
+        allowed = masked | bindings.definite[id(child)] if retain is None else retain
+        if roots is not None:
+            allowed = allowed | roots.get(id(child), frozenset())
+        masked = _ordinary_exit_masks(child, masked, bindings, allowed)
+    return found
+
+
+def _ordinary_clause_masks(node: ast.AST, field: str, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        flow = _ordinary_body_flow(node.body, masked, bindings, retain)
+        if field == "finalbody":
+            return _ordinary_all_masks(_ordinary_try_paths(node, masked, bindings, retain), masked)
+        return flow.normal if field == "orelse" and flow.normal is not None else masked
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        return _ordinary_loop_clause_masks(node, field, masked, bindings, retain)
+    if isinstance(node, ast.If):
+        return masked | (retain & bindings.conditional[(id(node.test), field == "body")])
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return _ordinary_with_body_masks(node, masked, bindings, retain)
+    return masked
+
+
+def _ordinary_with_item_masks(item: ast.withitem, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    targets = bindings.definite[id(item.optional_vars)] | frozenset(_stored_names(item.optional_vars)) if item.optional_vars is not None else frozenset()
+    return masked | (retain & (bindings.definite[id(item.context_expr)] | targets))
+
+
+def _ordinary_with_items(node: ast.With | ast.AsyncWith, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> list[_MaskedNode]:
+    children: list[_MaskedNode] = []
+    for item in node.items:
+        children.append((item, masked, True))
+        masked = _ordinary_with_item_masks(item, masked, bindings, retain)
+    return children
+
+
+def _ordinary_with_body_masks(node: ast.With | ast.AsyncWith, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    for item in node.items:
+        masked = _ordinary_with_item_masks(item, masked, bindings, retain)
+    return masked
+
+
+def _ordinary_loop_clause_masks(node: ast.For | ast.AsyncFor | ast.While, field: str, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    entry, body = _ordinary_loop_body(node, masked, bindings, retain)
+    if field == "body":
+        return entry
+    if field == "orelse":
+        header = _ordinary_loop_header(node, masked, bindings, retain)
+        if _empty_class_loop(node):
+            return header
+        return _ordinary_loop_exhaustion(node, header, body, bindings, retain) or frozenset()
+    return masked
+
+
+def _ordinary_handler_children(node: ast.Try | ast.TryStar, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> list[_MaskedNode]:
+    found: list[_MaskedNode] = []
+    flow = _ordinary_body_flow(node.body, masked, bindings, retain)
+    entry = flow.raises if flow.raises is not None else _ordinary_all_masks(flow, masked)
+    for handler in node.handlers:
+        if handler.type is not None:
+            found.append((handler.type, entry, True))
+            entry = entry | (retain & bindings.definite[id(handler.type)])
+        alias = retain & {handler.name} if handler.name is not None else frozenset()
+        found.extend(_ordinary_class_body(handler.body, entry | alias, bindings, retain=retain))
+        if isinstance(node, ast.TryStar):
+            entry = _ordinary_all_masks(_ordinary_handler_flow(handler, entry, bindings, retain), entry)
+    return found
+
+
+def _ordinary_mask_meet(*states: frozenset[str] | None) -> frozenset[str] | None:
+    paths = [state for state in states if state is not None]
+    return frozenset.intersection(*paths) if paths else None
+
+
+def _ordinary_flow_join(*flows: _ClassMaskFlow) -> _ClassMaskFlow:
+    return _ClassMaskFlow(
+        _ordinary_mask_meet(*(flow.normal for flow in flows)),
+        _ordinary_mask_meet(*(flow.breaks for flow in flows)),
+        _ordinary_mask_meet(*(flow.continues for flow in flows)),
+        _ordinary_mask_meet(*(flow.raises for flow in flows)),
+    )
+
+
+def _ordinary_all_masks(flow: _ClassMaskFlow, fallback: frozenset[str]) -> frozenset[str]:
+    result = _ordinary_mask_meet(flow.normal, flow.breaks, flow.continues, flow.raises)
+    return result if result is not None else fallback
+
+
+def _ordinary_body_flow(statements: list[ast.stmt], masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    flow = _ClassMaskFlow(masked)
+    for statement in statements:
+        if flow.normal is None:
+            break
+        after = _ordinary_statement_flow(statement, flow.normal, bindings, retain)
+        flow = _ordinary_flow_join(_ClassMaskFlow(None, flow.breaks, flow.continues, flow.raises), after)
+    return flow
+
+
+def _ordinary_exit_masks(node: ast.AST, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    flow = _ordinary_statement_flow(node, masked, bindings, retain)
+    return flow.normal if flow.normal is not None else _ordinary_all_masks(flow, masked)
+
+
+def _ordinary_statement_flow(node: ast.AST, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    if isinstance(node, ast.If):
+        return _ordinary_if_flow(node, masked, bindings, retain)
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        flow = _ordinary_try_paths(node, masked, bindings, retain)
+        return _ordinary_finally_flow(flow, node.finalbody, bindings, retain)
+    if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+        return _ordinary_loop_flow(node, masked, bindings, retain)
+    return _ordinary_simple_flow(node, masked, bindings, retain)
+
+
+def _ordinary_simple_flow(node: ast.AST, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    effects = bindings.definite[id(node)] | _ordinary_completed_targets(node)
+    after = _retained_ordinary_class_masks(masked, node) | (retain & effects)
+    if isinstance(node, ast.Break):
+        return _ClassMaskFlow(None, breaks=after)
+    if isinstance(node, ast.Continue):
+        return _ClassMaskFlow(None, continues=after)
+    if isinstance(node, ast.Raise):
+        return _ClassMaskFlow(None, raises=after)
+    if isinstance(node, ast.Assert) and _literal_truth(node.test) is False:
+        return _ordinary_assert_flow(node, after, bindings, retain)
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return _ordinary_with_flow(node, masked, bindings, retain)
+    return _ClassMaskFlow(after)
+
+
+def _ordinary_completed_targets(node: ast.AST) -> frozenset[str]:
+    if isinstance(node, ast.Assign):
+        return frozenset(name for target in node.targets for name in _stored_names(target))
+    if isinstance(node, (ast.AnnAssign, ast.AugAssign)) and node.value is not None:
+        return frozenset(_stored_names(node.target))
+    return frozenset()
+
+
+def _ordinary_assert_flow(node: ast.Assert, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    if node.msg is not None:
+        masked = masked | (retain & bindings.definite[id(node.msg)])
+    return _ClassMaskFlow(None, raises=masked)
+
+
+def _ordinary_with_flow(node: ast.With | ast.AsyncWith, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    entry = _ordinary_with_body_masks(node, masked, bindings, retain)
+    flow = _ordinary_body_flow(node.body, entry, bindings, retain)
+    # A context manager can suppress a raised exception.
+    normal = _ordinary_mask_meet(flow.normal, flow.raises)
+    first = node.items[0]
+    if len(node.items) > 1 or (first.optional_vars is not None and not isinstance(first.optional_vars, ast.Name)):
+        # Earlier managers can suppress later entry or target-unpacking failures.
+        skipped = masked | (retain & bindings.definite[id(first.context_expr)])
+        if isinstance(first.optional_vars, ast.Name):
+            skipped = skipped | (retain & {first.optional_vars.id})
+        normal = _ordinary_mask_meet(normal, skipped)
+    return _ClassMaskFlow(normal, flow.breaks, flow.continues, flow.raises)
+
+
+def _ordinary_if_flow(node: ast.If, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    truth = _literal_truth(node.test)
+    if truth is not None:
+        entry = masked | (retain & bindings.conditional[(id(node.test), truth)])
+        return _ordinary_body_flow(node.body if truth else node.orelse, entry, bindings, retain)
+    positive = masked | (retain & bindings.conditional[(id(node.test), True)])
+    negative = masked | (retain & bindings.conditional[(id(node.test), False)])
+    return _ordinary_flow_join(_ordinary_body_flow(node.body, positive, bindings, retain), _ordinary_body_flow(node.orelse, negative, bindings, retain))
+
+
+def _ordinary_try_paths(node: ast.Try | ast.TryStar, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    body = _ordinary_body_flow(node.body, masked, bindings, retain)
+    normal = _ordinary_body_flow(node.orelse, body.normal, bindings, retain) if body.normal is not None else _ClassMaskFlow(None)
+    paths = [normal, _ClassMaskFlow(None, body.breaks, body.continues)]
+    entry = body.raises if body.raises is not None else _ordinary_all_masks(body, masked)
+    for handler in node.handlers:
+        if handler.type is not None:
+            entry = entry | (retain & bindings.definite[id(handler.type)])
+        after = _ordinary_handler_flow(handler, entry, bindings, retain)
+        paths.append(after)
+        if isinstance(node, ast.TryStar):
+            entry = _ordinary_all_masks(after, entry)
+    if body.raises is not None:
+        paths.append(_ClassMaskFlow(None, raises=entry))
+    return _ordinary_flow_join(*paths)
+
+
+def _ordinary_handler_flow(node: ast.ExceptHandler, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    effects = bindings.definite[id(node.type)] if node.type is not None else frozenset()
+    alias = retain & {node.name} if node.name is not None else frozenset()
+    flow = _ordinary_body_flow(node.body, masked | alias | (effects & retain), bindings, retain)
+    return _ClassMaskFlow(*(state - alias if state is not None else None for state in (flow.normal, flow.breaks, flow.continues, flow.raises)))
+
+
+def _ordinary_finally_flow(flow: _ClassMaskFlow, statements: list[ast.stmt], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    paths: list[_ClassMaskFlow] = []
+    for index, state in enumerate((flow.normal, flow.breaks, flow.continues, flow.raises)):
+        if state is None:
+            continue
+        final = _ordinary_body_flow(statements, state, bindings, retain)
+        prior: list[frozenset[str] | None] = [None, None, None, None]
+        prior[index] = final.normal
+        paths.append(_ordinary_flow_join(_ClassMaskFlow(*prior), _ClassMaskFlow(None, final.breaks, final.continues, final.raises)))
+    return _ordinary_flow_join(*paths)
+
+
+def _ordinary_loop_header(node: ast.For | ast.AsyncFor | ast.While, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    header = node.test if isinstance(node, ast.While) else node.iter
+    return masked | (retain & bindings.definite[id(header)])
+
+
+def _ordinary_loop_body(node: ast.For | ast.AsyncFor | ast.While, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> tuple[frozenset[str], _ClassMaskFlow]:
+    entry = _ordinary_loop_header(node, masked, bindings, retain)
+    targets = bindings.definite[id(node.target)] | frozenset(_stored_names(node.target)) if isinstance(node, (ast.For, ast.AsyncFor)) else frozenset()
+    renewal = bindings.conditional[(id(node.test), True)] if isinstance(node, ast.While) else targets
+    entry = entry | (retain & renewal)
+    body = _ordinary_body_flow(node.body, entry, bindings, retain)
+    repeat = _ordinary_mask_meet(body.normal, body.continues)
+    if repeat is None or _single_class_iteration(node):
+        return entry, body
+    repeated = (entry & repeat) | (retain & renewal)
+    if repeated == entry:
+        return entry, body
+    return repeated, _ordinary_body_flow(node.body, repeated, bindings, retain)
+
+
+def _ordinary_loop_read_masks(node: ast.For | ast.AsyncFor | ast.While, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str]:
+    header = masked if isinstance(node, ast.While) else _ordinary_loop_header(node, masked, bindings, retain)
+    if _single_class_iteration(node):
+        return header
+    _, body = _ordinary_loop_body(node, masked, bindings, retain)
+    repeat = _ordinary_mask_meet(body.normal, body.continues)
+    return header if repeat is None else header & repeat
+
+
+def _ordinary_loop_exhaustion(node: ast.For | ast.AsyncFor | ast.While, masked: frozenset[str], body: _ClassMaskFlow, bindings: _BindingEffects, retain: frozenset[str]) -> frozenset[str] | None:
+    ended = _ordinary_mask_meet(body.normal, body.continues)
+    if isinstance(node, ast.While):
+        if _literal_truth(node.test) is True:
+            return None
+        masked = masked | (retain & bindings.conditional[(id(node.test), False)])
+        if ended is not None:
+            ended = ended | (retain & bindings.conditional[(id(node.test), False)])
+    if _nonempty_class_loop(node):
+        return ended
+    return _ordinary_mask_meet(masked, ended)
+
+
+def _ordinary_loop_flow(node: ast.For | ast.AsyncFor | ast.While, masked: frozenset[str], bindings: _BindingEffects, retain: frozenset[str]) -> _ClassMaskFlow:
+    header = _ordinary_loop_header(node, masked, bindings, retain)
+    if _empty_class_loop(node):
+        return _ordinary_body_flow(node.orelse, header, bindings, retain)
+    _, body = _ordinary_loop_body(node, masked, bindings, retain)
+    ended = _ordinary_loop_exhaustion(node, header, body, bindings, retain)
+    normal = _ordinary_body_flow(node.orelse, ended, bindings, retain) if ended is not None else _ClassMaskFlow(None)
+    return _ordinary_flow_join(normal, _ClassMaskFlow(body.breaks, raises=body.raises))
+
+
+def _nonempty_class_loop(node: ast.AST) -> bool:
+    return isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List)) and any(not isinstance(item, ast.Starred) for item in node.iter.elts)
+
+
+def _empty_class_loop(node: ast.AST) -> bool:
+    if isinstance(node, ast.While):
+        return not _truth_possible(node.test, True)
+    return isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(node.iter, (ast.Tuple, ast.List)) and not node.iter.elts
+
+
+def _single_class_iteration(node: ast.AST) -> bool:
+    return _empty_class_loop(node) or (
+        isinstance(node, ast.For) and isinstance(node.iter, (ast.Tuple, ast.List))
+        and len(node.iter.elts) == 1 and not isinstance(node.iter.elts[0], ast.Starred)
+    )
+
+
+def _retained_ordinary_class_masks(masked: frozenset[str], node: ast.AST) -> frozenset[str]:
+    return frozenset(root for root in masked if not _ordinary_class_externalized(root, node))
+
+
+def _ordinary_class_externalized(root: str, node: ast.AST) -> bool:
+    if isinstance(node, (ast.ClassDef, *_FUNCTION)):
+        return False
+    if isinstance(node, (ast.Import, ast.ImportFrom, ast.Delete)):
+        return _class_root_externalized(root, node)
+    if isinstance(node, ast.ExceptHandler) and node.name == root:
+        return True
+    children = node.orelse if _empty_class_loop(node) else _active_binding_children(node)
+    return any(_ordinary_class_externalized(root, child) for child in children)
 
 
 def _conditional_masked_children(

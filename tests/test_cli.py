@@ -25,6 +25,201 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class CommandAcceptanceTests(unittest.TestCase):
+    def test_coupling_ordinary_class_import_and_delete_masks_restore_the_gate(self) -> None:
+        cases = []
+        for revoke in ("from external import Bound", "del Bound"):
+            cases.extend([
+                ("class Service:\n    (Bound := Local())\n    " + revoke + "\n    field=Bound.Factory", 1),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    class Service(Bound.Factory):\n        pass", 1),
+                ("class Outer:\n    (Bound := Local())\n    " + revoke + "\n    @Bound.decorate\n    class Service:\n        pass", 1),
+            ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    before=Bound.Factory\n    from external import Bound", 0),
+            ("class Service:\n    (Bound := Local())\n    if flag:\n        before=Bound.Factory\n        from external import Bound\n    else:\n        before=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    while False:\n        from external import Bound\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    if flag:\n        from external import Bound\n        field=Bound.Factory", 1),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ValueError()\n    except ValueError as Bound:\n        pass\n    finally:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise ExceptionGroup(\"errors\",[ValueError(),TypeError()])\n    except* ValueError as Bound:\n        pass\n    except* TypeError:\n        field=Bound.Factory\n", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in ():\n        from external import Bound\n    field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in []:\n        del Bound\n    field=Bound.Factory\n", 0),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except LocalError as Bound:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        raise TypeError()\n    except ValueError as Bound:\n        pass\n    except TypeError:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for Bound in (Local(),Local()):\n        field=Bound.Factory\n        from external import Bound\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        before=Bound.Factory\n        from external import Bound\n    except ValueError:\n        pass", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError as Bound:\n        pass\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        pass\n    except ValueError:\n        pass\n    else:\n        from external import Bound\n    finally:\n        field=Bound.Factory", 1),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,):\n        before=Bound.Factory\n        from external import Bound", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        if spare==0:\n            del Bound", 1),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1", 1),
+            ("class Outer:\n    global Bound\n    if True:\n        (Bound:=Local())\n        class Service(option=Bound.Factory): pass", 1),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n    finally:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Local())\n        raise ValueError()\n    except ValueError:\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n    field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        (Bound := Local())\n", 0),
+            ("class Service:\n    (Bound := Local())\n    spare=0\n    while (Bound := Local()) and spare<2:\n        field=Bound.Factory\n        from external import Bound\n        spare+=1\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n    finally:\n        (Bound := Local())\n        field=Bound.Factory\n", 0),
+            ("class Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        (Bound := Bound.Factory)\n    finally:\n        field=Bound\n", 1),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound := Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound := LocalError):\n        field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise ValueError()\n        (Bound:=Local())\n    except ValueError:\n        field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        break", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        if spare==0:\n            from external import Bound\n            break\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        continue\n        (Bound:=Local())", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        from external import Bound\n        if spare==0:\n            continue\n        (Bound:=Local())", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            break", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        try:\n            field=Bound.Factory\n            from external import Bound\n        finally:\n            continue", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n        break\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", 1),
+            ("class Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        from external import Bound\n    else:\n        (Bound:=Local())\n    field=Bound.Factory", 0),
+            ("class LocalError(ValueError):\n    Factory=LocalFactory\nclass Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        raise LocalError()\n    except (Bound:=LocalError):\n        pass\n    finally:\n        field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if (Bound:=Local()):\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    spare=0\n    while (Bound:=Local()) and spare<1:\n        spare+=1\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    try:\n        (Bound:=Local())\n    except ValueError:\n        pass\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    while False:\n        from external import Bound\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    for spare in ():\n        from external import Bound\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    if flag and (Bound:=Local()):\n        field=Bound.Factory\n    else:\n        field=LocalFactory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    field=LocalFactory\n    while flag and (Bound:=Local()):\n        field=Bound.Factory\n        flag=False", 0),
+        ])
+        cases.extend([
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    field=Bound.Factory", 0),
+            ("class FalsyLocal(Local):\n    def __bool__(self): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    running=flag\n    while running or (Bound:=FalsyLocal()):\n        running=False\n    else:\n        field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n    field=Bound.Factory", 0),
+            ("class Service:\n    (Bound:=Local())\n    from external import Bound\n    while flag or not (Bound:=Local()):\n        flag=False\n        continue\n    field=Bound.Factory", 0),
+        ])
+        cases.extend([
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    try:\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n    except ValueError:\n        pass\n    else:\n        field=Bound.Factory\n", 1),
+            ("class Suppress:\n    def __enter__(self):return self\n    def __exit__(self,*args):return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppress():\n            raise ValueError()\n        from external import Bound\n", 1),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        with Suppressor():\n            from external import Bound\n            raise ValueError()", 1),
+            ("class Suppressor:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    for spare in (0,1):\n        field=Bound.Factory\n        try:\n            with Suppressor():\n                from external import Bound\n                raise ValueError()\n        finally:\n            (Bound:=Local())", 0),
+        ])
+        cases.extend([
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound:\n        pass\n    field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(result=(Local(),None)) as (Bound, spare):\n        field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as spare, FailedEntry() as Bound:\n        pass\n    field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as (spare, Bound):\n        pass\n    field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass FailedEntry:\n    def __enter__(self): raise ValueError()\n    def __exit__(self,*args): return False\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, FailedEntry() as spare:\n        pass\n    field=Bound.Factory\n', 0),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context(Bound.Factory) as Bound:\n        field=Bound.Factory\n', 1),
+            ('class Context:\n    def __init__(self, ignored=None, *, result=None): self.result=Local() if result is None else result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context() as Bound, Context(Bound.Factory) as spare:\n        field=Bound.Factory\n', 0),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False\n        (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', 1),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        (Bound:=Local())\n        assert False\n    except AssertionError:\n        field=Bound.Factory\n', 0),
+        ])
+        cases.extend([
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Local())\n    except AssertionError:\n        field=Bound.Factory\n', 0),
+            ('class Service:\n    (Bound:=Local())\n    try:\n        from external import Bound\n        assert False, (Bound:=Bound.Factory)\n    except AssertionError:\n        field=Bound\n', 1),
+            ('class Context:\n    def __enter__(self): return None\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    with Context():\n        (Bound:=Local())\n    field=Bound.Factory\n', 0),
+        ])
+        cases.extend([
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with (Bound:=Context()) as holder[Bound.Factory]:\n        field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(Bound:=Local()) as holder[Bound.Factory]:\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=(Bound:=Local())\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]: object=(Bound:=Local())\n    field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory]:\n        field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context() as holder[(Bound:=Local()).Factory], Context(Bound.Factory):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in (None,):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[(Bound:=Local()).Factory]=holder[Bound.Factory]=None\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder[Bound.Factory]=0\n    holder[Bound.Factory]+=(Bound:=0)\n    field=Local.Factory', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[Bound.Factory] in ((Bound:=Local()),None):\n        field=Local.Factory\n        from external import Bound', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Local()).Factory] in ():\n        pass\n    field=Bound.Factory', 1),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    holder={LocalFactory:0}\n    holder[(Bound:=Local()).Factory]+=len([Bound.Factory])\n    field=Bound.Factory', 0),
+            ('class Context:\n    Factory=LocalFactory\n    def __init__(self,value=None,*,result=None): self.result=result\n    def __enter__(self): return self.result\n    def __exit__(self,*args): return True\nclass Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    with Context(result=(Local(),None)) as (Bound, holder[Bound.Factory]):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for Bound, holder[Bound.Factory] in ((Local(),None),):\n        field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    Bound=holder[Bound.Factory]=Local()\n    field=Bound.Factory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    holder={}\n    for holder[(Bound:=Bound.Factory)] in (None,):\n        field=Bound', 1),
+        ])
+        cases.extend([
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', 1),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        break\n    field=LocalFactory', 0),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and Bound.Factory:\n        from external import Bound\n        spare+=1\n        continue\n    field=LocalFactory', 1),
+            ('class Service:\n    (Bound:=Local())\n    spare=0\n    while spare<2 and (Bound:=Local()) and Bound.Factory:\n        from external import Bound\n        spare+=1\n    field=LocalFactory', 0),
+            ('class Service:\n    (Bound:=Local())\n    from external import Bound\n    while (Bound:=Bound.Factory):\n        field=Bound\n        break', 1),
+            ('class Service:\n    (Bound:=Local())\n    while False and Bound.Factory:\n        from external import Bound\n    field=Bound.Factory', 0),
+        ])
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            ruleset = project / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for index, (body, expected) in enumerate(cases):
+                with self.subTest(body=body):
+                    source = "from external import Bound\nclass LocalFactory: pass\nclass Local:\n    Factory=LocalFactory\n" + body
+                    path = project / ("ordinary_" + str(index) + ".py")
+                    path.write_text(source, encoding="utf-8")
+                    compile(source, str(path), "exec", dont_inherit=True)
+                    line = next(node.lineno for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    for report_format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+                        status = run([str(path), report_format, str(ruleset)], stdout, stderr)
+                        self.assertEqual(2 if expected else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if report_format == "json":
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            self.assertEqual(1 if expected else 0, len(report["findings"]))
+                            if expected:
+                                finding = report["findings"][0]
+                                self.assertEqual(("Service", line, "CouplingBetweenObjects"), (finding["context"], finding["line"], finding["ruleName"]))
+                                self.assertIn("value of 1.", finding["message"])
+                        else:
+                            message = f"{path}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            self.assertEqual(message, stdout.getvalue())
+
+    def test_coupling_eager_keyword_import_order_triggers_the_gate(self) -> None:
+        cases = [
+            ("from external import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as factory\nfactory=object()\nclass Service(option=factory):\n    pass", 0),
+            ("if flag:\n    from external import Factory as factory\nelse:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass\nfactory=object()", 2),
+            ("from external import Factory as factory\nfrom external import Factory as alias\nclass Service(first=factory, second=alias):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as Bound\nclass Outer:\n    spare=flag and (Bound := object())\n    class Service(option=Bound.value):\n        pass", 1),
+            ("from external import Factory as Service\nclass Outer:\n    spare: object=flag and (Service := object())\n    class Service(option=Service.value):\n        pass", 1),
+            ("from external import Factory as factory\nclass Service(option=lambda value=factory: value):\n    pass\nfactory=object()", 1),
+            ("from external import Factory as factory\nclass Service(option=lambda: factory):\n    pass\nfactory=object()", 0),
+            ("from external import Factory as factory\nwhile False:\n    from genuine import Factory as factory\nclass Service(option=factory):\n    pass", 1),
+            ("from external import Factory as factory\nwhile flag:\n    from genuine import Factory as factory\n    flag=False\nclass Service(option=factory):\n    pass", 1),
+            ("class Service(option=Service if False else None):\n    pass", 0),
+            ("class Service(option=lambda value=(Service if False else None): value):\n    pass", 0),
+            ("class Service(option=[Service for spare in ()]):\n    pass", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            ruleset = project / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for index, (source, expected) in enumerate(cases):
+                with self.subTest(source=source):
+                    path = project / ("service_" + str(index) + ".py")
+                    compile(source, str(path), "exec", dont_inherit=True)
+                    path.write_text(source, encoding="utf-8")
+                    line = next(node.lineno for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                    for report_format in ("text", "json"):
+                        stdout, stderr = StringIO(), StringIO()
+                        status = run([str(path), report_format, str(ruleset)], stdout, stderr)
+                        self.assertEqual(2 if expected else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        if report_format == "json":
+                            report = json.loads(stdout.getvalue())
+                            self.assertEqual([], report["errors"])
+                            findings = report["findings"]
+                            self.assertEqual(1 if expected else 0, len(findings))
+                            if findings:
+                                self.assertEqual(("Service", line, "CouplingBetweenObjects"), (findings[0]["context"], findings[0]["line"], findings[0]["ruleName"]))
+                                self.assertIn("value of " + str(expected) + ".", findings[0]["message"])
+                        else:
+                            message = f"{path}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            self.assertEqual(message, stdout.getvalue())
+
     def test_directory_scan_recurses_over_python_files_in_path_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)

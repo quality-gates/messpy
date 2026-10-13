@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Iterable, Union, cast
 import xml.etree.ElementTree as ElementTree
 
@@ -13,10 +14,10 @@ _BOOLEAN_PROPERTIES = frozenset(
 )
 _PATTERN_PROPERTIES = frozenset({"ignorepattern"})
 _PropertyValue = Union[int, bool, "re.Pattern[str]", list[str]]
-_REQUIRED_ITEMS = {
+_REQUIRED_ITEMS = MappingProxyType({
     "DomainAction": (("domain", "path pattern"),),
     "DomainOuterImport": (("domain", "path pattern"), ("outer-layers", "module")),
-}
+})
 
 
 @dataclass(frozen=True)
@@ -44,12 +45,6 @@ class LoadedRule:
 
     def items(self, property_name: str, default: str = "") -> list[str]:
         return cast(list[str], self._values.get(property_name, _items(default)))
-
-
-@dataclass(frozen=True)
-class BuiltInRuleReference:
-    name: str
-    properties: dict[str, str]
 
 
 class RulesetError(Exception):
@@ -118,173 +113,56 @@ def _pattern(rule_name: str, property_name: str, value: str) -> re.Pattern[str]:
         raise RulesetError(f"{rule_name} property '{property_name}' must be a valid regular expression.") from error
 
 
-_CATALOG = {
-    "shortclassname": LoadedRule(
-        name="ShortClassName",
-        priority=3,
-        properties={"minimum": "3"},
-    ),
-    "longclassname": LoadedRule(
-        name="LongClassName",
-        priority=3,
-        properties={"maximum": "40"},
-    ),
-    "shortvariable": LoadedRule(
-        name="ShortVariable",
-        priority=3,
-        properties={"minimum": "3"},
-    ),
-    "longvariable": LoadedRule(
-        name="LongVariable",
-        priority=3,
-        properties={"maximum": "20"},
-    ),
-    "shortmethodname": LoadedRule(
-        name="ShortMethodName",
-        priority=3,
-        properties={"minimum": "3"},
-    ),
-    "constantnamingconventions": LoadedRule(
-        name="ConstantNamingConventions",
-        priority=3,
-        properties={},
-    ),
-    "booleangetmethodname": LoadedRule(
-        name="BooleanGetMethodName",
-        priority=3,
-        properties={},
-    ),
-    "constructorwithnameasenclosingclass": LoadedRule(
-        name="ConstructorWithNameAsEnclosingClass",
-        priority=3,
-        properties={},
-    ),
-    "cyclomaticcomplexity": LoadedRule(
-        name="CyclomaticComplexity",
-        priority=3,
-        properties={"reportlevel": "10"},
-    ),
-    "npathcomplexity": LoadedRule(
-        name="NPathComplexity",
-        priority=3,
-        properties={"minimum": "200"},
-    ),
-    "excessiveparameterlist": LoadedRule(
-        name="ExcessiveParameterList",
-        priority=3,
-        properties={"minimum": "10"},
-    ),
-    "excessivemethodlength": LoadedRule(
-        name="ExcessiveMethodLength",
-        priority=3,
-        properties={"minimum": "100"},
-    ),
-    "excessiveclasslength": LoadedRule(
-        name="ExcessiveClassLength",
-        priority=3,
-        properties={"minimum": "1000", "ignore-whitespace": "false"},
-    ),
-    "excessivepubliccount": LoadedRule(
-        name="ExcessivePublicCount",
-        priority=3,
-        properties={"minimum": "45"},
-    ),
-    "toomanyfields": LoadedRule(
-        name="TooManyFields",
-        priority=3,
-        properties={"maxfields": "15"},
-    ),
-    "toomanymethods": LoadedRule(
-        name="TooManyMethods",
-        priority=3,
-        properties={"maxmethods": "25", "ignorepattern": "(^(set|get|is|has|with))i"},
-    ),
-    "toomanypublicmethods": LoadedRule(
-        name="TooManyPublicMethods",
-        priority=3,
-        properties={"maxmethods": "10", "ignorepattern": "(^(set|get|is|has|with))i"},
-    ),
-    "excessiveclasscomplexity": LoadedRule(
-        name="ExcessiveClassComplexity",
-        priority=3,
-        properties={"maximum": "50"},
-    ),
-    "unusedlocalvariable": LoadedRule(
-        name="UnusedLocalVariable",
-        priority=3,
-        properties={},
-    ),
-    "unusedformalparameter": LoadedRule(
-        name="UnusedFormalParameter",
-        priority=3,
-        properties={},
-    ),
-    "unusedprivatefield": LoadedRule(
-        name="UnusedPrivateField",
-        priority=3,
-        properties={},
-    ),
-    "unusedprivatemethod": LoadedRule(
-        name="UnusedPrivateMethod",
-        priority=3,
-        properties={},
-    ),
-    "booleanargumentflag": LoadedRule(
-        name="BooleanArgumentFlag", priority=1, properties={"exceptions": "", "ignorepattern": ""}
-    ),
-    "elseexpression": LoadedRule(name="ElseExpression", priority=1, properties={}),
-    "staticaccess": LoadedRule(
-        name="StaticAccess", priority=1, properties={"exceptions": "", "ignorepattern": ""}
-    ),
-    "ifstatementassignment": LoadedRule(name="IfStatementAssignment", priority=1, properties={}),
-    "duplicatedarraykey": LoadedRule(name="DuplicatedArrayKey", priority=2, properties={}),
-    "exitexpression": LoadedRule(name="ExitExpression", priority=1, properties={}),
-    "gotostatement": LoadedRule(name="GotoStatement", priority=1, properties={}),
-    "countinloopexpression": LoadedRule(name="CountInLoopExpression", priority=2, properties={}),
-    "developmentcodefragment": LoadedRule(
-        name="DevelopmentCodeFragment",
-        priority=2,
-        properties={"unwanted-functions": "", "markers": "TODO,FIXME,HACK"},
-    ),
-    "emptycatchblock": LoadedRule(name="EmptyCatchBlock", priority=2, properties={}),
-    "couplingbetweenobjects": LoadedRule(
-        name="CouplingBetweenObjects", priority=2, properties={"maximum": "13"}
-    ),
-    "globalvariable": LoadedRule(
-        name="GlobalVariable", priority=1, properties={"report-immutable": "false"}
-    ),
-    "lackofcohesionofmethods": LoadedRule(
-        name="LackOfCohesionOfMethods", priority=3, properties={"maximum": "1"}
-    ),
-    "camelcaseclassname": LoadedRule(name="CamelCaseClassName", priority=1, properties={}),
-    "camelcasemethodname": LoadedRule(
-        name="CamelCaseMethodName",
-        priority=1,
-        properties={"allow-underscore": "false", "allow-underscore-test": "false"},
-    ),
-    "camelcasepropertyname": LoadedRule(
-        name="CamelCasePropertyName",
-        priority=1,
-        properties={"allow-underscore": "false", "allow-underscore-test": "false"},
-    ),
-    "camelcaseparametername": LoadedRule(
-        name="CamelCaseParameterName", priority=1, properties={"allow-underscore": "false"}
-    ),
-    "camelcasevariablename": LoadedRule(
-        name="CamelCaseVariableName", priority=1, properties={"allow-underscore": "false"}
-    ),
-    "implicitinput": LoadedRule(name="ImplicitInput", priority=3, properties={}),
-    "implicitoutput": LoadedRule(name="ImplicitOutput", priority=3, properties={}),
-    "implicitinstanceinput": LoadedRule(name="ImplicitInstanceInput", priority=3, properties={}),
-    "implicitinstanceoutput": LoadedRule(name="ImplicitInstanceOutput", priority=3, properties={}),
-    "domainaction": LoadedRule(name="DomainAction", priority=2, properties={"domain": ""}),
-    "domainouterimport": LoadedRule(
-        name="DomainOuterImport",
-        priority=2,
-        properties={"domain": "", "outer-layers": ""},
-    ),
-}
-_BUILT_IN_RULESETS = {
+_CATALOG = MappingProxyType({
+    "shortclassname": ("ShortClassName", 3, (("minimum", "3"),)),
+    "longclassname": ("LongClassName", 3, (("maximum", "40"),)),
+    "shortvariable": ("ShortVariable", 3, (("minimum", "3"),)),
+    "longvariable": ("LongVariable", 3, (("maximum", "20"),)),
+    "shortmethodname": ("ShortMethodName", 3, (("minimum", "3"),)),
+    "constantnamingconventions": ("ConstantNamingConventions", 3, ()),
+    "booleangetmethodname": ("BooleanGetMethodName", 3, ()),
+    "constructorwithnameasenclosingclass": ("ConstructorWithNameAsEnclosingClass", 3, ()),
+    "cyclomaticcomplexity": ("CyclomaticComplexity", 3, (("reportlevel", "10"),)),
+    "npathcomplexity": ("NPathComplexity", 3, (("minimum", "200"),)),
+    "excessiveparameterlist": ("ExcessiveParameterList", 3, (("minimum", "10"),)),
+    "excessivemethodlength": ("ExcessiveMethodLength", 3, (("minimum", "100"),)),
+    "excessiveclasslength": ("ExcessiveClassLength", 3, (("minimum", "1000"), ("ignore-whitespace", "false"))),
+    "excessivepubliccount": ("ExcessivePublicCount", 3, (("minimum", "45"),)),
+    "toomanyfields": ("TooManyFields", 3, (("maxfields", "15"),)),
+    "toomanymethods": ("TooManyMethods", 3, (("maxmethods", "25"), ("ignorepattern", "(^(set|get|is|has|with))i"))),
+    "toomanypublicmethods": ("TooManyPublicMethods", 3, (("maxmethods", "10"), ("ignorepattern", "(^(set|get|is|has|with))i"))),
+    "excessiveclasscomplexity": ("ExcessiveClassComplexity", 3, (("maximum", "50"),)),
+    "unusedlocalvariable": ("UnusedLocalVariable", 3, ()),
+    "unusedformalparameter": ("UnusedFormalParameter", 3, ()),
+    "unusedprivatefield": ("UnusedPrivateField", 3, ()),
+    "unusedprivatemethod": ("UnusedPrivateMethod", 3, ()),
+    "booleanargumentflag": ("BooleanArgumentFlag", 1, (("exceptions", ""), ("ignorepattern", ""))),
+    "elseexpression": ("ElseExpression", 1, ()),
+    "staticaccess": ("StaticAccess", 1, (("exceptions", ""), ("ignorepattern", ""))),
+    "ifstatementassignment": ("IfStatementAssignment", 1, ()),
+    "duplicatedarraykey": ("DuplicatedArrayKey", 2, ()),
+    "exitexpression": ("ExitExpression", 1, ()),
+    "gotostatement": ("GotoStatement", 1, ()),
+    "countinloopexpression": ("CountInLoopExpression", 2, ()),
+    "developmentcodefragment": ("DevelopmentCodeFragment", 2, (("unwanted-functions", ""), ("markers", "TODO,FIXME,HACK"))),
+    "emptycatchblock": ("EmptyCatchBlock", 2, ()),
+    "couplingbetweenobjects": ("CouplingBetweenObjects", 2, (("maximum", "13"),)),
+    "globalvariable": ("GlobalVariable", 1, (("report-immutable", "false"),)),
+    "lackofcohesionofmethods": ("LackOfCohesionOfMethods", 3, (("maximum", "1"),)),
+    "camelcaseclassname": ("CamelCaseClassName", 1, ()),
+    "camelcasemethodname": ("CamelCaseMethodName", 1, (("allow-underscore", "false"), ("allow-underscore-test", "false"))),
+    "camelcasepropertyname": ("CamelCasePropertyName", 1, (("allow-underscore", "false"), ("allow-underscore-test", "false"))),
+    "camelcaseparametername": ("CamelCaseParameterName", 1, (("allow-underscore", "false"),)),
+    "camelcasevariablename": ("CamelCaseVariableName", 1, (("allow-underscore", "false"),)),
+    "implicitinput": ("ImplicitInput", 3, ()),
+    "implicitoutput": ("ImplicitOutput", 3, ()),
+    "unknowneffect": ("UnknownEffect", 3, ()),
+    "implicitinstanceinput": ("ImplicitInstanceInput", 3, ()),
+    "implicitinstanceoutput": ("ImplicitInstanceOutput", 3, ()),
+    "domainaction": ("DomainAction", 2, (("domain", ""),)),
+    "domainouterimport": ("DomainOuterImport", 2, (("domain", ""), ("outer-layers", ""))),
+})
+_BUILT_IN_RULESETS = MappingProxyType({
     "naming": (
         "ShortClassName",
         "LongClassName",
@@ -331,7 +209,7 @@ _BUILT_IN_RULESETS = {
         "ExcessiveClassComplexity",
         "ShortClassName",
         "LongClassName",
-        BuiltInRuleReference("LongVariable", {"maximum": "35"}),
+        ("LongVariable", (("maximum", "35"),)),
         "ShortMethodName",
         "ConstantNamingConventions",
         "BooleanGetMethodName",
@@ -382,10 +260,12 @@ _BUILT_IN_RULESETS = {
     "explicitness": (
         "ImplicitInput",
         "ImplicitOutput",
+        "UnknownEffect",
     ),
     "strictexplicitness": (
         "ImplicitInput",
         "ImplicitOutput",
+        "UnknownEffect",
         "ImplicitInstanceInput",
         "ImplicitInstanceOutput",
     ),
@@ -393,7 +273,7 @@ _BUILT_IN_RULESETS = {
         "DomainAction",
         "DomainOuterImport",
     ),
-}
+})
 
 
 def built_in_ruleset_names() -> tuple[str, ...]:
@@ -619,18 +499,20 @@ def _exclude(rules: dict[str, LoadedRule], name: str) -> dict[str, LoadedRule]:
     return {key: rule for key, rule in rules.items() if key != identity}
 
 
-def _built_in_rule(reference: str | BuiltInRuleReference) -> LoadedRule:
+def _built_in_rule(reference: str | tuple[str, tuple[tuple[str, str], ...]]) -> LoadedRule:
     if isinstance(reference, str):
         return _catalog_rule(reference)
-    rule = _catalog_rule(reference.name)
-    return replace(rule, properties={**rule.properties, **reference.properties})
+    name, properties = reference
+    rule = _catalog_rule(name)
+    return replace(rule, properties={**rule.properties, **dict(properties)})
 
 
 def _catalog_rule(name: str) -> LoadedRule:
     rule = _CATALOG.get(_identity(name))
     if rule is None:
         raise RulesetError(f"Unknown ruleset reference '{name}'.")
-    return rule
+    rule_name, priority, properties = rule
+    return LoadedRule(rule_name, priority, dict(properties))
 
 
 def _required_name(element: ElementTree.Element, path: Path) -> str:

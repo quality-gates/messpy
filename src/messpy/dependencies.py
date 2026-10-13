@@ -180,10 +180,23 @@ def _with_dependency(
     local_names: set[str],
     dependencies: set[str],
 ) -> set[str]:
-    dependency = _dependency_name(node, names, scope, local_names)
-    if not dependency or dependency.startswith(("typing.", "collections.abc.", "builtins.")):
-        return dependencies
-    return {*dependencies, dependency}
+    found = _keyword_dependencies(node, names, scope, local_names)
+    if found is None:
+        found = {_dependency_name(node, names, scope, local_names)}
+    return dependencies | {dependency for dependency in found if dependency and not dependency.startswith(("typing.", "collections.abc.", "builtins."))}
+
+
+def _keyword_dependencies(node: ast.expr, names: Names, scope: ast.AST, local_names: set[str]) -> set[str] | None:
+    binding = names.keyword_binding(node)
+    if binding is None:
+        return None
+    root, *tail = _dotted_name(node).split(".")
+    if binding.local or root in dir(builtins) or root == "typing":
+        return set()
+    found = {_imported_dependency(imported, tail) for imported in binding.imports}
+    if binding.unresolved and not names.is_class_keyword_target(node) and not _local_reference(root, node, names, scope, local_names):
+        found.add(_spelling_dependency(root, tail))
+    return found
 
 
 def _dependency_name(
