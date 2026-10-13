@@ -6201,6 +6201,236 @@ class CommandAcceptanceTests(unittest.TestCase):
                         self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
                         self.assertIn("value of 1.", finding["message"])
 
+    def test_coupling_lambda_expression_scopes_keep_defaults_and_outer_dependencies(self) -> None:
+        cases = [
+            ("lambda item: item.value", 0),
+            ("lambda Item: Item", 0),
+            ("lambda Item, /: Item.value", 0),
+            ("lambda *, Item: Item.value", 0),
+            ("lambda *Items: Items[0].value", 0),
+            ("lambda **Items: Items['key'].value", 0),
+            ("lambda Item, /, Other=None, *Items, Key=None, **Options: (Item, Other, Items, Key, Options)", 0),
+            ("lambda: ((Item := object()), Item.value)", 0),
+            ("lambda item=item.value: item.value", 1),
+            ("lambda Item=Item.factory(): Item.value", 1),
+            ("lambda *, Item=Other.factory(): Item.value", 1),
+            ("lambda Item=Other.factory(), *Items, Key=Item.factory(), **Options: (Item, Items, Key, Options)", 2),
+            ("lambda item: Other.value", 1),
+            ("lambda Item: lambda: Item.value", 0),
+            ("lambda Item: lambda Item=Item.value: Item.value", 0),
+            ("lambda: lambda Item=Item.factory(): Item.value", 1),
+            ("[(lambda item=item.value: item.value) for item in ()]", 0),
+            ("[(lambda Item=Other.factory(): Item.value) for Item in ()]", 1),
+            ("lambda Item=[Item.value for Item in Other.records]: Item.value", 1),
+            ("lambda item: [other.value for other in item.records]", 0),
+            ("lambda item: [item.value for item in Other.records]", 1),
+            ("lambda: ((Item := Other()), Item.value)", 1),
+            ("lambda Item: (lambda: [Other.value for Other in Item.records])", 0),
+            ("(lambda Item: Item.value, Item.value)", 1),
+            ("(lambda Item: Item.value)(Other())", 1),
+            ("lambda: ((Nested := lambda Item: Item.value), Nested())", 0),
+            ("lambda: (lambda Item=(Bound := object()): Bound.value)", 0),
+            ("lambda: (lambda Item=(Bound := Other()): Bound.value)", 1),
+            ("lambda: ((lambda Item=(Bound := Other()): Item.value), Bound.value)", 1),
+            ("lambda: ([(lambda: Item.value) for Item in ()], Item.value)", 1),
+            ("lambda: [(Item := Other()) for item in ()]", 1),
+            ("lambda Item=(lambda Other: Other.value): Item.value", 0),
+            ("lambda Item=(lambda Other=Other.factory(): Other.value): Item.value", 1),
+            ("lambda: Unknown.value", 1),
+            ("lambda arg=(Bound := object()): Bound.value", 0),
+            ("lambda *, arg=(Bound := object()): Bound.value", 0),
+            ("lambda arg=(Bound := Other()): Bound.value", 1),
+            ("lambda arg=(Bound := Bound.factory()): Bound.value", 1),
+            ("lambda first=(Bound := Other()), second=Bound: Bound.value", 1),
+            ("lambda first=(Bound := Other()), *, second=Bound: Bound.value", 1),
+            ("lambda arg=(False and (Bound := object())): Bound.value", 1),
+            ("lambda arg=(True and (Bound := object())): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if True else None): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if False else None): Bound.value", 1),
+            ("lambda arg=((Bound := object()) if flag else (Bound := object())): Bound.value", 0),
+            ("lambda arg=((Bound := object()) if flag else None): Bound.value", 1),
+            ("lambda arg=[(Bound := object()) for value in ()]: Bound.value", 1),
+            ("lambda arg=((Bound := object()) for value in ()): Bound.value", 1),
+            ("((lambda arg=(Bound := object()): arg), Bound.value)", 0),
+            ("(Bound.value, (lambda arg=(Bound := object()): Bound.value))", 1),
+            ("[(lambda arg=(Bound := object()): arg), Bound.value]", 0),
+            ("{(lambda arg=(Bound := object()): arg): Bound.value}", 0),
+            ("{Bound.value: (lambda arg=(Bound := object()): Bound.value)}", 1),
+            ("Other(lambda arg=(Bound := object()): arg, Bound.value)", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for index, (expression, value) in enumerate(cases):
+                with self.subTest(expression=expression):
+                    source = directory / f"lambda_{index}.py"
+                    source.write_text(
+                        "import external as item\n"
+                        "from external import Item, Other, Items, Key, Options, Bound, Nested\n"
+                        "class Config:\n"
+                        "    def __init_subclass__(cls, **options):\n"
+                        "        pass\n"
+                        "\n"
+                        f"class Service(Config, option={expression}):\n"
+                        "    pass\n",
+                        encoding="utf-8",
+                    )
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(("Service", 7), (finding["context"], finding["line"]))
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertEqual(
+                            f"The class Service has a coupling between objects value of {value}. "
+                            "Consider to reduce the number of dependencies under 1.",
+                            finding["message"],
+                        )
+
+    def test_coupling_lambda_default_bindings_work_in_module_and_function_headers(self) -> None:
+        cases = [
+            ("", "lambda arg=(Bound := object()): Bound.value", 0),
+            ("from external import Bound\n", "lambda arg=(Bound := object()): Bound.value", 0),
+            ("from external import Bound, Other\n", "lambda arg=(Bound := Other()): Bound.value", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for imports, expression, value in cases:
+                for nested in [False, True]:
+                    with self.subTest(imports=imports, expression=expression, nested=nested):
+                        source = directory / "default_binding.py"
+                        header = f"class Service(Config, option={expression}):\n    pass\n"
+                        if nested:
+                            header = "def build():\n" + "\n".join("    " + line for line in header.splitlines()) + "\n"
+                        source.write_text(
+                            imports + "class Config:\n"
+                            "    def __init_subclass__(cls, **options):\n"
+                            "        pass\n\n" + header,
+                            encoding="utf-8",
+                        )
+                        stdout, stderr = StringIO(), StringIO()
+
+                        status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                        self.assertEqual(2 if value else 0, status)
+                        self.assertEqual("", stderr.getvalue())
+                        report = json.loads(stdout.getvalue())
+                        self.assertEqual([], report["errors"])
+                        self.assertEqual(1 if value else 0, len(report["findings"]))
+                        if value:
+                            self.assertEqual(5 + imports.count("\n") + nested, report["findings"][0]["line"])
+                            self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_nested_class_lambda_defaults_preserve_global_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "class_namespace.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Config:\n"
+                "    def __init_subclass__(cls, **options):\n"
+                "        pass\n"
+                "class Outer:\n"
+                "    class Service(Config, option=lambda arg=(Bound := object()): Bound.value):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual(1, len(report["findings"]))
+            self.assertEqual(("Service", 6, "CouplingBetweenObjects"), (
+                report["findings"][0]["context"], report["findings"][0]["line"], report["findings"][0]["ruleName"],
+            ))
+            self.assertIn("value of 1.", report["findings"][0]["message"])
+
+    def test_coupling_class_default_initializer_keeps_one_canonical_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "class_initializer.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Service:\n"
+                "    callback = lambda arg=(Bound := Bound.factory()): Bound.value\n"
+                "    later = Bound.value\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="2"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(0, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual([], report["findings"])
+
+    def test_coupling_conditional_class_default_keeps_outer_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "conditional_initializer.py"
+            source.write_text(
+                "from external import Bound\n"
+                "class Service:\n"
+                "    if False:\n"
+                "        callback = lambda arg=(Bound := object()): arg\n"
+                "    later = Bound.value\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+            self.assertEqual(2, status)
+            self.assertEqual("", stderr.getvalue())
+            report = json.loads(stdout.getvalue())
+            self.assertEqual([], report["errors"])
+            self.assertEqual(1, len(report["findings"]))
+            self.assertEqual("Service", report["findings"][0]["context"])
+            self.assertEqual(2, report["findings"][0]["line"])
+            self.assertIn("value of 1.", report["findings"][0]["message"])
+
     def test_coupling_async_comprehension_targets_stay_local(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

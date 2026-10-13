@@ -126,6 +126,188 @@ class ClassDependencyTests(unittest.TestCase):
 
                 self.assertEqual(frozenset(), dependencies)
 
+    def test_class_keyword_lambda_arguments_are_local_dependencies(self) -> None:
+        expressions = [
+            "lambda item: item.value",
+            "lambda Item: Item",
+            "lambda Item, /: Item.value",
+            "lambda *, Item: Item.value",
+            "lambda *Items: Items[0].value",
+            "lambda **Items: Items['key'].value",
+            "lambda Item, /, Other=None, *Items, Key=None, **Options: (Item, Other, Items, Key, Options)",
+            "lambda: ((Item := object()), Item.value)",
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                tree = ast.parse(
+                    "import external as item\n"
+                    "from external import Item, Other, Items, Key, Options\n"
+                    f"class Service(option={expression}):\n    pass\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset(), dependencies)
+
+    def test_class_keyword_lambda_defaults_and_nested_bindings_preserve_outer_dependencies(self) -> None:
+        cases = [
+            ("lambda item=item.value: item.value", {"external.value"}),
+            ("lambda Item=Item.factory(): Item.value", {"external.Item"}),
+            ("lambda *, Item=Other.factory(): Item.value", {"external.Other"}),
+            ("lambda Item=Other.factory(), *Items, Key=Item.factory(), **Options: (Item, Items, Key, Options)", {"external.Item", "external.Other"}),
+            ("lambda item: Other.value", {"external.Other"}),
+            ("lambda Item: lambda: Item.value", set()),
+            ("lambda Item: lambda Item=Item.value: Item.value", set()),
+            ("lambda: lambda Item=Item.factory(): Item.value", {"external.Item"}),
+            ("[(lambda item=item.value: item.value) for item in ()]", set()),
+            ("[(lambda Item=Other.factory(): Item.value) for Item in ()]", {"external.Other"}),
+            ("lambda Item=[Item.value for Item in Other.records]: Item.value", {"external.Other"}),
+            ("lambda item: [other.value for other in item.records]", set()),
+            ("lambda item: [item.value for item in Other.records]", {"external.Other"}),
+            ("lambda: ((Item := Other()), Item.value)", {"external.Other"}),
+            ("lambda Item: (lambda: [Other.value for Other in Item.records])", set()),
+            ("(lambda Item: Item.value, Item.value)", {"external.Item"}),
+            ("(lambda Item: Item.value)(Other())", {"external.Other"}),
+            ("lambda: ((Nested := lambda Item: Item.value), Nested())", set()),
+            ("lambda: (lambda Item=(Bound := object()): Bound.value)", set()),
+            ("lambda: (lambda Item=(Bound := Other()): Bound.value)", {"external.Other"}),
+            ("lambda: ((lambda Item=(Bound := Other()): Item.value), Bound.value)", {"external.Other"}),
+            ("lambda: ([(lambda: Item.value) for Item in ()], Item.value)", {"external.Item"}),
+            ("lambda: [(Item := Other()) for item in ()]", {"external.Other"}),
+            ("lambda Item=(lambda Other: Other.value): Item.value", set()),
+            ("lambda Item=(lambda Other=Other.factory(): Other.value): Item.value", {"external.Other"}),
+            ("lambda: Unknown.value", {"Unknown.value"}),
+            ("lambda arg=(Bound := object()): Bound.value", set()),
+            ("lambda *, arg=(Bound := object()): Bound.value", set()),
+            ("lambda arg=(Bound := Other()): Bound.value", {"external.Other"}),
+            ("lambda arg=(Bound := Bound.factory()): Bound.value", {"external.Bound"}),
+            ("lambda first=(Bound := Other()), second=Bound: Bound.value", {"external.Other"}),
+            ("lambda first=(Bound := Other()), *, second=Bound: Bound.value", {"external.Other"}),
+            ("lambda arg=(False and (Bound := object())): Bound.value", {"external.Bound"}),
+            ("lambda arg=(True and (Bound := object())): Bound.value", set()),
+            ("lambda arg=((Bound := object()) if True else None): Bound.value", set()),
+            ("lambda arg=((Bound := object()) if False else None): Bound.value", {"external.Bound"}),
+            ("lambda arg=((Bound := object()) if flag else (Bound := object())): Bound.value", set()),
+            ("lambda arg=((Bound := object()) if flag else None): Bound.value", {"external.Bound"}),
+            ("lambda arg=[(Bound := object()) for value in ()]: Bound.value", {"external.Bound"}),
+            ("lambda arg=((Bound := object()) for value in ()): Bound.value", {"external.Bound"}),
+            ("((lambda arg=(Bound := object()): arg), Bound.value)", set()),
+            ("(Bound.value, (lambda arg=(Bound := object()): Bound.value))", {"external.Bound"}),
+            ("[(lambda arg=(Bound := object()): arg), Bound.value]", set()),
+            ("{(lambda arg=(Bound := object()): arg): Bound.value}", set()),
+            ("{Bound.value: (lambda arg=(Bound := object()): Bound.value)}", {"external.Bound"}),
+            ("Other(lambda arg=(Bound := object()): arg, Bound.value)", {"external.Other"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                tree = ast.parse(
+                    "import external as item\n"
+                    "from external import Item, Other, Items, Key, Options, Bound, Nested\n"
+                    f"class Service(option={expression}):\n    pass\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset(expected), dependencies)
+
+    def test_class_keyword_default_bindings_reach_later_keywords(self) -> None:
+        tree = ast.parse(
+            "from external import Bound\n"
+            "class Service(first=lambda arg=(Bound := object()): arg, second=Bound.value):\n"
+            "    pass\n"
+        )
+        class_node = _first_class(tree)
+        names = Names.build(tree, module=None, path=Path("service.py"))
+
+        self.assertEqual(frozenset(), measure_class_dependencies(_class_info(class_node), names))
+
+    def test_class_namespace_bindings_do_not_hide_lambda_or_comprehension_globals(self) -> None:
+        cases = [
+            ("option=lambda arg=(Bound := object()): Bound.value", {"external.Bound"}),
+            ("option=lambda arg=(Bound := Other()): Bound.value", {"external.Bound", "external.Other"}),
+            ("option=lambda first=(Bound := object()), second=Bound: Bound.value", {"external.Bound"}),
+            ("first=lambda arg=(Bound := object()): arg, second=lambda: Bound.value", {"external.Bound"}),
+            ("first=lambda arg=(Bound := object()): arg, second=[Bound.value for item in ()]", {"external.Bound"}),
+            ("first=lambda arg=(Bound := object()): arg, second=lambda arg=Bound: arg", set()),
+            ("first=lambda arg=(Bound := object()): arg, second=[item.value for item in Bound.records]", set()),
+            ("option=[(lambda: item.value) for item in ()]", set()),
+            ("option=lambda arg=(Bound := object()): ((Bound := object()), Bound.value)", set()),
+            ("option=lambda arg=(Bound := object()): lambda: Bound.value", {"external.Bound"}),
+        ]
+        for header, expected in cases:
+            with self.subTest(header=header):
+                tree = ast.parse(
+                    "from external import Bound, Other\n"
+                    "class Outer:\n"
+                    f"    class Service({header}):\n        pass\n"
+                )
+                class_node = _first_class(tree).body[0]
+                self.assertIsInstance(class_node, ast.ClassDef)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
+    def test_class_body_lambda_defaults_preserve_global_dependencies(self) -> None:
+        cases = [
+            ("lambda arg=(Bound := object()): Bound.value", {"external.Bound"}),
+            ("(lambda arg=(Bound := object()): arg, lambda: Bound.value)", {"external.Bound"}),
+            ("(lambda arg=(Bound := object()): arg, [Bound.value for item in ()])", {"external.Bound"}),
+            ("[(lambda: item.value) for item in ()]", set()),
+            ("lambda: (lambda arg=(Bound := object()): Bound.value)", set()),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                tree = ast.parse(
+                    "from external import Bound\n"
+                    f"class Service:\n    callback = {expression}\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
+    def test_class_default_initializers_preserve_imports_and_later_rebinding(self) -> None:
+        cases = [
+            ("callback = lambda arg=(Bound := Bound.factory()): Bound.value\n    later = Bound.value", {"external.Bound"}),
+            ("callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", set()),
+            ("callback = lambda arg=(Bound := object()): arg\n    def method(arg=Bound.value):\n        pass", set()),
+            ("callback = lambda arg=(Bound := object()): arg\n    def method(self):\n        return Bound.value", {"external.Bound"}),
+            ("def method(self):\n        Bound = object()\n    later = Bound.value", {"external.Bound"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                tree = ast.parse("from external import Bound\n" + f"class Service:\n    {body}\n")
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
+    def test_conditional_class_default_bindings_keep_possible_outer_dependencies(self) -> None:
+        cases = [
+            ("if False:\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("if flag:\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("for value in ():\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("while False:\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("if True:\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", set()),
+            ("if flag:\n        callback = lambda arg=(Bound := object()): arg\n    else:\n        callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", set()),
+            ("if (Bound := object()):\n        pass\n    later = Bound.value", set()),
+            ("try:\n        raise ValueError\n        callback = lambda arg=(Bound := object()): arg\n    except ValueError:\n        pass\n    later = Bound.value", {"external.Bound"}),
+            ("with manager:\n        if flag:\n            callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("match value:\n        case 1:\n            callback = lambda arg=(Bound := object()): arg\n    later = Bound.value", {"external.Bound"}),
+            ("assert flag, (lambda arg=(Bound := object()): arg)\n    later = Bound.value", {"external.Bound"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                tree = ast.parse("from external import Bound\n" + f"class Service:\n    {body}\n")
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(class_node), names))
+
     def test_class_keyword_comprehensions_keep_outer_dependencies(self) -> None:
         cases = [
             ("[item.value for item in item.records]", {"external.records"}),

@@ -14,6 +14,7 @@ from pathlib import Path
 __all__ = ["Names"]
 
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+_MaskedNode = tuple[ast.AST, frozenset[str], bool]
 
 
 @dataclass(frozen=True)
@@ -63,8 +64,8 @@ class Names:
         """The root import at ``node``, as ``(canonical, from_import)``, or None."""
         return _imported(self, node, scope)
 
-    def is_comprehension_local(self, node: ast.expr) -> bool:
-        """Whether an enclosing comprehension binds the reference root."""
+    def is_expression_local(self, node: ast.expr) -> bool:
+        """Whether an enclosing expression scope binds the reference root."""
         return _root_masked(self, node)
 
 
@@ -141,12 +142,23 @@ def _scopes_for(names: Names, node: ast.AST, scope: ast.AST | None) -> list[ast.
 def _scopes_for_node(names: Names, node: ast.AST) -> list[ast.AST]:
     scopes: list[ast.AST] = []
     current = node
+    skip_class = False
     while id(current) in names._parents:
         parent = names._parents[id(current)]
-        scopes = _with_parent_scope(scopes, current, parent, names._parents)
+        if isinstance(parent, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            skip_class = skip_class or _in_comprehension_body(node, parent, names._parents)
+        if not (skip_class and isinstance(parent, ast.ClassDef)):
+            scopes = _with_parent_scope(scopes, current, parent, names._parents)
         current = parent
     scopes.append(names._tree)
     return scopes
+
+
+def _in_comprehension_body(
+    node: ast.AST, scope: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp, parents: dict[int, ast.AST]
+) -> bool:
+    outer_iter = scope.generators[0].iter
+    return node is not outer_iter and not _contains(node, outer_iter, parents)
 
 
 def _with_parent_scope(
@@ -330,7 +342,7 @@ def _scope_assigned(scope: ast.AST) -> set[str]:
     if isinstance(scope, _FUNCTION):
         names.update(_parameter_names(scope))
     for statement in _statements(scope):
-        names.update(_assigned_in(statement))
+        names.update(_assigned_in(statement, include_lambda_defaults=not isinstance(scope, ast.ClassDef)))
     return names
 
 
@@ -344,8 +356,10 @@ def _parameter_names(scope: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
     return names
 
 
-def _assigned_in(node: ast.AST) -> set[str]:
-    if isinstance(node, (ast.Import, ast.ImportFrom, ast.Lambda)):
+def _assigned_in(node: ast.AST, *, include_lambda_defaults: bool = True) -> set[str]:
+    if isinstance(node, ast.Lambda):
+        return _assigned_lambda_defaults(node) if include_lambda_defaults else set()
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
         return set()
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return {node.name}
@@ -353,7 +367,15 @@ def _assigned_in(node: ast.AST) -> set[str]:
     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
         found.add(node.id)
     for child in _assigned_children(node):
-        found.update(_assigned_in(child))
+        found.update(_assigned_in(child, include_lambda_defaults=include_lambda_defaults))
+    return found
+
+
+def _assigned_lambda_defaults(node: ast.Lambda) -> set[str]:
+    found: set[str] = set()
+    for default in [*node.args.defaults, *node.args.kw_defaults]:
+        if default is not None:
+            found.update(_assigned_in(default))
     return found
 
 
@@ -373,23 +395,203 @@ def _pattern_names(node: ast.AST) -> set[str]:
 
 def _expression_masks(tree: ast.Module) -> dict[int, frozenset[str]]:
     masks: dict[int, frozenset[str]] = {}
-    pending: list[tuple[ast.AST, frozenset[str]]] = [(tree, frozenset())]
+    bindings = _expression_bindings(tree)
+    pending: list[_MaskedNode] = [(tree, frozenset(), False)]
     while pending:
-        node, masked = pending.pop()
+        node, masked, class_namespace = pending.pop()
         if masked and isinstance(node, (ast.Name, ast.Attribute)):
             masks[id(node)] = masked
-        pending.extend(_masked_children(node, masked))
+        pending.extend(_masked_children(node, masked, class_namespace, bindings))
     return masks
 
 
-def _masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [(child, frozenset()) for child in ast.iter_child_nodes(node)]
+def _masked_children(
+    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: dict[int, frozenset[str]]
+) -> list[_MaskedNode]:
+    if isinstance(node, ast.ClassDef):
+        return _class_header_masked_children(node, masked, class_namespace, bindings)
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return [
+            (child, frozenset(), False) if isinstance(child, ast.stmt) else (child, masked, class_namespace)
+            for child in ast.iter_child_nodes(node)
+        ]
+    if isinstance(node, ast.Lambda):
+        return _lambda_masked_children(node, masked, class_namespace, bindings)
     if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return [(child, masked) for child in ast.iter_child_nodes(node)]
+        return _ordinary_masked_children(node, masked, class_namespace, bindings)
+    return _comprehension_masked_children(node, masked, class_namespace)
+
+
+def _comprehension_masked_children(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    masked: frozenset[str],
+    class_namespace: bool,
+) -> list[_MaskedNode]:
     outer_iter = node.generators[0].iter
-    targets = masked.union(*(_stored_names(generator.target) for generator in node.generators))
-    return [(child, masked if child is outer_iter else targets) for child in _comprehension_children(node)]
+    captured = frozenset() if class_namespace else masked
+    targets = captured.union(*(_stored_names(generator.target) for generator in node.generators))
+    return [
+        (child, masked, class_namespace) if child is outer_iter else (child, targets, False)
+        for child in _comprehension_children(node)
+    ]
+
+
+def _class_header_masked_children(
+    node: ast.ClassDef, masked: frozenset[str], class_namespace: bool, bindings: dict[int, frozenset[str]]
+) -> list[_MaskedNode]:
+    header = [*node.decorator_list, *node.bases, *node.keywords]
+    children = _sequence_masked_children(header, masked, class_namespace, bindings)
+    children.extend(_sequence_masked_children(node.body, frozenset(), True, bindings))
+    handled_ids = {id(child) for child in [*header, *node.body]}
+    children.extend((child, frozenset(), True) for child in ast.iter_child_nodes(node) if id(child) not in handled_ids)
+    return children
+
+
+def _lambda_masked_children(
+    node: ast.Lambda, masked: frozenset[str], class_namespace: bool, bindings: dict[int, frozenset[str]]
+) -> list[_MaskedNode]:
+    defaults = [default for default in [*node.args.defaults, *node.args.kw_defaults] if default is not None]
+    children = _sequence_masked_children(defaults, masked, class_namespace, bindings)
+    # Defaults use the enclosing namespace; lambda bodies cannot capture a class namespace.
+    captured = frozenset() if class_namespace else masked | bindings[id(node)]
+    bound = captured | frozenset(_scope_assigned(node))
+    return [*children, (node.body, bound, False)]
+
+
+def _ordinary_masked_children(
+    node: ast.AST, masked: frozenset[str], class_namespace: bool, bindings: dict[int, frozenset[str]]
+) -> list[_MaskedNode]:
+    if isinstance(node, ast.IfExp):
+        branch_mask = masked | bindings[id(node.test)]
+        return [(node.test, masked, class_namespace), (node.body, branch_mask, class_namespace), (node.orelse, branch_mask, class_namespace)]
+    if isinstance(node, ast.Dict):
+        children = [part for pair in zip(node.keys, node.values) for part in pair if part is not None]
+        return _sequence_masked_children(children, masked, class_namespace, bindings)
+    if isinstance(node, ast.expr):
+        return _sequence_masked_children(list(ast.iter_child_nodes(node)), masked, class_namespace, bindings)
+    return [(child, masked, class_namespace) for child in ast.iter_child_nodes(node)]
+
+
+def _sequence_masked_children(
+    children: list[ast.AST], masked: frozenset[str], class_namespace: bool, bindings: dict[int, frozenset[str]]
+) -> list[_MaskedNode]:
+    found: list[_MaskedNode] = []
+    for child in children:
+        found.append((child, masked, class_namespace))
+        masked = masked | bindings[id(child)]
+    return found
+
+
+def _expression_bindings(tree: ast.Module) -> dict[int, frozenset[str]]:
+    bindings: dict[int, frozenset[str]] = {}
+    for node in reversed(_module_nodes(tree)):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            found = _evaluated_definition_bindings(node, bindings)
+        elif isinstance(node, ast.stmt):
+            found = _evaluated_statement_bindings(node, bindings)
+        else:
+            found = _evaluated_bindings(node, bindings)
+        bindings[id(node)] = frozenset(found)
+    return bindings
+
+
+def _evaluated_statement_bindings(node: ast.stmt, bindings: dict[int, frozenset[str]]) -> set[str]:
+    if isinstance(node, ast.If):
+        return _evaluated_if_statement_bindings(node, bindings)
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        return set(bindings[id(node.iter)])
+    if isinstance(node, ast.While):
+        return set(bindings[id(node.test)])
+    if isinstance(node, (ast.Try, ast.TryStar)):
+        return _sequence_bindings(node.finalbody, bindings)
+    if isinstance(node, (ast.With, ast.AsyncWith)):
+        return _evaluated_context_bindings(node, bindings)
+    if isinstance(node, ast.Match):
+        return set(bindings[id(node.subject)])
+    if isinstance(node, ast.Assert):
+        return set(bindings[id(node.test)])
+    return _evaluated_bindings(node, bindings)
+
+
+def _evaluated_if_statement_bindings(node: ast.If, bindings: dict[int, frozenset[str]]) -> set[str]:
+    found = set(bindings[id(node.test)])
+    truth = _literal_truth(node.test)
+    if truth is not None:
+        return found | _sequence_bindings(node.body if truth else node.orelse, bindings)
+    return found | (_sequence_bindings(node.body, bindings) & _sequence_bindings(node.orelse, bindings))
+
+
+def _evaluated_context_bindings(node: ast.With | ast.AsyncWith, bindings: dict[int, frozenset[str]]) -> set[str]:
+    found: set[str] = set()
+    for item in node.items:
+        found.update(bindings[id(item.context_expr)])
+    return found
+
+
+def _sequence_bindings(statements: list[ast.stmt], bindings: dict[int, frozenset[str]]) -> set[str]:
+    found: set[str] = set()
+    for statement in statements:
+        found.update(bindings[id(statement)])
+    return found
+
+
+def _evaluated_bindings(node: ast.AST, bindings: dict[int, frozenset[str]]) -> set[str]:
+    if isinstance(node, ast.NamedExpr):
+        return set(bindings[id(node.value)]) | set(_stored_names(node.target))
+    if isinstance(node, ast.Lambda):
+        return _evaluated_lambda_defaults(node, bindings)
+    if isinstance(node, ast.BoolOp):
+        return _evaluated_boolean_bindings(node, bindings)
+    if isinstance(node, ast.IfExp):
+        return _evaluated_conditional_bindings(node, bindings)
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return set(bindings[id(node.generators[0].iter)])
+    if isinstance(node, ast.Compare):
+        return set(bindings[id(node.left)] | bindings[id(node.comparators[0])])
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        found.update(bindings[id(child)])
+    return found
+
+
+def _evaluated_definition_bindings(
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, bindings: dict[int, frozenset[str]]
+) -> set[str]:
+    found: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        if not isinstance(child, ast.stmt):
+            found.update(bindings[id(child)])
+    return found
+
+
+def _evaluated_lambda_defaults(node: ast.Lambda, bindings: dict[int, frozenset[str]]) -> set[str]:
+    found: set[str] = set()
+    for default in [*node.args.defaults, *node.args.kw_defaults]:
+        if default is not None:
+            found.update(bindings[id(default)])
+    return found
+
+
+def _evaluated_boolean_bindings(node: ast.BoolOp, bindings: dict[int, frozenset[str]]) -> set[str]:
+    found: set[str] = set()
+    for value in node.values:
+        found.update(bindings[id(value)])
+        truth = _literal_truth(value)
+        if truth is None or (isinstance(node.op, ast.And) and not truth) or (isinstance(node.op, ast.Or) and truth):
+            break
+    return found
+
+
+def _evaluated_conditional_bindings(node: ast.IfExp, bindings: dict[int, frozenset[str]]) -> set[str]:
+    found = set(bindings[id(node.test)])
+    truth = _literal_truth(node.test)
+    if truth is not None:
+        return found | set(bindings[id(node.body if truth else node.orelse)])
+    return found | set(bindings[id(node.body)] & bindings[id(node.orelse)])
+
+
+def _literal_truth(node: ast.AST) -> bool | None:
+    return bool(node.value) if isinstance(node, ast.Constant) else None
 
 
 def _comprehension_children(node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> list[ast.AST]:
