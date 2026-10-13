@@ -6488,6 +6488,38 @@ class CommandAcceptanceTests(unittest.TestCase):
                         self.assertEqual("Service", report["findings"][0]["context"])
                         self.assertIn("value of 1.", report["findings"][0]["message"])
 
+    def test_coupling_class_keywords_share_completed_branch_effects(self) -> None:
+        cases = [
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        item=Local()\n    else:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    item=Local()\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    item=Local()\n    if flag:\n        del item\n        item=Local()\n    else:\n        pass\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        if other:\n            item=Local()\n        else:\n            item=Local()\n    else:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 0),
+            ("from external import Item as item\nclass Outer:\n    if flag:\n        item=Local()\n    class Service(Config, option=item.value):\n        pass", 1),
+            ("from external import Bound\nclass Service(Config, first=(flag and (Bound := None)) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=(spare := (flag and (Bound := None))) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=((Bound := Local) if flag else None) or (Bound := Local), second=Bound.value):\n    pass", 0),
+            ("from external import Bound\nclass Service(Config, first=flag and (Bound := Local), second=Bound.value):\n    pass", 1),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text('<ruleset><rule ref="CouplingBetweenObjects"><properties><property name="maximum" value="1"/></properties></rule></ruleset>', encoding="utf-8")
+            for body, value in cases:
+                with self.subTest(body=body):
+                    source = directory / "shared_bindings.py"
+                    source.write_text("class Config:\n    pass\nclass Local:\n    value=1\n" + body + "\n", encoding="utf-8")
+                    compile(source.read_text(), str(source), "exec", dont_inherit=True)
+                    stdout, stderr = StringIO(), StringIO()
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        self.assertEqual("Service", report["findings"][0]["context"])
+                        self.assertIn("value of 1.", report["findings"][0]["message"])
+
     def test_coupling_class_keywords_use_header_binding_proofs(self) -> None:
         cases = [
             ("import external as Service\nclass Service(metaclass=Service.Factory):\n    pass", 1),

@@ -37,6 +37,74 @@ def _class_info(
 
 
 class ClassDependencyTests(unittest.TestCase):
+    def test_class_keyword_shared_effects_preserve_generic_name_queries(self) -> None:
+        source = "from external import Bound\nclass Local:\n    value=1\nclass Service(first=(flag and (Bound := None)) or (Bound := Local), second=Bound.value):\n    later=Bound.value\n"
+        tree = ast.parse(source)
+        node = tree.body[-1]
+        names = Names.build(tree, module=None, path=Path("service.py"))
+        self.assertEqual("external.Bound.value", names.qualified(node.keywords[1].value))
+        self.assertIsNone(names.imported(node.keywords[1].value))
+        self.assertEqual(("external.Bound", True), names.imported(node.body[0].value))
+        self.assertEqual(frozenset({"external.Bound"}), measure_class_dependencies(_class_info(node), names, {"Local", "Service"}))
+
+    def test_class_keyword_completed_expressions_share_definite_effects(self) -> None:
+        cases = [
+            ("(flag and (Bound := None)) or (Bound := Local)", set()),
+            ("(flag or (Bound := True)) and (Bound := Local)", set()),
+            ("(flag and (Bound := Local)) or (Bound := Local)", set()),
+            ("(flag and (Bound := None)) or ((spare := None) or (Bound := Local))", set()),
+            ("(spare := (flag and (Bound := None))) or (Bound := Local)", set()),
+            ("((flag and (Bound := None)) or (Bound := Local)) if other else (Bound := Local)", set()),
+            ("((Bound := Local) if flag else None) or (Bound := Local)", set()),
+            ("(Bound := Local) if flag else (Bound := Local)", set()),
+            ("(flag and (Bound := None)) or (Bound := Other)", {"external.Other"}),
+            ("(flag and (Bound := Other)) or (Bound := Local)", {"external.Other"}),
+            ("flag and (Bound := Local)", {"external.Bound"}),
+            ("flag or (Bound := Local)", {"external.Bound"}),
+            ("(Bound := Local) if flag else None", {"external.Bound"}),
+            ("lambda: (Bound := Local)", {"external.Bound"}),
+            ("(Bound.value, (Bound := Local))", {"external.Bound"}),
+            ("[(Bound := Local) for spare in ()]", {"external.Bound"}),
+        ]
+        for expression, expected in cases:
+            with self.subTest(expression=expression):
+                source = "from external import Bound, Other\nclass Local:\n    value=1\nclass Service(first=" + expression + ", second=Bound.value):\n    pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(tree.body[-1]), names, {"Local", "Service"}))
+
+    def test_class_keyword_locals_merge_completed_conditional_branches(self) -> None:
+        cases = [
+            ("if flag:\n        item=Local()\n    else:\n        item=Local()", set()),
+            ("item=Local()\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
+            ("item=Local()\n    if flag:\n        del item\n        item=Local()\n    else:\n        pass", set()),
+            ("item=Local()\n    if flag:\n        if other:\n            from genuine import Item as item\n            item=Local()\n    else:\n        pass", set()),
+            ("item=Local()\n    if flag:\n        from genuine import Item as item\n    else:\n        pass", {"item.value"}),
+            ("item=Local()\n    if flag:\n        del item\n    else:\n        pass", {"item.value"}),
+            ("(item := Local())\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
+            ("item=Local()\n    flag and (item := Local())\n    if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
+            ("if (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
+            ("item=Local()\n    if flag and (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", set()),
+            ("if flag and (item := Local()):\n        from genuine import Item as item\n        item=Local()\n    else:\n        pass", {"item.value"}),
+            ("if flag:\n        if other:\n            item=Local()\n        else:\n            item=Local()\n    else:\n        item=Local()", set()),
+            ("if flag:\n        item=Local()\n    elif other:\n        item=Local()\n    else:\n        item=Local()", set()),
+            ("if flag:\n        with manager as item:\n            pass\n    else:\n        item=Local()", set()),
+            ("if flag:\n        from genuine import Item as item\n        item=Local()\n    else:\n        item=Local()", set()),
+            ("if flag:\n        del item\n        item=Local()\n    else:\n        item=Local()", set()),
+            ("if flag:\n        item=Local()\n    else:\n        pass", {"item.value"}),
+            ("if flag:\n        item=Local()\n        del item\n    else:\n        item=Local()", {"item.value"}),
+            ("if flag:\n        def configure():\n            item=Local()\n    else:\n        def configure():\n            item=Local()", {"external.Item"}),
+        ]
+        for body, expected in cases:
+            with self.subTest(body=body):
+                source = "from external import Item as item\nclass Local:\n    value=1\nclass Outer:\n    " + body + "\n    class Service(option=item.value):\n        pass\n"
+                compile(source, "service.py", "exec", dont_inherit=True)
+                tree = ast.parse(source)
+                node = next(node for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == "Service")
+                names = Names.build(tree, module=None, path=Path("service.py"))
+                self.assertEqual(frozenset(expected), measure_class_dependencies(_class_info(node), names, {"Local", "Outer", "Service"}))
+
     def test_class_keyword_reads_precede_the_target_name_binding(self) -> None:
         cases = [
             ("import external as Service\nclass Service(metaclass=Service.Factory):\n    pass", {"external.Factory"}),
