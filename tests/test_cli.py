@@ -174,7 +174,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                                 self.assertEqual(("Service", line, "CouplingBetweenObjects"), (finding["context"], finding["line"], finding["ruleName"]))
                                 self.assertIn("value of 1.", finding["message"])
                         else:
-                            message = f"{path}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            message = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
                             self.assertEqual(message, stdout.getvalue())
 
     def test_coupling_eager_keyword_import_order_triggers_the_gate(self) -> None:
@@ -217,7 +217,7 @@ class CommandAcceptanceTests(unittest.TestCase):
                                 self.assertEqual(("Service", line, "CouplingBetweenObjects"), (findings[0]["context"], findings[0]["line"], findings[0]["ruleName"]))
                                 self.assertIn("value of " + str(expected) + ".", findings[0]["message"])
                         else:
-                            message = f"{path}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
+                            message = f"{path.resolve().as_posix()}:{line}: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of {expected}. Consider to reduce the number of dependencies under 1.\n" if expected else ""
                             self.assertEqual(message, stdout.getvalue())
 
     def test_directory_scan_recurses_over_python_files_in_path_order(self) -> None:
