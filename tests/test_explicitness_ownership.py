@@ -16,7 +16,7 @@ class OwnershipTests(unittest.TestCase):
             out, err = StringIO(), StringIO()
             status = run([str(path), "text", "explicitness"], out, err)
             self.assertEqual("", err.getvalue())
-            return status, out.getvalue().replace(str(path.resolve()), "probe.py")
+            return status, out.getvalue().replace(path.resolve().as_posix(), "probe.py")
 
     def test_alias_retains_caller_ownership(self):
         self.assertEqual((2, "probe.py:3: ImplicitOutput [priority 3] The function change() writes the implicit output alias. Return it instead.\n"), self.analyze("def change(values):\n    alias = values\n    alias.append(1)\n"))
