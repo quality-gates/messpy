@@ -64,6 +64,92 @@ class ClassDependencyTests(unittest.TestCase):
 
         self.assertEqual(frozenset({"dataclasses.dataclass"}), dependencies)
 
+    def test_class_keyword_records_imported_metaclass_dependency(self) -> None:
+        cases = [
+            ("from custom_meta import CustomMeta", "CustomMeta"),
+            ("from custom_meta import CustomMeta as Meta", "Meta"),
+            ("import custom_meta as meta", "meta.CustomMeta"),
+        ]
+        for imports, expression in cases:
+            with self.subTest(expression=expression):
+                tree = ast.parse(f"{imports}\nclass Service(metaclass={expression}):\n    pass\n")
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset({"custom_meta.CustomMeta"}), dependencies)
+
+    def test_class_keyword_expressions_record_external_dependencies(self) -> None:
+        cases = [
+            ("policy=choose(CustomMeta)", {"factories.choose", "custom_meta.CustomMeta"}),
+            ("policy=[CustomMeta, meta.OtherMeta]", {"custom_meta.CustomMeta", "custom_meta.OtherMeta"}),
+            ("**{'metaclass': CustomMeta}", {"custom_meta.CustomMeta"}),
+            ("**meta.options", {"custom_meta.options"}),
+        ]
+        for keywords, expected in cases:
+            with self.subTest(keywords=keywords):
+                tree = ast.parse(
+                    "from factories import choose\n"
+                    "from custom_meta import CustomMeta\n"
+                    "import custom_meta as meta\n"
+                    f"class Service({keywords}):\n    pass\n"
+                )
+                class_node = _first_class(tree)
+                names = Names.build(tree, module=None, path=Path("service.py"))
+
+                dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+                self.assertEqual(frozenset(expected), dependencies)
+
+    def test_class_keywords_preserve_dependency_exclusions(self) -> None:
+        tree = ast.parse(
+            "from typing import TypedDict as Record\n"
+            "from collections.abc import Sequence as Items\n"
+            "from builtins import type as Meta\n"
+            "class Service(Record, metaclass=Meta, total=False, label='CustomMeta', "
+            "count=1, empty=None, policy=list[int], items=Items, helper=Helper):\n"
+            "    pass\n"
+        )
+        class_node = _first_class(tree)
+        names = Names.build(tree, module=None, path=Path("service.py"))
+
+        dependencies = measure_class_dependencies(_class_info(class_node), names, {"Helper"})
+
+        self.assertEqual(frozenset(), dependencies)
+
+    def test_class_keyword_dependencies_deduplicate_with_other_references(self) -> None:
+        tree = ast.parse(
+            "from custom_meta import CustomMeta\n"
+            "@CustomMeta\n"
+            "class Service(CustomMeta, metaclass=CustomMeta, policy=CustomMeta):\n"
+            "    value: CustomMeta\n"
+        )
+        class_node = _first_class(tree)
+        names = Names.build(tree, module=None, path=Path("service.py"))
+
+        dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+        self.assertEqual(frozenset({"custom_meta.CustomMeta"}), dependencies)
+
+    def test_nested_class_keywords_belong_to_the_nested_class(self) -> None:
+        tree = ast.parse(
+            "from custom_meta import CustomMeta\n"
+            "class Outer:\n"
+            "    class Inner(metaclass=CustomMeta):\n"
+            "        pass\n"
+        )
+        outer = _first_class(tree)
+        inner = outer.body[0]
+        self.assertIsInstance(inner, ast.ClassDef)
+        names = Names.build(tree, module=None, path=Path("service.py"))
+
+        self.assertEqual(frozenset(), measure_class_dependencies(_class_info(outer), names))
+        self.assertEqual(
+            frozenset({"custom_meta.CustomMeta"}),
+            measure_class_dependencies(_class_info(inner), names),
+        )
+
     def test_class_with_uppercase_unimported_decorator_records_dependency(self) -> None:
         tree = ast.parse("@CustomDecorator\nclass Widget:\n    pass\n")
         class_node = _first_class(tree)

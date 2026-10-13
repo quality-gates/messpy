@@ -6094,6 +6094,93 @@ class CommandAcceptanceTests(unittest.TestCase):
             self.assertIn(rule_name, report)
         self.assertEqual((0, "", ""), (goto_status, goto_stdout.getvalue(), goto_stderr.getvalue()))
 
+    def test_coupling_class_keywords_trigger_the_configured_gate(self) -> None:
+        cases = [
+            ("metaclass", "from custom_meta import CustomMeta\n", "metaclass=CustomMeta", 1),
+            ("symbol_alias", "from custom_meta import CustomMeta as Meta\n", "metaclass=Meta", 1),
+            ("module_alias", "import custom_meta as meta\n", "metaclass=meta.CustomMeta", 1),
+            ("base_control", "from custom_meta import CustomMeta\n", "CustomMeta", 1),
+            (
+                "expression", "from factories import choose\nfrom custom_meta import CustomMeta\n",
+                "policy=choose(CustomMeta)", 2,
+            ),
+            ("unpacking", "from custom_meta import CustomMeta\n", "**{'metaclass': CustomMeta}", 1),
+            (
+                "deduplicated", "from custom_meta import CustomMeta\n",
+                "CustomMeta, metaclass=CustomMeta, policy=CustomMeta", 1,
+            ),
+            ("literals", "", "metaclass=type, total=False, label='CustomMeta', policy=list[int]", 0),
+        ]
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            for name, imports, header, value in cases:
+                with self.subTest(name=name):
+                    source = directory / f"{name}.py"
+                    source.write_text(f"{imports}\nclass Service({header}):\n    pass\n", encoding="utf-8")
+                    stdout, stderr = StringIO(), StringIO()
+
+                    status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+                    self.assertEqual(2 if value else 0, status)
+                    self.assertEqual("", stderr.getvalue())
+                    report = json.loads(stdout.getvalue())
+                    self.assertEqual([], report["errors"])
+                    self.assertEqual(1 if value else 0, len(report["findings"]))
+                    if value:
+                        finding = report["findings"][0]
+                        self.assertEqual(source.resolve().as_posix(), finding["path"])
+                        self.assertEqual(imports.count("\n") + 2, finding["line"])
+                        self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+                        self.assertEqual(2, finding["priority"])
+                        self.assertEqual("Service", finding["context"])
+                        self.assertEqual(
+                            f"The class Service has a coupling between objects value of {value}. "
+                            "Consider to reduce the number of dependencies under 1.",
+                            finding["message"],
+                        )
+
+    def test_coupling_nested_class_keywords_do_not_couple_the_outer_class(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            source = directory / "nested.py"
+            source.write_text(
+                "from custom_meta import CustomMeta\n"
+                "class Outer:\n"
+                "    class Inner(metaclass=CustomMeta):\n"
+                "        pass\n"
+                "def build():\n"
+                "    from custom_meta import CustomMeta as Meta\n"
+                "    class Local(metaclass=Meta):\n"
+                "        pass\n",
+                encoding="utf-8",
+            )
+            ruleset = directory / "coupling.xml"
+            ruleset.write_text(
+                '<ruleset><rule ref="CouplingBetweenObjects"><properties>'
+                '<property name="maximum" value="1"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout, stderr = StringIO(), StringIO()
+
+            status = run([str(source), "json", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        report = json.loads(stdout.getvalue())
+        self.assertEqual([], report["errors"])
+        self.assertEqual([("Inner", 3), ("Local", 7)], [
+            (finding["context"], finding["line"]) for finding in report["findings"]
+        ])
+        for finding in report["findings"]:
+            self.assertEqual("CouplingBetweenObjects", finding["ruleName"])
+            self.assertIn("value of 1.", finding["message"])
+
     def test_design_metrics_find_dependency_state_and_cohesion_hazards(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "design_metrics.py"

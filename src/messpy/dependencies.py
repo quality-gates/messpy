@@ -42,7 +42,11 @@ def measure_class_dependencies(
         *(method.name for method in class_info.methods),
     }
     dependencies: set[str] = set()
-    for expression in [*class_info.node.bases, *class_info.node.decorator_list]:
+    for expression in [
+        *class_info.node.bases,
+        *class_info.node.decorator_list,
+        *(keyword.value for keyword in class_info.node.keywords),
+    ]:
         dependencies = _dependency_state(expression, names, class_info.node, local_names, dependencies)
     for statement in class_info.node.body:
         if not isinstance(statement, ast.ClassDef):
