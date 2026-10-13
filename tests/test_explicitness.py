@@ -76,7 +76,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
 
         self.assertEqual((0, [], ""), (status, report, errors))
 
-    def test_closure_that_reads_enclosing_variables_has_implicit_inputs(self) -> None:
+    def test_closure_over_fixed_bindings_has_no_implicit_inputs(self) -> None:
         status, report, errors = _analyze(
             "def make_counter(start):\n"
             "    step = 2\n"
@@ -88,16 +88,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             "explicitness",
         )
 
-        self.assertEqual((2, ""), (status, errors))
-        self.assertEqual(
-            [
-                "6: ImplicitInput [priority 3] The function advance() reads the implicit input start. "
-                "Pass it as an argument instead.",
-                "6: ImplicitInput [priority 3] The function advance() reads the implicit input step. "
-                "Pass it as an argument instead.",
-            ],
-            report,
-        )
+        self.assertEqual((0, [], ""), (status, report, errors))
 
     def test_nested_definition_reads_data_when_the_enclosing_function_runs(self) -> None:
         status, report, errors = _analyze(
@@ -350,7 +341,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
-    def test_common_idioms_that_keep_data_local_are_explicit(self) -> None:
+    def test_unresolved_external_and_receiver_effects_are_unknown(self) -> None:
         status, report, errors = _analyze(
             "try:\n"
             "    import _winapi\n"
@@ -382,7 +373,24 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             "explicitness",
         )
 
-        self.assertEqual((0, [], ""), (status, report, errors))
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "8: UnknownEffect [priority 3] The function close() has an unknown effect from "
+                "_winapi.CloseHandle. Establish the callable's effects before treating it as a calculation.",
+                "18: UnknownEffect [priority 3] The method Registry.register() has an unknown effect from "
+                "mcls.registry. Establish the callable's effects before treating it as a calculation.",
+                "21: UnknownEffect [priority 3] The method Registry.__new__() has an unknown effect from "
+                "mcls.count. Establish the callable's effects before treating it as a calculation.",
+                "22: UnknownEffect [priority 3] The method Registry.__new__() has an unknown effect from "
+                "<dynamic call>. Establish the callable's effects before treating it as a calculation.",
+                "22: UnknownEffect [priority 3] The method Registry.__new__() has an unknown effect from "
+                "super. Establish the callable's effects before treating it as a calculation.",
+                "26: UnknownEffect [priority 3] The method Ordered.clear() has an unknown effect from "
+                "self. Establish the callable's effects before treating it as a calculation.",
+            ],
+            report,
+        )
 
     def test_output_names_the_changed_object_and_ignores_module_constants(self) -> None:
         status, report, errors = _analyze(
@@ -490,6 +498,8 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
                 "Pass it as an argument instead.",
                 "6: ImplicitOutput [priority 3] The method Basket.add() writes the implicit output counter. "
                 "Return it instead.",
+                "7: UnknownEffect [priority 3] The method Basket.add() has an unknown effect from self.items. "
+                "Establish the callable's effects before treating it as a calculation.",
             ],
             report,
         )
@@ -665,14 +675,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             "explicitness",
         )
 
-        self.assertEqual((2, ""), (status, errors))
-        self.assertEqual(
-            [
-                "5: ImplicitInput [priority 3] The function create() reads the implicit input extra. "
-                "Pass it as an argument instead."
-            ],
-            report,
-        )
+        self.assertEqual((0, [], ""), (status, report, errors))
 
     def test_method_decorator_mutating_instance_state_reports_implicit_instance_output(self) -> None:
         status, report, errors = _analyze(

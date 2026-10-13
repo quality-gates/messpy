@@ -275,6 +275,7 @@ _CATALOG = {
     ),
     "implicitinput": LoadedRule(name="ImplicitInput", priority=3, properties={}),
     "implicitoutput": LoadedRule(name="ImplicitOutput", priority=3, properties={}),
+    "unknowneffect": LoadedRule(name="UnknownEffect", priority=3, properties={}),
     "implicitinstanceinput": LoadedRule(name="ImplicitInstanceInput", priority=3, properties={}),
     "implicitinstanceoutput": LoadedRule(name="ImplicitInstanceOutput", priority=3, properties={}),
     "domainaction": LoadedRule(name="DomainAction", priority=2, properties={"domain": ""}),
@@ -382,10 +383,12 @@ _BUILT_IN_RULESETS = {
     "explicitness": (
         "ImplicitInput",
         "ImplicitOutput",
+        "UnknownEffect",
     ),
     "strictexplicitness": (
         "ImplicitInput",
         "ImplicitOutput",
+        "UnknownEffect",
         "ImplicitInstanceInput",
         "ImplicitInstanceOutput",
     ),

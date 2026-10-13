@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .names import Names
+from .reachability import evaluated_children, live_statements
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
 
@@ -205,6 +206,26 @@ def _resolved_callee(
         return _resolve_receiver_call(index, caller_id, func)
     if isinstance(func, ast.Lambda) and id(func) in index.nodes:
         return id(func)
+    if isinstance(func, ast.Call):
+        factory_id = _resolved_callee(index, caller_id, func, masks)
+        if factory_id is not None:
+            return _returned_callable(index, factory_id)
+    return None
+
+
+def _returned_callable(index: _CallableIndex, factory_id: int) -> int | None:
+    factory = index.nodes[factory_id]
+    if isinstance(factory, ast.Lambda):
+        value = factory.body
+    else:
+        returns = [statement for statement in factory.body if isinstance(statement, ast.Return)]
+        if len(returns) != 1 or returns[0] is not factory.body[-1]:
+            return None
+        value = returns[0].value
+    if isinstance(value, ast.Lambda) and id(value) in index.nodes:
+        return id(value)
+    if isinstance(value, ast.Name):
+        return _resolve_bare_name(index, factory_id, value.id)
     return None
 
 
@@ -717,8 +738,8 @@ def _pattern_binding_names(node: ast.AST) -> set[str]:
     return set()
 
 
-def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
-    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
+def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.Module) -> list[ast.AST]:
+    roots = [node.body] if isinstance(node, ast.Lambda) else live_statements(node.body)
     found: list[ast.AST] = []
     for root in roots:
         found.extend(_evaluated_node_list(root))
@@ -727,7 +748,7 @@ def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) 
 
 def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
     # Python evaluates decorators, defaults, class bases, and nested class bodies here.
-    # It does not evaluate a local annotation or a nested function body.
+    # It does not evaluate a local annotation, a nested function body, or a dead branch.
     if isinstance(node, ast.AnnAssign):
         return [node, *_evaluated_present([node.target, node.value])]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -735,9 +756,9 @@ def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
     if isinstance(node, ast.Lambda):
         return _evaluated_present([*node.args.defaults, *node.args.kw_defaults])
     if isinstance(node, ast.ClassDef):
-        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *node.body])
+        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *live_statements(node.body)])
     found = [node]
-    for child in ast.iter_child_nodes(node):
+    for child in evaluated_children(node):
         found.extend(_evaluated_node_list(child))
     return found
 

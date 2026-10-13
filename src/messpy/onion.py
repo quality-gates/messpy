@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from .callables import module_callables
 from .callgraph import CallGraph, CallSite, _module_nodes
 from .names import Names
+from .reachability import evaluated_children, live_statements
 from .rulesets import LoadedRule
 
 if TYPE_CHECKING:
@@ -137,7 +138,7 @@ def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], a
 def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
     deferred = _annotations_are_deferred(tree)
     nodes: list[ast.AST] = []
-    for statement in tree.body:
+    for statement in live_statements(tree.body):
         nodes.extend(_import_time_node(statement, deferred))
     return nodes
 
@@ -170,7 +171,7 @@ def _import_time_node(node: ast.AST, deferred: bool) -> list[ast.AST]:
     if _is_type_alias(node):
         return []
     found = [node]
-    for child in ast.iter_child_nodes(node):
+    for child in evaluated_children(node):
         found.extend(_import_time_node(child, deferred))
     return found
 
@@ -196,7 +197,7 @@ def _import_time_class(node: ast.ClassDef, deferred: bool) -> list[ast.AST]:
         (*node.decorator_list, *node.bases, *(item.value for item in node.keywords)),
         deferred,
     )
-    for statement in node.body:
+    for statement in live_statements(node.body):
         found.extend(_import_time_node(statement, deferred))
     return found
 
