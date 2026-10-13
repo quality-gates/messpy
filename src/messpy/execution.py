@@ -1,5 +1,3 @@
-"""Execution sites for deferred values and definition-time decorators."""
-
 from __future__ import annotations
 
 import ast

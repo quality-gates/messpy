@@ -1,12 +1,3 @@
-"""Scope names whose value cannot change after their single binding.
-
-A name is a constant when one live statement binds it, no other live code
-binds or deletes it, and its value is immutable: a literal, a tuple, a
-frozenset, a string, a compiled pattern, a read-only mapping, a class or a
-function. A read of a constant is not an implicit input, because no code can
-change what it reads.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -24,7 +15,6 @@ _SAME_KIND_OPERANDS = frozenset({"str", "bytes", "tuple", "frozenset"}) | _NUMER
 _CONTAINER_CALLS = frozenset({"builtins.frozenset", "builtins.tuple"})
 _IMMUTABLE_BUILTINS = frozenset({"builtins.str", "builtins.bytes", "builtins.int", "builtins.float", "builtins.complex", "builtins.bool"})
 _ITERABLE_KINDS = frozenset({"str", "bytes", "tuple", "frozenset"})
-# These standard modules expose classes, functions and immutable values as attributes.
 _IMMUTABLE_MODULES = frozenset({"abc", "ast", "collections.abc", "math", "numbers", "operator", "re", "string", "types", "typing"})
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
@@ -84,7 +74,6 @@ def _binding(alias: ast.alias, node: ast.Import | ast.ImportFrom) -> str:
 
 
 def _imports(nodes: Sequence[ast.AST]) -> dict[str, str]:
-    """Map each name that an import binds to the qualified name it refers to."""
     imports = {}
     for node in nodes:
         if isinstance(node, ast.Import):
@@ -101,7 +90,6 @@ def _definitions(statements: Sequence[ast.AST]) -> Iterator[str]:
 
 
 def _assignments(statements: Sequence[ast.AST]) -> Iterator[tuple[str, ast.expr]]:
-    """Each name and value that a live assignment of the scope binds, in source order."""
     for node in _scope_nodes(statements):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             yield from _pairs(node.targets[0], node.value)
@@ -128,7 +116,6 @@ def _pairs(target: ast.expr, value: ast.expr) -> Iterator[tuple[str, ast.expr]]:
 
 
 def _kind(value: ast.expr, known: Mapping[str, str], imports: Mapping[str, str], writes: Counter[str]) -> str:
-    """The kind of an immutable value, or an empty string when the value can change or is not known."""
     if isinstance(value, ast.Constant):
         return type(value.value).__name__ if isinstance(value.value, _STATIC_TYPES) else ""
     if isinstance(value, ast.Name):
@@ -176,7 +163,6 @@ def _unary_kind(node: ast.UnaryOp, operand: str) -> str:
 
 
 def _binary_kind(left: str, right: str) -> str:
-    # Builtin immutable operands have no overloaded operators, so the result is a new immutable value.
     if left in _NUMERIC and right in _NUMERIC:
         return left if left == right else "float"
     return left if left == right and left in _SAME_KIND_OPERANDS else ""

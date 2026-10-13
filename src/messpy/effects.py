@@ -27,7 +27,6 @@ class Effect:
     origin: Origin | None = None
     callback: Origin | None = None
     reason: str = ""
-    # The storage of each argument that a callback call passes, or None when the analysis cannot bind them.
     arguments: tuple[Storage, ...] | None = None
     keywords: tuple[tuple[str, Storage], ...] = ()
 
@@ -187,7 +186,6 @@ def _unknown_calls(calls, callable_info, chain, ownership, graph, callable_alias
 
 
 def _call_arguments(call: ast.Call, ownership: Ownership) -> tuple[tuple[Storage, ...] | None, tuple[tuple[str, Storage], ...]]:
-    # An unpacked argument hides which parameter gets which value.
     if any(isinstance(argument, ast.Starred) for argument in call.args) or any(keyword.arg is None for keyword in call.keywords):
         return None, ()
     arguments = tuple(ownership.value(argument, call) for argument in call.args)
@@ -208,8 +206,6 @@ def _callable_aliases(callable_info: CallableNode, nodes: Sequence[ast.AST], gra
 
 
 def _rebound_names(callable_node: ast.AST, nodes: Sequence[ast.AST]) -> frozenset[str]:
-    """The local names that more than one binding sets, or that another scope can set."""
-    # The analysis reads bindings in source order, so a loop or a nested scope can change the value at a call.
     stores = Counter(node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)))
     shared = {
         name for node in ast.walk(callable_node)
@@ -306,10 +302,12 @@ def _unknown_mutation(changed: ast.expr | None, node: ast.AST, ownership: Owners
 
 
 def _augmented_effects(node: ast.AugAssign, ownership: Ownership) -> tuple[Effect, ...]:
+    if not isinstance(node.target, ast.Name):
+        return ()
     change = augmented_mutation(node, ownership)
     if not change:
         return ()
-    name = node.target.id  # type: ignore[attr-defined]
+    name = node.target.id
     target = ownership.value(ast.Name(name, ast.Load()), node)
     if change == "unknown" or target.opaque:
         return (Effect("UnknownEffect", f"{name} augmented assignment", reason="unknown operand kind"),)
@@ -538,7 +536,6 @@ def _unresolved_callback(value: ast.expr, effect: Effect, owner: CallableEffects
 
 
 def _instantiated_arguments(effect: Effect, target: ast.AST, call: ast.Call, owner: CallableEffects) -> Effect:
-    """The callback effect with its argument storage expressed in the caller's storage."""
     from .analyzer import _instantiate_storage
 
     if effect.arguments is None:
@@ -551,14 +548,12 @@ def _instantiated_arguments(effect: Effect, target: ast.AST, call: ast.Call, own
 def _callback_effects(
     target: ast.AST, value: ast.expr, effect: Effect, call: ast.Call, owner: CallableEffects, summaries
 ) -> tuple[Effect, ...]:
-    """The effects of a resolved callback, with its parameters bound to the storage that the callback call passes."""
     if cold_body(target):
         return ()
     mapped = []
     for fact in summaries[id(target)].facts:
         origin = fact.origin
         if origin is None or origin.scope != id(target):
-            # A captured name of the caller has the caller's storage at the call.
             mapped.extend(_substitute(fact, target, call, owner))
             continue
         storage = _callback_parameter(target, value, effect, origin.name)
@@ -570,7 +565,6 @@ def _callback_effects(
 
 
 def _callback_parameter(target: ast.AST, value: ast.expr, effect: Effect, name: str) -> Storage | None:
-    # A bound method gets its receiver as the first argument, so the analysis does not bind its parameters.
     if effect.arguments is None or isinstance(value, ast.Attribute) or not isinstance(target, _FUNCTIONS):
         return None
     for keyword, storage in effect.keywords:
@@ -600,11 +594,8 @@ def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: Callable
 
 
 def _mapped_through(effect: Effect, storage: Storage, label: str) -> tuple[Effect, ...]:
-    """The effect on the caller's storage when the callee changes or reads storage bound to one argument."""
-    # The callee can reach every value that the argument holds, so a change can reach each of them.
     mapped = tuple(Effect(effect.rule, effect.name, source) for source in storage.everything)
     if storage.reaches_unknown and effect.rule == "ImplicitOutput":
-        # The argument can be or hold storage that the analysis cannot follow.
         mapped += (Effect("UnknownEffect", f"mutation of {label}", reason="unknown storage"),)
     return mapped
 

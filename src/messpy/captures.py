@@ -1,11 +1,3 @@
-"""Captured variable reads.
-
-A closure reads a captured name when it runs, not when it is made. The read is a calculation only when
-the binding is fixed and no other code can change the captured contents between two runs. This module
-decides that from the live syntax of the scope that binds the name, including binders in nested
-scopes that declare the name nonlocal.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -111,7 +103,6 @@ def _mutating_use(node: ast.Name, parents) -> bool:
 
 
 def _invoked_at_definition(closure: ast.AST | None, scope: ast.AST, parents) -> bool:
-    # A lambda that is called where it is made, for example (lambda: total)(), reads the name at that point.
     call = parents.get(id(closure))
     if not isinstance(closure, ast.Lambda) or not isinstance(call, ast.Call) or call.func is not closure:
         return False
@@ -290,7 +281,6 @@ def _binds(node: ast.AST, name: str) -> bool:
 
 
 def _scope_nodes(name: str, scope: ast.AST, chain: _ScopeChain) -> Iterator[ast.AST]:
-    # A nested scope that binds the name without a nonlocal declaration has its own variable.
     pending = list(evaluated_children(scope))
     while pending:
         node = pending.pop()

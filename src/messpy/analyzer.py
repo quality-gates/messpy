@@ -1631,15 +1631,39 @@ def _argument_ownership(
 ) -> Ownership:
     external = _external_storage(nodes, chain)
     calls = _call_kinds(nodes, chain, frozenset())
-    ownership = argument_ownership(callable_info.node, set(parameters), external, calls, _method_receiver(callable_info))
+    nonlinking = _nonlinking_local_calls(callable_info.node, nodes, graph) if graph is not None else frozenset()
+    ownership = argument_ownership(
+        callable_info.node, set(parameters), external, calls, _method_receiver(callable_info), nonlinking
+    )
     if graph is None:
         return ownership
     returned = _returned_call_storages(callable_info, nodes, chain, ownership, graph)
     return replace(ownership, returned=returned) if returned else ownership
 
 
+def _nonlinking_local_calls(caller: ast.AST, nodes: Sequence[ast.AST], graph: CallGraph) -> frozenset[int]:
+    safe = set()
+    for node in nodes:
+        if not isinstance(node, ast.Call):
+            continue
+        site = graph.call_site(caller, node)
+        if site is not None and _cannot_link_arguments(site.callee):
+            safe.add(id(node))
+    return frozenset(safe)
+
+
+def _cannot_link_arguments(target: ast.AST) -> bool:
+    if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        return False
+    for node in ast.walk(target):
+        if isinstance(node, (ast.Call, ast.Await, ast.Yield, ast.YieldFrom, ast.NamedExpr)):
+            return False
+        if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return False
+    return True
+
+
 def _external_storage(nodes: Sequence[ast.AST], chain: _ScopeChain) -> dict[str, Storage]:
-    # A name from an outer scope keeps its outer storage. A definition or a builtin name has no outer storage.
     external = {}
     for node in nodes:
         if isinstance(node, ast.Name) and node.id not in external:
@@ -1669,7 +1693,6 @@ _FRESH_CALLS = frozenset({
 
 
 def _call_kinds(nodes: Sequence[ast.AST], chain: _ScopeChain, hidden: AbstractSet[str]) -> dict[int, str]:
-    """The storage kind of each builtin call whose result the analysis knows."""
     kinds = {}
     for node in nodes:
         if not isinstance(node, ast.Call) or isinstance(node.func, ast.Name) and node.func.id in hidden:
@@ -1716,7 +1739,6 @@ def _returned_storage(
     caller_ownership: Ownership,
 ) -> Storage:
     if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)) or _deferred_body(target):
-        # A generator or a coroutine gives an object that the analysis does not follow.
         return Storage(opaque=True)
     relative = _relative_return_storage(target, caller_chain)
     return _instantiate_storage(relative, target, call, caller_ownership)
@@ -1731,7 +1753,6 @@ def _deferred_body(target: ast.AST) -> bool:
 
 
 def _return_values(target: ast.FunctionDef | ast.Lambda) -> list[ast.expr]:
-    # A function that can complete without a return statement gives None.
     if isinstance(target, ast.Lambda):
         return [target.body]
     nodes = _evaluated_nodes(target)
@@ -1761,7 +1782,6 @@ def _relative_return_storage(target: ast.FunctionDef | ast.Lambda, caller_chain:
 
 
 def _module_level_name(name: str, chain: _ScopeChain) -> bool:
-    # The callee can be in another scope, so only module and builtin names have the same meaning there.
     kind, scope = chain.binding(name)
     return kind == "unbound" or scope is chain.scopes[-1]
 
@@ -1772,7 +1792,6 @@ def _instantiate_storage(
     call: ast.Call,
     caller_ownership: Ownership,
 ) -> Storage:
-    # A returned parameter is the argument. A value that reaches a parameter reaches all of the argument.
     instantiated = Storage(
         _kept_origins(storage.outer, target), _kept_origins(storage.reachable, target), storage.kinds, storage.opaque, storage.deep
     )
@@ -1837,8 +1856,6 @@ def _augmented_storage_write(node: ast.AugAssign, ownership: Ownership) -> str:
 
 
 def changed_storage(changed: ast.expr, node: ast.AST, ownership: Ownership) -> Storage:
-    """The storage that a change of the expression changes."""
-    # A store into an attribute changes the object that holds the attribute.
     if isinstance(changed, ast.Attribute) and isinstance(changed.ctx, (ast.Store, ast.Del)):
         return ownership.value(changed.value, node)
     return ownership.value(changed, node)

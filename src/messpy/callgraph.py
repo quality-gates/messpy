@@ -200,7 +200,6 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
 
 
 def _rebound_globals(state: _BindState) -> frozenset[str]:
-    """The module names that a function declares global and then binds."""
     rebound: set[str] = set()
     for scope_id, declared in state.declarations.globals.items():
         scope = state.nodes.get(scope_id)
@@ -314,7 +313,6 @@ def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int 
 def _lookup_scope(index: _CallableIndex, scope_id: int, name: str) -> tuple[bool, int | None]:
     if name in index.shadows.get(scope_id, ()):
         return True, None
-    # A function that declares a module name global can bind another value to it.
     if scope_id == index.module_id and name in index.rebound_globals:
         return True, None
     callee_id = index.bindings.get(scope_id, {}).get(name)
@@ -807,7 +805,6 @@ def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda |
 
 def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
     # Python evaluates decorators, defaults, class bases, and nested class bodies here.
-    # It does not evaluate a local annotation, a nested function body, or a dead branch.
     if isinstance(node, ast.AnnAssign):
         return [node, *_evaluated_present([node.target, node.value])]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):

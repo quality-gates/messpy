@@ -1,12 +1,3 @@
-"""Storage ownership inside one callable.
-
-The analysis follows each local name through the body of one callable. A Storage value gives the outer
-storage that the value can be (outer), the outer storage that the value can reach (reachable), the builtin
-kinds that the value can have, whether the analysis cannot follow the value (opaque), and whether the value
-can reach storage that the analysis cannot follow (deep). A mutation of opaque storage is an unknown effect,
-because the storage can be shared.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -40,6 +31,8 @@ class Storage:
     kinds: frozenset[str] = frozenset({"unknown"})
     opaque: bool = False
     deep: bool = False
+    slots: tuple[tuple[tuple[str, str | int], Storage], ...] = ()
+    indexed: bool = False
 
     @property
     def everything(self) -> frozenset[Origin]:
@@ -50,16 +43,19 @@ class Storage:
         return self.opaque or self.deep
 
     def join(self, other: Storage) -> Storage:
+        right = dict(other.slots)
+        indexed = self.indexed and other.indexed
         return Storage(
             self.outer | other.outer,
             self.reachable | other.reachable,
             self.kinds | other.kinds,
             self.opaque or other.opaque,
             self.deep or other.deep,
+            tuple((key, value.join(right[key])) for key, value in self.slots if key in right) if indexed else (),
+            indexed,
         )
 
 
-# A call of one of these kinds does not keep a reference to its arguments.
 _COPY_KINDS = frozenset({"list", "dict", "set", "tuple", "frozenset"})
 PURE_CALL_KINDS = _COPY_KINDS | frozenset({"fresh", "element"})
 _ELEMENT_METHODS = MappingProxyType({
@@ -68,6 +64,7 @@ _ELEMENT_METHODS = MappingProxyType({
     "set": frozenset({"pop"}),
 })
 _COMPREHENSION_KINDS = MappingProxyType({ast.ListComp: "list", ast.SetComp: "set", ast.DictComp: "dict", ast.GeneratorExp: "generator"})
+_MAX_TRACKED_SLOTS = 16
 
 
 @dataclass(frozen=True)
@@ -144,7 +141,6 @@ def _walrus_storage(expression: ast.NamedExpr, view: _View) -> Storage:
 
 
 def _starred_storage(expression: ast.Starred, view: _View) -> Storage:
-    # A starred value in a display gives the elements of the value.
     return _elements(_value(expression.value, view))
 
 
@@ -153,7 +149,6 @@ def _operator_storage(expression: ast.BinOp | ast.UnaryOp, view: _View) -> Stora
         return Storage(kinds=frozenset({"bool"}))
     operands = [expression.operand] if isinstance(expression, ast.UnaryOp) else [expression.left, expression.right]
     values = [_value(operand, view) for operand in operands]
-    # An operator of a value that the analysis cannot follow can give that value.
     return replace(_fresh_from(values), opaque=any(value.opaque for value in values))
 
 
@@ -165,7 +160,19 @@ def _selected_storage(expression: ast.Attribute | ast.Subscript, view: _View) ->
     base = _value(expression.value, view)
     if isinstance(expression, ast.Subscript) and isinstance(expression.slice, ast.Slice):
         return Storage(reachable=base.everything, kinds=base.kinds, opaque=base.opaque, deep=base.deep)
+    if base.indexed:
+        key = _slot_key(expression)
+        selected = dict(base.slots).get(key) if key is not None else None
+        return selected if selected is not None else Storage(opaque=True)
     return _elements(base)
+
+
+def _slot_key(expression: ast.Attribute | ast.Subscript) -> tuple[str, str | int] | None:
+    if isinstance(expression, ast.Attribute):
+        return ("attribute", expression.attr)
+    if isinstance(expression.slice, ast.Constant) and type(expression.slice.value) in {str, int}:
+        return ("item", expression.slice.value)
+    return None
 
 
 def _call_storage(expression: ast.Call, view: _View) -> Storage:
@@ -205,7 +212,21 @@ def _method_storage(function: ast.Attribute, view: _View) -> Storage:
 def _container_storage(expression: ast.List | ast.Tuple | ast.Set | ast.Dict, view: _View) -> Storage:
     elements = [_value(child, view) for child in ast.iter_child_nodes(expression) if isinstance(child, ast.expr)]
     container = _fresh_from(elements)
-    return replace(container, kinds=frozenset({type(expression).__name__.lower()}))
+    kind = frozenset({type(expression).__name__.lower()})
+    slots = _literal_slots(expression, view)
+    if slots is None:
+        return replace(container, kinds=kind)
+    if len(slots) > _MAX_TRACKED_SLOTS:
+        return Storage(kinds=kind, opaque=True)
+    return replace(container, kinds=kind, slots=slots, indexed=True)
+
+
+def _literal_slots(expression: ast.List | ast.Tuple | ast.Set | ast.Dict, view: _View):
+    if isinstance(expression, (ast.List, ast.Tuple)):
+        return tuple((("item", index), _value(value, view)) for index, value in enumerate(expression.elts))
+    if isinstance(expression, ast.Dict) and all(isinstance(key, ast.Constant) and type(key.value) in {str, int} for key in expression.keys):
+        return tuple((("item", key.value), _value(value, view)) for key, value in zip(expression.keys, expression.values))
+    return None
 
 
 def _comprehension_storage(expression: ast.expr, view: _View) -> Storage:
@@ -296,7 +317,6 @@ class _Seen:
 
 @dataclass(frozen=True)
 class _Flow:
-    """The bindings after a node, and the bindings that Python sees at each node inside it."""
 
     bindings: dict[str, Storage]
     trace: tuple = ()
@@ -307,6 +327,9 @@ class _Context:
     external: Mapping[str, Storage]
     calls: Mapping[int, str]
     rebound: frozenset[str]
+    receiver: str | None = None
+    receiver_origin: Origin | None = None
+    nonlinking_calls: frozenset[int] = frozenset()
 
     def value(self, expression: ast.AST, bindings: Mapping[str, Storage]) -> Storage:
         return _value(expression, _View(bindings, self.external, self.calls, {}))
@@ -318,9 +341,16 @@ def argument_ownership(
     external: dict[str, Storage],
     copies: dict[int, str],
     receiver: str | None = None,
+    nonlinking_calls: frozenset[int] = frozenset(),
 ) -> Ownership:
-    """The storage of each name at each evaluated node of the callable."""
-    context = _Context(external, copies, _nested_nonlocal_names(callable_node))
+    context = _Context(
+        external,
+        copies,
+        _nested_nonlocal_names(callable_node),
+        receiver,
+        Origin(id(callable_node), receiver) if receiver else None,
+        nonlinking_calls,
+    )
     flow = _visit_body(callable_node, _initial_bindings(callable_node, parameters, receiver, context), context)
     return Ownership(_observations(flow.trace), external, copies)
 
@@ -336,7 +366,6 @@ def _initial_bindings(callable_node, parameters: set[str], receiver: str | None,
             storage = Storage(reachable=frozenset({Origin(id(callable_node), argument.arg)}), kinds=frozenset({kind}))
             initial[argument.arg] = _rebound(argument.arg, storage, context)
     if receiver:
-        # The instance rules report a change through the receiver itself. A local alias of it is not followed.
         initial[receiver] = Storage(opaque=True)
     return initial
 
@@ -355,7 +384,6 @@ def _nested_nonlocal_names(callable_node: ast.AST) -> frozenset[str]:
 
 
 def _rebound(name: str, storage: Storage, context: _Context) -> Storage:
-    # A nested function can rebind the name at any call, so the analysis cannot follow its value.
     return Storage(opaque=True).join(storage) if name in context.rebound else storage
 
 
@@ -413,7 +441,6 @@ def _visit_definition(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDe
         flow = _Flow(flow.bindings, _then(flow.trace, body.trace))
     else:
         flow = _sequence([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults], bindings, context)
-    # A decorator can give any value.
     value = Storage(opaque=True) if node.decorator_list else Storage(kinds=frozenset({type(node).__name__}))
     return _Flow(_bound(flow.bindings, node.name, value, context), flow.trace)
 
@@ -436,7 +463,6 @@ def _visit_if(node: ast.If | ast.IfExp, bindings, context) -> _Flow:
 
 
 def _visit_boolean(node: ast.BoolOp, bindings, context) -> _Flow:
-    # Each operand after the first runs only on some paths.
     exits = []
     traces = []
     for value in evaluated_children(node):
@@ -463,7 +489,6 @@ def _visit_loop(node: ast.For | ast.AsyncFor | ast.While, bindings, context) -> 
             break
         current = updated
     if truth:
-        # A literal-true while loop leaves only through a jump, so its else clause never runs.
         return _Flow(current, _then(head.trace, entered.trace, body.trace))
     orelse = _block(node.orelse, current, context)
     return _Flow(orelse.bindings, _then(head.trace, entered.trace, body.trace, orelse.trace))
@@ -478,7 +503,6 @@ def _loop_entry(node: ast.For | ast.AsyncFor | ast.While, bindings, context) -> 
 
 
 def _visit_try(node: ast.Try, bindings, context) -> _Flow:
-    # A handler can start after any statement of the body, so its entry joins every state in the body.
     states = [bindings]
     traces = []
     for statement in live_statements(node.body):
@@ -505,7 +529,6 @@ def _visit_handler(handler: ast.ExceptHandler, bindings, context) -> _Flow:
 
 
 def _visit_with(node: ast.With | ast.AsyncWith, bindings, context) -> _Flow:
-    # A context manager gives a value that the analysis does not follow.
     traces = []
     for item in node.items:
         flow = _sequence([item.context_expr, item.optional_vars], bindings, context)
@@ -543,6 +566,9 @@ def _pattern_names(pattern: ast.AST) -> list[str]:
 def _visit_assignment(node: ast.Assign | ast.AnnAssign, bindings, context) -> _Flow:
     value = _sequence([node.value], bindings, context)
     stored = context.value(node.value, value.bindings) if node.value is not None else None
+    if isinstance(node.value, ast.Name) and node.value.id == context.receiver and context.receiver_origin is not None:
+        origin = frozenset({context.receiver_origin})
+        stored = Storage(origin, origin)
     targets = node.targets if isinstance(node, ast.Assign) else [node.target]
     bindings = value.bindings
     traces = [value.trace]
@@ -557,6 +583,9 @@ def _visit_assignment(node: ast.Assign | ast.AnnAssign, bindings, context) -> _F
 def _visit_walrus(node: ast.NamedExpr, bindings, context) -> _Flow:
     value = _visit(node.value, bindings, context)
     stored = context.value(node.value, value.bindings)
+    if isinstance(node.value, ast.Name) and node.value.id == context.receiver and context.receiver_origin is not None:
+        origin = frozenset({context.receiver_origin})
+        stored = Storage(origin, origin)
     return _Flow(_bind(node.target, stored, value.bindings, context), value.trace)
 
 
@@ -583,16 +612,78 @@ def _visit_import(node: ast.Import | ast.ImportFrom, bindings, context) -> _Flow
 
 def _visit_call(node: ast.Call, bindings, context) -> _Flow:
     flow = _visit_children(node, bindings, context)
-    if context.calls.get(id(node), "") in PURE_CALL_KINDS:
+    if context.calls.get(id(node), "") in PURE_CALL_KINDS or id(node) in context.nonlinking_calls:
         return flow
-    # A call can store each argument in each other argument, and in the receiver of a method call.
+    appended = _append_slot(node, flow.bindings, context)
+    if appended is not None:
+        return _Flow(appended, flow.trace)
+    invalidated = _invalidated_slots(node, flow.bindings)
+    if invalidated is not None:
+        return _Flow(invalidated, flow.trace)
+    linked = _linked_call_arguments(node, flow.bindings, context)
+    return _Flow(_invalidate_passed_slots(node, linked), flow.trace)
+
+
+def _linked_call_arguments(node: ast.Call, bindings: dict[str, Storage], context: _Context) -> dict[str, Storage]:
     parts = [*([node.func.value] if isinstance(node.func, ast.Attribute) else []), *_call_arguments(node)]
     parts = [part.value if isinstance(part, ast.Starred) else part for part in parts]
-    bindings = flow.bindings
+    starting = bindings
     for index, part in enumerate(parts):
-        others = [context.value(other, flow.bindings) for position, other in enumerate(parts) if position != index]
+        others = [context.value(other, starting) for position, other in enumerate(parts) if position != index]
         bindings = _linked(bindings, _root(part), _fresh_from(others))
-    return _Flow(bindings, flow.trace)
+    return bindings
+
+
+def _invalidate_passed_slots(node: ast.Call, bindings: dict[str, Storage]) -> dict[str, Storage]:
+    if not isinstance(node.func, ast.Name):
+        return bindings
+    for argument in _call_arguments(node):
+        if not isinstance(argument, ast.Name):
+            continue
+        current = bindings.get(argument.id)
+        if current is not None and current.indexed:
+            bindings = _update_aliases(bindings, current, Storage(kinds=current.kinds, opaque=True))
+    return bindings
+
+
+def _append_slot(node: ast.Call, bindings: dict[str, Storage], context: _Context) -> dict[str, Storage] | None:
+    name = _append_receiver(node)
+    if name is None:
+        return None
+    current = bindings.get(name)
+    if current is None or not current.indexed or current.kinds != frozenset({"list"}):
+        return None
+    if len(current.slots) >= _MAX_TRACKED_SLOTS:
+        return _update_aliases(bindings, current, Storage(kinds=current.kinds, opaque=True))
+    key = ("item", len(current.slots))
+    value = context.value(node.args[0], bindings)
+    return _update_aliases(bindings, current, _with_slots(current, (*current.slots, (key, value))))
+
+
+def _append_receiver(node: ast.Call) -> str | None:
+    if not isinstance(node.func, ast.Attribute) or node.func.attr != "append":
+        return None
+    if not isinstance(node.func.value, ast.Name) or len(node.args) != 1 or node.keywords:
+        return None
+    return node.func.value.id
+
+
+_REORDERING_METHODS = MappingProxyType({
+    "list": frozenset({"clear", "extend", "insert", "pop", "remove", "reverse", "sort"}),
+    "dict": frozenset({"clear", "pop", "popitem", "setdefault", "update"}),
+})
+
+
+def _invalidated_slots(node: ast.Call, bindings: dict[str, Storage]) -> dict[str, Storage] | None:
+    if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name):
+        return None
+    current = bindings.get(node.func.value.id)
+    if current is None or not current.indexed or len(current.kinds) != 1:
+        return None
+    kind = next(iter(current.kinds))
+    if node.func.attr not in _REORDERING_METHODS.get(kind, frozenset()):
+        return None
+    return _update_aliases(bindings, current, Storage(kinds=current.kinds, opaque=True))
 
 
 def _visit_comprehension(node: ast.expr, bindings, context) -> _Flow:
@@ -659,8 +750,55 @@ def _bind(target: ast.AST, value: Storage, bindings: dict[str, Storage], context
         for child in target.elts:
             bindings = _bind(child, value if isinstance(child, ast.Starred) else _elements(value), bindings, context)
         return bindings
-    # A store into an element or an attribute makes the value reachable from the root of the target.
-    return _linked(bindings, _root(target), _fresh_from([value]))
+    root = _root(target)
+    current = bindings.get(root)
+    updated = _replace_selected(current, target, value) if current is not None else None
+    if updated is not None:
+        return _update_aliases(bindings, current, updated)
+    return _linked(bindings, root, _fresh_from([value]))
+
+
+def _replace_selected(current: Storage, target: ast.AST, value: Storage) -> Storage | None:
+    path = []
+    while isinstance(target, (ast.Attribute, ast.Subscript)):
+        key = _slot_key(target)
+        if key is None:
+            return None
+        path.append(key)
+        target = target.value
+    if not isinstance(target, ast.Name) or not path:
+        return None
+    return _replace_path(current, tuple(reversed(path)), value)
+
+
+def _replace_path(current: Storage, path: tuple[tuple[str, str | int], ...], value: Storage) -> Storage | None:
+    if not current.indexed:
+        return None
+    key = path[0]
+    slots = dict(current.slots)
+    if len(path) > 1:
+        child = slots.get(key)
+        if child is None:
+            return None
+        value = _replace_path(child, path[1:], value)
+        if value is None:
+            return None
+    slots[key] = value
+    return _with_slots(current, tuple(slots.items()))
+
+
+def _with_slots(current: Storage, slots: tuple[tuple[tuple[str, str | int], Storage], ...]) -> Storage:
+    children = [value for _, value in slots]
+    return replace(
+        current,
+        reachable=frozenset(origin for child in children for origin in child.everything),
+        deep=any(child.reaches_unknown for child in children),
+        slots=slots,
+    )
+
+
+def _update_aliases(bindings: dict[str, Storage], current: Storage, updated: Storage) -> dict[str, Storage]:
+    return {name: updated if value is current else value for name, value in bindings.items()}
 
 
 def _bound(bindings: dict[str, Storage], name: str, value: Storage, context: _Context) -> dict[str, Storage]:
@@ -689,7 +827,6 @@ def _join_all(states: Sequence[dict[str, Storage]], context: _Context) -> dict[s
 
 
 def _join_bindings(left: dict[str, Storage], right: dict[str, Storage], context: _Context) -> dict[str, Storage]:
-    # A name that one path does not bind keeps the value from the other path, or its outer value.
     joined = {}
     for name in left.keys() | right.keys():
         missing = context.external.get(name)

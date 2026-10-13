@@ -21,6 +21,76 @@ class OwnershipTests(unittest.TestCase):
     def test_alias_retains_caller_ownership(self):
         self.assertEqual((2, "probe.py:3: ImplicitOutput [priority 3] The function change() writes the implicit output alias. Return it instead.\n"), self.analyze("def change(values):\n    alias = values\n    alias.append(1)\n"))
 
+    def test_receiver_alias_retains_instance_ownership(self):
+        status, report = self.analyze("class Box:\n    def change(self):\n        alias = self\n        alias.items.append(1)\n")
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:4: ImplicitOutput", report)
+        self.assertNotIn("UnknownEffect", report)
+
+    def test_known_pure_helper_does_not_link_unrelated_arguments(self):
+        source = (
+            "def ignore(first, second):\n    return 1\n"
+            "def check(shared):\n    private = []\n    ignore(private, shared)\n    private.append(1)\n"
+        )
+        self.assertEqual((0, ""), self.analyze(source))
+
+    def test_selected_private_and_shared_children_keep_distinct_ownership(self):
+        cases = (
+            ("pair = [shared, []]\n    pair[1].append(1)\n    pair[0].append(1)\n", 4),
+            ("pair = {'left': shared, 'right': []}\n    pair['right'].append(1)\n    pair['left'].append(1)\n", 4),
+            ("pair = []\n    pair.append(shared)\n    pair.append([])\n    pair[1].append(1)\n    pair[0].append(1)\n", 6),
+        )
+        for body, line in cases:
+            with self.subTest(body=body):
+                status, report = self.analyze("def edit(shared):\n    " + body)
+                self.assertEqual(2, status)
+                self.assertEqual(1, report.count("ImplicitOutput"))
+                self.assertIn(f"probe.py:{line}: ImplicitOutput", report)
+
+    def test_replacing_one_child_removes_its_old_reachability(self):
+        for body in (
+            "pair = [shared]\n    pair[0] = []\n    pair[0].append(1)\n",
+            "pair = {'left': shared}\n    pair['left'] = []\n    pair['left'].append(1)\n",
+            "pair = [shared]\n    alias = pair\n    pair[0] = []\n    alias[0].append(1)\n",
+        ):
+            with self.subTest(body=body):
+                self.assertEqual((0, ""), self.analyze("def edit(shared):\n    " + body))
+
+    def test_reordered_slots_do_not_claim_a_private_child(self):
+        status, report = self.analyze(
+            "def edit(shared):\n"
+            "    pair = [[], shared]\n"
+            "    pair.reverse()\n"
+            "    pair[0].append(1)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:4: UnknownEffect", report)
+        self.assertNotIn("ImplicitOutput", report)
+
+    def test_branch_added_sibling_keeps_existing_slot_precise(self):
+        status, report = self.analyze(
+            "def edit(shared, choose):\n"
+            "    pair = [shared]\n"
+            "    if choose:\n"
+            "        pair.append([])\n"
+            "    pair[0].append(1)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:5: ImplicitOutput", report)
+        self.assertNotIn("UnknownEffect", report)
+
+    def test_helper_can_replace_a_private_holder_child(self):
+        status, report = self.analyze(
+            "def put(holder, value):\n"
+            "    holder[0] = value\n"
+            "def edit(shared):\n"
+            "    pair = [[]]\n"
+            "    put(pair, shared)\n"
+            "    pair[0].append(1)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:6: UnknownEffect", report)
+
     def test_later_rebinding_does_not_erase_earlier_mutation(self):
         self.assertEqual((2, "probe.py:2: ImplicitOutput [priority 3] The function change() writes the implicit output values. Return it instead.\n"), self.analyze("def change(values):\n    values.append(1)\n    values = []\n"))
 

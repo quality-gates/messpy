@@ -1,5 +1,3 @@
-"""Operations that can dispatch to user code declared in the analyzed module."""
-
 from __future__ import annotations
 
 import ast

@@ -1,14 +1,3 @@
-"""Execution reachability inside one body of code.
-
-One place answers "which child nodes can Python evaluate when it evaluates this
-node?" for every rule. A branch is dead only when a literal test decides it: a
-constant, ``not`` of such a test, or a boolean operator that such tests decide.
-Statements after a return, raise, break or continue are dead, and so are
-statements after an if whose live branches all leave or after a literal-true
-while loop without a break. Every other branch stays live, because its test
-needs a runtime value.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -21,7 +10,6 @@ _COMPREHENSIONS = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
 
 def constant_truth(test: ast.expr) -> bool | None:
     """The truth Python gives a literal test, or None when the test needs a runtime value."""
-    # Only a literal constant is pruned. The analysis does not evaluate an expression such as "not False".
     if isinstance(test, ast.Constant):
         return bool(test.value)
     return None
@@ -32,7 +20,6 @@ def evaluated_children(node: ast.AST) -> list[ast.AST]:
     if isinstance(node, (ast.If, ast.While, ast.IfExp)):
         truth = constant_truth(node.test)
         if truth is not None:
-            # A literal-true while loop ends only through a jump, so its else clause never runs.
             branch = node.body if truth else node.orelse
             return [node.test, *(live_statements(branch) if isinstance(branch, list) else [branch])]
     if isinstance(node, ast.BoolOp):
@@ -66,7 +53,6 @@ def live_statements(statements: Sequence[ast.AST]) -> list[ast.AST]:
 
 
 def _never_completes(statement: ast.AST) -> bool:
-    # A with statement, a try statement, or a match statement can still complete, so it stays live.
     if isinstance(statement, (ast.Return, ast.Raise, ast.Break, ast.Continue)):
         return True
     if isinstance(statement, ast.If):
@@ -79,7 +65,6 @@ def _never_completes(statement: ast.AST) -> bool:
 
 
 def _breaks(nodes: Sequence[ast.AST]) -> bool:
-    # A break in a nested loop body leaves that loop, but one in its else clause leaves this loop.
     for node in nodes:
         if isinstance(node, ast.Break):
             return True
@@ -102,7 +87,6 @@ def _short_circuit(node: ast.BoolOp) -> list[ast.AST]:
 
 
 def _comprehension_children(node: ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp) -> list[ast.AST]:
-    # A literal-false condition stops each element before later loops and the result expression.
     generators: list[ast.AST] = []
     for generator in node.generators:
         generators.append(generator)
