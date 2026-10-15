@@ -4922,6 +4922,19 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return 2\n",
                 8,
             ),
+            "if_try_else_returns": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            return 0\n"
+                "        else:\n"
+                "            return val\n"
+                "    else:\n"
+                "        return -1\n",
+                10,
+            ),
         }
         quiet = {
             "for_breaks": (
@@ -5003,6 +5016,30 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "            pass\n"
                 "    else:\n"
                 "        return 2\n"
+            ),
+            "try_else_falls_through": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            return 0\n"
+                "        else:\n"
+                "            log(val)\n"
+                "    else:\n"
+                "        return -1\n"
+            ),
+            "try_else_handler_falls_through": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            pass\n"
+                "        else:\n"
+                "            return val\n"
+                "    else:\n"
+                "        return -1\n"
             ),
             "match_without_irrefutable_case": (
                 "def check(cond, value):\n"
