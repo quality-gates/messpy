@@ -2389,8 +2389,10 @@ def _match_statement_always_exits(node: ast.Match, *, allow_loop_jumps: bool = T
 def _try_statement_always_exits(node: ast.Try | ast.TryStar, *, allow_loop_jumps: bool = True) -> bool:
     if node.finalbody and _block_always_exits(node.finalbody, allow_loop_jumps=allow_loop_jumps):
         return True
-    if not _block_always_exits(node.body, allow_loop_jumps=allow_loop_jumps) or (
-        node.orelse and not _block_always_exits(node.orelse, allow_loop_jumps=allow_loop_jumps)
+    # The else block runs only after the body completes, so either one exiting ends the normal path.
+    if not (
+        _block_always_exits(node.body, allow_loop_jumps=allow_loop_jumps)
+        or _block_always_exits(node.orelse, allow_loop_jumps=allow_loop_jumps)
     ):
         return False
     return all(
