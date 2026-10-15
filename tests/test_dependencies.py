@@ -64,6 +64,17 @@ class ClassDependencyTests(unittest.TestCase):
 
         self.assertEqual(frozenset({"dataclasses.dataclass"}), dependencies)
 
+    def test_class_keyword_values_record_dependencies(self) -> None:
+        tree = ast.parse(
+            "from custom_meta import CustomMeta\n\nclass Widget(metaclass=CustomMeta):\n    pass\n"
+        )
+        class_node = _first_class(tree)
+        names = Names.build(tree, module=None, path=Path("widget.py"))
+
+        dependencies = measure_class_dependencies(_class_info(class_node), names)
+
+        self.assertEqual(frozenset({"custom_meta.CustomMeta"}), dependencies)
+
     def test_class_with_uppercase_unimported_decorator_records_dependency(self) -> None:
         tree = ast.parse("@CustomDecorator\nclass Widget:\n    pass\n")
         class_node = _first_class(tree)
