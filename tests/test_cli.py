@@ -6296,6 +6296,34 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("class RelativeDependencies has a coupling between objects value of 2", report)
         self.assertIn("value of 3", report)
 
+    def test_coupling_between_objects_counts_class_keyword_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "service.py"
+            ruleset = Path(temporary_directory) / "ruleset.xml"
+            source.write_text(
+                "from custom_meta import CustomMeta\n"
+                "\nclass Service(metaclass=CustomMeta, total=False):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"CouplingBetweenObjects\"><properties><property name=\"maximum\" value=\"1\"/></properties></rule>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "service.py:3: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of 1.",
+            stdout.getvalue(),
+        )
+
     def test_controversial_adapts_stable_camel_case_rules_to_python_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             source = Path(temporary_directory) / "strict_names.py"
