@@ -1,0 +1,2 @@
+src/review/loopelse.py:5: ElseExpression [priority 1] The method return_in_for uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.
+src/review/loopelse.py:20: ElseExpression [priority 1] The method while_true_return uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.

@@ -60,3 +60,5 @@ Declared same-file descriptors, operator protocols, iteration protocols, and vir
 Imports outside the analyzed file, arbitrary runtime monkey-patching, dynamic attributes, unmodeled decorators, and user-defined protocols without local evidence are outside the supported calculation assumptions. A method name or type annotation alone never establishes a pure call. Receiver state remains subject to the selected policy: `strictexplicitness` includes instance inputs and outputs; excluded receiver effects can remain unknown in `explicitness`.
 
 Findings identify the owning callable and the operation line. Transferred findings use the call or forcing line. The report deduplicates repeated semantic effects per owner; it is an effect summary, rather than an execution count.
+
+A user pass of this contract is recorded in [the 2026-10-17 exploratory report](exploratory-testing/2026-10-17-explicitness-design-ci.md).

@@ -1,0 +1,2 @@
+src/review/live_else.py:5: ElseExpression [priority 1] The method first uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.
+src/review/live_else.py:12: ElseExpression [priority 1] The method pop_or_empty uses an else that follows a branch which always returns, raises, continues, or breaks. That else clause is dead or misleading and you can simplify the code by removing it.

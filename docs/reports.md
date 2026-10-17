@@ -174,3 +174,5 @@ Use this for GitHub code scanning and other SARIF hosts:
 ```
 
 `level` uses the priority table. `suppressions` is present only for suppressed findings. `toolExecutionNotifications` is present only when processing errors exist; then `executionSuccessful` is `false`.
+
+A user pass of format order, fingerprints, and exit-code precedence is recorded in [the 2026-10-17 exploratory report](exploratory-testing/2026-10-17-explicitness-design-ci.md).

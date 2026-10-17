@@ -1,0 +1,11 @@
+src/billing/probes.py:7: ImplicitInput [priority 3] The function read_shared() reads the implicit input ITEMS. Pass it as an argument instead.
+src/billing/probes.py:11: ImplicitInput [priority 3] The function caller_of_read() reads the implicit input ITEMS. Pass it as an argument instead.
+src/billing/probes.py:15: ImplicitOutput [priority 3] The function announce() writes the implicit output print. Return it instead.
+src/billing/probes.py:20: ImplicitOutput [priority 3] The function shout() writes the implicit output print. Return it instead.
+src/billing/probes.py:31: ImplicitOutput [priority 3] The function write_global() writes the implicit output ITEMS. Return it instead.
+src/billing/probes.py:36: ImplicitOutput [priority 3] The function inner() writes the implicit output box. Return it instead.
+src/billing/probes.py:38: ImplicitOutput [priority 3] The function capture_box() writes the implicit output box. Return it instead.
+src/billing/probes.py:42: ImplicitOutput [priority 3] The function generator_body() writes the implicit output print. Return it instead.
+src/billing/probes.py:46: ImplicitOutput [priority 3] The function force_generator() writes the implicit output print. Return it instead.
+src/billing/probes.py:51: ImplicitOutput [priority 3] The function module_print() writes the implicit output print. Return it instead.
+src/billing/probes.py:54: ImplicitOutput [priority 3] The function <module>() writes the implicit output print. Return it instead.

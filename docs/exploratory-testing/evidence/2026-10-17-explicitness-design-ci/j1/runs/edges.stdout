@@ -1,0 +1,13 @@
+src/billing/edges.py:8: ImplicitOutput [priority 3] The function star() writes the implicit output args. Return it instead.
+src/billing/edges.py:12: ImplicitOutput [priority 3] The function starred() writes the implicit output args. Return it instead.
+src/billing/edges.py:16: ImplicitOutput [priority 3] The function keyworded() writes the implicit output kwargs. Return it instead.
+src/billing/edges.py:20: ImplicitOutput [priority 3] The function a() writes the implicit output items. Return it instead.
+src/billing/edges.py:24: ImplicitOutput [priority 3] The function b() writes the implicit output items. Return it instead.
+src/billing/edges.py:30: ImplicitOutput [priority 3] The function wrapper() writes the implicit output print. Return it instead.
+src/billing/edges.py:31: UnknownEffect [priority 3] The function wrapper() has an unknown effect from fn. Establish the callable's effects before treating it as a calculation.
+src/billing/edges.py:42: UnknownEffect [priority 3] The function use() has an unknown effect from pure. Establish the callable's effects before treating it as a calculation.
+src/billing/edges.py:46: ImplicitInput [priority 3] The function streams() reads the implicit input sys.stdout. Pass it as an argument instead.
+src/billing/edges.py:46: ImplicitOutput [priority 3] The function streams() writes the implicit output sys.stdout. Return it instead.
+src/billing/edges.py:47: ImplicitInput [priority 3] The function streams() reads the implicit input sys.stdin. Pass it as an argument instead.
+src/billing/edges.py:47: UnknownEffect [priority 3] The function streams() has an unknown effect from sys.stdin.read. Establish the callable's effects before treating it as a calculation.
+src/billing/edges.py:51: ImplicitOutput [priority 3] The function launch() writes the implicit output subprocess.run. Return it instead.

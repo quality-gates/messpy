@@ -1,0 +1,102 @@
+[
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "6861732073706163652e70793a313a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "has space.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "70657263656e742532352e70793a313a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "percent%25.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "LongVariable",
+    "description": "Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35. (context: customer_name_that_is_far_too_descriptive)",
+    "fingerprint": "7372632f6170702f696e766f6963652e70793a333a313a4c6f6e675661726961626c653a41766f6964206578636573736976656c79206c6f6e67207661726961626c65206e616d6573206c696b6520637573746f6d65725f6e616d655f746861745f69735f6661725f746f6f5f64657363726970746976652e20436f6e66696775726564206d6178696d756d206c656e6774682069732033352e",
+    "severity": "major",
+    "location": {
+      "path": "src/app/invoice.py",
+      "lines": {
+        "begin": 3
+      }
+    },
+    "priority": 3,
+    "context": "customer_name_that_is_far_too_descriptive",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "7372632f6170702f696e766f6963652e70793a343a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "src/app/invoice.py",
+      "lines": {
+        "begin": 4
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "7765697264266e616d652e70793a313a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "weird&name.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  }
+]

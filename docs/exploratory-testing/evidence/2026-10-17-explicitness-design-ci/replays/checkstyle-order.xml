@@ -1,0 +1,11 @@
+<checkstyle tool="messpy" version="0.1.21">
+  <file name="src/a_ok.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="src/m_broken.py">
+    <error line="1" column="1" severity="error" message="Could not parse /Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-cs/src/m_broken.py: &#x27;(&#x27; was never closed" source="messpy.ProcessingError" context="" priority="1" suppressed="false" />
+  </file>
+  <file name="src/z_ok.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+</checkstyle>

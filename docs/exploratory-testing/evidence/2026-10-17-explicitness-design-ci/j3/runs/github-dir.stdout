@@ -1,0 +1,3 @@
+::warning file=special/a%25b.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)
+::warning file=special/a%2Cb.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)
+::warning file=special/a%3Ab.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)

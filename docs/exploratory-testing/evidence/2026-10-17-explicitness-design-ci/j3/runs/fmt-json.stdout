@@ -1,0 +1,59 @@
+{
+  "tool": {
+    "name": "messpy",
+    "version": "0.1.21"
+  },
+  "findings": [
+    {
+      "path": "has space.py",
+      "line": 1,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "Development-only marker found in production source.",
+      "context": "module",
+      "suppressed": false
+    },
+    {
+      "path": "percent%25.py",
+      "line": 1,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "Development-only marker found in production source.",
+      "context": "module",
+      "suppressed": false
+    },
+    {
+      "path": "src/app/invoice.py",
+      "line": 3,
+      "column": 1,
+      "ruleName": "LongVariable",
+      "priority": 3,
+      "message": "Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35.",
+      "context": "customer_name_that_is_far_too_descriptive",
+      "suppressed": false
+    },
+    {
+      "path": "src/app/invoice.py",
+      "line": 4,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "Development-only marker found in production source.",
+      "context": "module",
+      "suppressed": false
+    },
+    {
+      "path": "weird&name.py",
+      "line": 1,
+      "column": 1,
+      "ruleName": "DevelopmentCodeFragment",
+      "priority": 2,
+      "message": "Development-only marker found in production source.",
+      "context": "module",
+      "suppressed": false
+    }
+  ],
+  "errors": []
+}

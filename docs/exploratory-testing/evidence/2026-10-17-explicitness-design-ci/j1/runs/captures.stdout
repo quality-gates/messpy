@@ -1,0 +1,7 @@
+src/billing/captures.py:8: ImplicitInput [priority 3] The function reader() reads the implicit input SHARED. Pass it as an argument instead.
+src/billing/captures.py:10: ImplicitInput [priority 3] The function direct_capture() reads the implicit input SHARED. Pass it as an argument instead.
+src/billing/captures.py:15: ImplicitInput [priority 3] The function helper() reads the implicit input SHARED. Pass it as an argument instead.
+src/billing/captures.py:18: ImplicitInput [priority 3] The function through() reads the implicit input SHARED. Pass it as an argument instead.
+src/billing/captures.py:20: ImplicitInput [priority 3] The function through_helper() reads the implicit input SHARED. Pass it as an argument instead.
+src/billing/captures.py:25: ImplicitInput [priority 3] The function helper() reads the implicit input box. Pass it as an argument instead.
+src/billing/captures.py:28: ImplicitInput [priority 3] The function through() reads the implicit input box. Pass it as an argument instead.

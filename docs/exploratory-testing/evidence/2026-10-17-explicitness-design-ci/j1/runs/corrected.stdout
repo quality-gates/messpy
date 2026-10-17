@@ -1,0 +1,18 @@
+runs/pricing-work.py:26: ImplicitInput [priority 3] The function read_mutable_tuple() reads the implicit input MUTABLE_TUPLE. Pass it as an argument instead.
+runs/pricing-work.py:33: ImplicitOutput [priority 3] The function remember() writes the implicit output cache. Return it instead.
+runs/pricing-work.py:45: ImplicitOutput [priority 3] The function stamp() writes the implicit output items. Return it instead.
+runs/pricing-work.py:57: ImplicitOutput [priority 3] The function mutate_nested() writes the implicit output copied. Return it instead.
+runs/pricing-work.py:62: ImplicitOutput [priority 3] The function push() writes the implicit output target. Return it instead.
+runs/pricing-work.py:68: ImplicitOutput [priority 3] The function via_helper() writes the implicit output target. Return it instead.
+runs/pricing-work.py:81: ImplicitInput [priority 3] The function read() reads the implicit input items. Pass it as an argument instead.
+runs/pricing-work.py:87: ImplicitInput [priority 3] The function read_upper() reads the implicit input UPPER. Pass it as an argument instead.
+runs/pricing-work.py:91: ImplicitInput [priority 3] The function read_env() reads the implicit input os.environ. Pass it as an argument instead.
+runs/pricing-work.py:95: ImplicitInput [priority 3] The function read_note() reads the implicit input open. Pass it as an argument instead.
+runs/pricing-work.py:96: UnknownEffect [priority 3] The function read_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+runs/pricing-work.py:100: ImplicitInput [priority 3] The function load_note() reads the implicit input open. Pass it as an argument instead.
+runs/pricing-work.py:100: UnknownEffect [priority 3] The function load_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+runs/pricing-work.py:108: UnknownEffect [priority 3] The function inject() has an unknown effect from callback. Establish the callable's effects before treating it as a calculation.
+runs/pricing-work.py:115: UnknownEffect [priority 3] The function <module>() has an unknown effect from <dynamic call>. Establish the callable's effects before treating it as a calculation.
+runs/pricing-work.py:115: UnknownEffect [priority 3] The function <module>() has an unknown effect from dataclass. Establish the callable's effects before treating it as a calculation.
+runs/pricing-work.py:128: ImplicitOutput [priority 3] The function dead_branch() writes the implicit output print. Return it instead.
+runs/pricing-work.py:134: UnknownEffect [priority 3] The function alias_print() has an unknown effect from say. Establish the callable's effects before treating it as a calculation.
