@@ -1,0 +1,24 @@
+src/billing/ambient.py:20: ImplicitInput [priority 3] The function read_final_list() reads the implicit input BUCKET. Pass it as an argument instead.
+src/billing/ambient.py:32: UnknownEffect [priority 3] The function clock() has an unknown effect from os.times. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:36: ImplicitInput [priority 3] The function entropy() reads the implicit input random.random. Pass it as an argument instead.
+src/billing/ambient.py:40: ImplicitInput [priority 3] The function args() reads the implicit input sys.argv. Pass it as an argument instead.
+src/billing/ambient.py:44: ImplicitInput [priority 3] The function ask() reads the implicit input input. Pass it as an argument instead.
+src/billing/ambient.py:48: ImplicitOutput [priority 3] The function write_log() writes the implicit output logging.info. Return it instead.
+src/billing/ambient.py:53: ImplicitOutput [priority 3] The function write_file() writes the implicit output open. Return it instead.
+src/billing/ambient.py:54: UnknownEffect [priority 3] The function write_file() has an unknown effect from handle.write. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:58: ImplicitInput [priority 3] The function <lambda>() reads the implicit input CACHE. Pass it as an argument instead.
+src/billing/ambient.py:58: ImplicitInput [priority 3] The function sort_reads() reads the implicit input CACHE. Pass it as an argument instead.
+src/billing/ambient.py:58: UnknownEffect [priority 3] The function <lambda>() has an unknown effect from CACHE.get. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:58: UnknownEffect [priority 3] The function sort_reads() has an unknown effect from CACHE.get. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:62: ImplicitOutput [priority 3] The function <lambda>() writes the implicit output print. Return it instead.
+src/billing/ambient.py:62: ImplicitOutput [priority 3] The function sort_prints() writes the implicit output print. Return it instead.
+src/billing/ambient.py:67: ImplicitInput [priority 3] The function read_note() reads the implicit input open. Pass it as an argument instead.
+src/billing/ambient.py:68: UnknownEffect [priority 3] The function read_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:70: ImplicitInput [priority 3] The function run_note() reads the implicit input open. Pass it as an argument instead.
+src/billing/ambient.py:70: UnknownEffect [priority 3] The function run_note() has an unknown effect from asyncio.run. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:70: UnknownEffect [priority 3] The function run_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+src/billing/ambient.py:75: ImplicitOutput [priority 3] The function gen() writes the implicit output print. Return it instead.
+src/billing/ambient.py:78: ImplicitOutput [priority 3] The function outer() writes the implicit output print. Return it instead.
+src/billing/ambient.py:84: ImplicitOutput [priority 3] The function <genexpr>() writes the implicit output print. Return it instead.
+src/billing/ambient.py:88: ImplicitOutput [priority 3] The function <genexpr>() writes the implicit output print. Return it instead.
+src/billing/ambient.py:88: ImplicitOutput [priority 3] The function consume_genexpr() writes the implicit output print. Return it instead.

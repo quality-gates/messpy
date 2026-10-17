@@ -1,0 +1,122 @@
+[
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "7372632f6170702f6126622f766965772e70793a313a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "src/app/a&b/view.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "LongVariable",
+    "description": "Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35. (context: customer_name_that_is_far_too_descriptive)",
+    "fingerprint": "7372632f6170702f696e766f6963652e70793a333a313a4c6f6e675661726961626c653a41766f6964206578636573736976656c79206c6f6e67207661726961626c65206e616d6573206c696b6520637573746f6d65725f6e616d655f746861745f69735f6661725f746f6f5f64657363726970746976652e20436f6e66696775726564206d6178696d756d206c656e6774682069732033352e",
+    "severity": "major",
+    "location": {
+      "path": "src/app/invoice.py",
+      "lines": {
+        "begin": 3
+      }
+    },
+    "priority": 3,
+    "context": "customer_name_that_is_far_too_descriptive",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "7372632f6170702f696e766f6963652e70793a343a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "src/app/invoice.py",
+      "lines": {
+        "begin": 4
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "LongVariable",
+    "description": "Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35. (context: customer_name_that_is_far_too_descriptive)",
+    "fingerprint": "7372632f6170702f7072696f7269746965732e70793a31323a313a4c6f6e675661726961626c653a41766f6964206578636573736976656c79206c6f6e67207661726961626c65206e616d6573206c696b6520637573746f6d65725f6e616d655f746861745f69735f6661725f746f6f5f64657363726970746976652e20436f6e66696775726564206d6178696d756d206c656e6774682069732033352e",
+    "severity": "major",
+    "location": {
+      "path": "src/app/priorities.py",
+      "lines": {
+        "begin": 12
+      }
+    },
+    "priority": 3,
+    "context": "customer_name_that_is_far_too_descriptive",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "DevelopmentCodeFragment",
+    "description": "Development-only marker found in production source. (context: module)",
+    "fingerprint": "7372632f6170702f7072696f7269746965732e70793a31333a313a446576656c6f706d656e74436f6465467261676d656e743a446576656c6f706d656e742d6f6e6c79206d61726b657220666f756e6420696e2070726f64756374696f6e20736f757263652e",
+    "severity": "critical",
+    "location": {
+      "path": "src/app/priorities.py",
+      "lines": {
+        "begin": 13
+      }
+    },
+    "priority": 2,
+    "context": "module",
+    "suppressed": false
+  },
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "ProcessingError",
+    "description": "Could not parse /Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-2026-10-17/j3/src/app/broken.py: '(' was never closed (context: )",
+    "fingerprint": "7372632f6170702f62726f6b656e2e70793a313a313a50726f63657373696e674572726f723a436f756c64206e6f74207061727365202f55736572732f6a6f6e617468616e62616c6469652f2e666c6565742f6576656e74732f736372617463682f303934633335386163386431323732333765663764623931393162336332633763336265363033643238656335643936663862656664343334666439383931352f6d65737370792d65742d323032362d31302d31372f6a332f7372632f6170702f62726f6b656e2e70793a2027282720776173206e6576657220636c6f736564",
+    "severity": "blocker",
+    "location": {
+      "path": "src/app/broken.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 1,
+    "context": "",
+    "suppressed": false
+  }
+]

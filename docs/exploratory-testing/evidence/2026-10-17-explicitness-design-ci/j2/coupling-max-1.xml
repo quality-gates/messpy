@@ -1,0 +1,7 @@
+<ruleset name="tight coupling">
+  <rule ref="CouplingBetweenObjects">
+    <properties>
+      <property name="maximum" value="1" />
+    </properties>
+  </rule>
+</ruleset>

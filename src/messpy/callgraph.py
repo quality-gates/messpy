@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .names import Names
+from .reachability import evaluated_children, live_statements
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
 
@@ -65,9 +66,16 @@ class CallGraph:
             return None
         return CallSite(caller, index.nodes[callee_id], _called_name(call, index, callee_id), call.lineno)
 
+    def masked_name(self, call: ast.Call, value: ast.expr) -> bool:
+        """Whether a comprehension target hides the name that the value reads at the call."""
+        return isinstance(value, ast.Name) and value.id in self._links.masks.get(id(call), ())
+
     def qualified_name(self, call: ast.Call) -> str:
         """The canonical name the call calls, or "" when a local binding hides it."""
         return self._links.names.qualified(call.func)
+
+    def qualified_value(self, expression: ast.expr) -> str:
+        return self._links.names.qualified(expression)
 
     def method_class(self, callable_node: ast.AST) -> ast.ClassDef | None:
         return self._links.classes.get(id(callable_node))
@@ -123,21 +131,20 @@ def _resolved_calls(
 def _call_edges(
     index: _CallableIndex, resolved: Sequence[tuple[int, ast.Call, int]]
 ) -> dict[int, tuple[CallSite, ...]]:
-    edges: dict[int, list[CallSite]] = {}
+    edges: dict[int, tuple[CallSite, ...]] = {}
     linked: set[tuple[int, int]] = set()
     for caller_id, call, callee_id in resolved:
         if caller_id not in index.nodes or (caller_id, callee_id) in linked:
             continue
         linked.add((caller_id, callee_id))
-        edges.setdefault(caller_id, []).append(
-            CallSite(
-                index.nodes[caller_id],
-                index.nodes[callee_id],
-                _called_name(call, index, callee_id),
-                call.lineno,
-            )
+        site = CallSite(
+            index.nodes[caller_id],
+            index.nodes[callee_id],
+            _called_name(call, index, callee_id),
+            call.lineno,
         )
-    return {caller_id: tuple(sites) for caller_id, sites in edges.items()}
+        edges[caller_id] = (*edges.get(caller_id, ()), site)
+    return edges
 
 
 def _reverse_edges(edges: dict[int, tuple[CallSite, ...]]) -> dict[int, tuple[CallSite, ...]]:
@@ -149,6 +156,12 @@ def _reverse_edges(edges: dict[int, tuple[CallSite, ...]]) -> dict[int, tuple[Ca
 
 
 @dataclass(frozen=True)
+class _Declarations:
+    globals: dict[int, set[str]] = field(default_factory=dict)
+    nonlocals: dict[int, set[str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class _CallableIndex:
     nodes: dict[int, ast.AST]
     labels: dict[int, str]
@@ -156,13 +169,14 @@ class _CallableIndex:
     shadows: dict[int, set[str]]
     enclosing: dict[int, tuple[int, ...]]
     class_methods: dict[int, dict[str, int]]
+    class_bindings: dict[int, dict[str, ast.ClassDef]]
     callable_class: dict[int, int]
     receivers: dict[int, str]
     owners: dict[int, ast.ClassDef]
     class_ids: frozenset[int]
     module_id: int
-    declared_global: dict[int, set[str]]
-    declared_nonlocal: dict[int, set[str]]
+    declarations: _Declarations
+    rebound_globals: frozenset[str] = frozenset()
 
 
 def _index_callables(tree: ast.Module) -> _CallableIndex:
@@ -174,14 +188,28 @@ def _index_callables(tree: ast.Module) -> _CallableIndex:
         shadows=state.shadows,
         enclosing=state.enclosing,
         class_methods=state.class_methods,
+        class_bindings=state.class_bindings,
         callable_class=state.callable_class,
         receivers=state.receivers,
         owners=state.owners,
         class_ids=state.class_ids,
         module_id=state.module_id,
-        declared_global=state.declared_global,
-        declared_nonlocal=state.declared_nonlocal,
+        declarations=state.declarations,
+        rebound_globals=_rebound_globals(state),
     )
+
+
+def _rebound_globals(state: _BindState) -> frozenset[str]:
+    rebound: set[str] = set()
+    for scope_id, declared in state.declarations.globals.items():
+        scope = state.nodes.get(scope_id)
+        if scope is None:
+            continue
+        rebound.update(
+            node.id for node in ast.walk(scope)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)) and node.id in declared
+        )
+    return frozenset(rebound)
 
 
 def _called_name(call: ast.Call, index: _CallableIndex, callee_id: int) -> str:
@@ -205,6 +233,26 @@ def _resolved_callee(
         return _resolve_receiver_call(index, caller_id, func)
     if isinstance(func, ast.Lambda) and id(func) in index.nodes:
         return id(func)
+    if isinstance(func, ast.Call):
+        factory_id = _resolved_callee(index, caller_id, func, masks)
+        if factory_id is not None:
+            return _returned_callable(index, factory_id)
+    return None
+
+
+def _returned_callable(index: _CallableIndex, factory_id: int) -> int | None:
+    factory = index.nodes[factory_id]
+    if isinstance(factory, ast.Lambda):
+        value = factory.body
+    else:
+        returns = [statement for statement in factory.body if isinstance(statement, ast.Return)]
+        if len(returns) != 1 or returns[0] is not factory.body[-1]:
+            return None
+        value = returns[0].value
+    if isinstance(value, ast.Lambda) and id(value) in index.nodes:
+        return id(value)
+    if isinstance(value, ast.Name):
+        return _resolve_bare_name(index, factory_id, value.id)
     return None
 
 
@@ -252,9 +300,9 @@ def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int 
     for scope_id in scopes:
         if scope_id in index.class_ids:
             continue
-        if name in index.declared_global.get(scope_id, ()):
+        if name in index.declarations.globals.get(scope_id, ()):
             return _bound_callable(index, index.module_id, name)
-        if name in index.declared_nonlocal.get(scope_id, ()):
+        if name in index.declarations.nonlocals.get(scope_id, ()):
             continue
         resolved, callee_id = _lookup_scope(index, scope_id, name)
         if resolved:
@@ -264,6 +312,8 @@ def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int 
 
 def _lookup_scope(index: _CallableIndex, scope_id: int, name: str) -> tuple[bool, int | None]:
     if name in index.shadows.get(scope_id, ()):
+        return True, None
+    if scope_id == index.module_id and name in index.rebound_globals:
         return True, None
     callee_id = index.bindings.get(scope_id, {}).get(name)
     if callee_id is not None:
@@ -284,8 +334,26 @@ def _resolve_receiver_call(index: _CallableIndex, caller_id: int, attribute: ast
         return None
     class_id = _class_for_receiver(index, caller_id, value.id)
     if class_id is None:
-        return None
+        return _resolve_class_method(index, caller_id, value.id, attribute.attr)
     return index.class_methods.get(class_id, {}).get(attribute.attr)
+
+
+def _resolve_class_method(index: _CallableIndex, caller_id: int, name: str, method: str) -> int | None:
+    if name in index.rebound_globals:
+        return None
+    for scope_id in (caller_id, *index.enclosing.get(caller_id, ())):
+        if scope_id in index.class_ids:
+            continue
+        class_node = index.class_bindings.get(scope_id, {}).get(name)
+        if class_node is not None:
+            target = index.class_methods.get(id(class_node), {}).get(method)
+            function = index.nodes.get(target)
+            decorators = getattr(function, "decorator_list", ())
+            trusted = any(_dotted_name(decorator) in {"staticmethod", "classmethod", "builtins.staticmethod", "builtins.classmethod"} for decorator in decorators)
+            return target if trusted else None
+        if _lookup_scope(index, scope_id, name)[0]:
+            return None
+    return None
 
 
 def _class_for_receiver(index: _CallableIndex, caller_id: int, receiver_name: str) -> int | None:
@@ -309,13 +377,13 @@ class _BindState:
     shadows: dict[int, set[str]] = field(default_factory=dict)
     enclosing: dict[int, tuple[int, ...]] = field(default_factory=dict)
     class_methods: dict[int, dict[str, int]] = field(default_factory=dict)
+    class_bindings: dict[int, dict[str, ast.ClassDef]] = field(default_factory=dict)
     callable_class: dict[int, int] = field(default_factory=dict)
     receivers: dict[int, str] = field(default_factory=dict)
     owners: dict[int, ast.ClassDef] = field(default_factory=dict)
     class_ids: frozenset[int] = frozenset()
     module_id: int = 0
-    declared_global: dict[int, set[str]] = field(default_factory=dict)
-    declared_nonlocal: dict[int, set[str]] = field(default_factory=dict)
+    declarations: _Declarations = field(default_factory=_Declarations)
     scopes: tuple[ast.AST, ...] = ()
     classes: tuple[ast.ClassDef, ...] = ()
 
@@ -357,6 +425,8 @@ def _visit_binding_statement(state: _BindState, node: ast.AST) -> _BindState:
 
 def _visit_class(state: _BindState, node: ast.ClassDef) -> _BindState:
     state = _shadow(state, node.name)
+    scope_id = id(state.scopes[-1])
+    state = replace(state, class_bindings={**state.class_bindings, scope_id: {**state.class_bindings.get(scope_id, {}), node.name: node}})
     state = replace(state, class_ids=frozenset({*state.class_ids, id(node)}))
     for child in (*node.decorator_list, *node.bases):
         state = _visit_binding(state, child)
@@ -434,11 +504,13 @@ def _bind_name(state: _BindState, name: str, node: ast.AST) -> _BindState:
     scope_id = id(state.scopes[-1])
     scope_bindings = dict(state.bindings.get(scope_id, {}))
     scope_bindings[name] = id(node)
+    classes = {key: value for key, value in state.class_bindings.get(scope_id, {}).items() if key != name}
     scope_shadows = set(state.shadows.get(scope_id, ()))
     scope_shadows.discard(name)
     return replace(
         state,
         bindings={**state.bindings, scope_id: scope_bindings},
+        class_bindings={**state.class_bindings, scope_id: classes},
         shadows={**state.shadows, scope_id: scope_shadows},
     )
 
@@ -490,10 +562,13 @@ def _shadow(state: _BindState, name: str) -> _BindState:
     scope_shadows.add(name)
     scope_bindings = dict(state.bindings.get(scope_id, {}))
     scope_bindings.pop(name, None)
+    classes = dict(state.class_bindings.get(scope_id, {}))
+    classes.pop(name, None)
     return replace(
         state,
         shadows={**state.shadows, scope_id: scope_shadows},
         bindings={**state.bindings, scope_id: scope_bindings},
+        class_bindings={**state.class_bindings, scope_id: classes},
     )
 
 
@@ -531,9 +606,9 @@ def _record_runtime_binding(state: _BindState, node: ast.AST) -> _BindState:
     if isinstance(node, ast.Lambda):
         return _enter_lambda(_register_callable(state, node), node)
     if isinstance(node, ast.Global):
-        return _declare_names(state, "declared_global", node.names)
+        return _declare_names(state, "globals", node.names)
     if isinstance(node, ast.Nonlocal):
-        return _declare_names(state, "declared_nonlocal", node.names)
+        return _declare_names(state, "nonlocals", node.names)
     if isinstance(node, ast.Match):
         for case in node.cases:
             for name in _pattern_bindings(case.pattern):
@@ -543,9 +618,9 @@ def _record_runtime_binding(state: _BindState, node: ast.AST) -> _BindState:
 
 def _declare_names(state: _BindState, field_name: str, names: list[str]) -> _BindState:
     scope_id = id(state.scopes[-1])
-    declared = dict(getattr(state, field_name))
+    declared = dict(getattr(state.declarations, field_name))
     declared[scope_id] = set(declared.get(scope_id, ())) | set(names)
-    return replace(state, **{field_name: declared})
+    return replace(state, declarations=replace(state.declarations, **{field_name: declared}))
 
 
 def _visit_enclosing_expressions(
@@ -717,8 +792,11 @@ def _pattern_binding_names(node: ast.AST) -> set[str]:
     return set()
 
 
-def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
-    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
+def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.Module | ast.GeneratorExp) -> list[ast.AST]:
+    if isinstance(node, ast.GeneratorExp):
+        generators = [node.generators[0].target, *node.generators[0].ifs, *node.generators[1:]]
+        return _evaluated_present([*generators, node.elt])
+    roots = [node.body] if isinstance(node, ast.Lambda) else live_statements(node.body)
     found: list[ast.AST] = []
     for root in roots:
         found.extend(_evaluated_node_list(root))
@@ -727,17 +805,18 @@ def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) 
 
 def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
     # Python evaluates decorators, defaults, class bases, and nested class bodies here.
-    # It does not evaluate a local annotation or a nested function body.
     if isinstance(node, ast.AnnAssign):
         return [node, *_evaluated_present([node.target, node.value])]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return _evaluated_present([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])
+        return [node, *_evaluated_present([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])]
     if isinstance(node, ast.Lambda):
         return _evaluated_present([*node.args.defaults, *node.args.kw_defaults])
+    if isinstance(node, ast.GeneratorExp):
+        return [node, *_evaluated_node_list(node.generators[0].iter)]
     if isinstance(node, ast.ClassDef):
-        return _evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *node.body])
+        return [node, *_evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *live_statements(node.body)])]
     found = [node]
-    for child in ast.iter_child_nodes(node):
+    for child in evaluated_children(node):
         found.extend(_evaluated_node_list(child))
     return found
 

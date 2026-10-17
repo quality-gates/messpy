@@ -1,0 +1,15 @@
+<checkstyle tool="messpy" version="0.1.21">
+  <file name="has space.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="percent%25.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="src/app/invoice.py">
+    <error line="3" column="1" severity="warning" message="Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35." source="messpy.LongVariable" context="customer_name_that_is_far_too_descriptive" priority="3" suppressed="false" />
+    <error line="4" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="weird&amp;name.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+</checkstyle>

@@ -179,6 +179,7 @@ Follow-up feedback on call-based cohesion, aliased imports, and source
 non-execution is in [the 2026-09-26 exploratory report](exploratory-testing/2026-09-26-call-graph-cli.md).
 CI pipeline outputs, exit gate precedence, Python 3.12 syntax, and lexical scope isolation are recorded in [the 2026-10-03 exploratory report](exploratory-testing/2026-10-03-ci-syntax-scopes.md).
 Team policy, onion call spreads, and discovery of an unreadable directory are recorded in [the 2026-10-10 exploratory report](exploratory-testing/2026-10-10-gate-policy-onion.md).
+Explicitness calculations, loop-else false positives, and CI report contracts are recorded in [the 2026-10-17 exploratory report](exploratory-testing/2026-10-17-explicitness-design-ci.md).
 
 ## Suppressions in source
 

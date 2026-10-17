@@ -1,0 +1,1 @@
+src/review/cohesion2.py:1: LackOfCohesionOfMethods [priority 3] The class Split has a Lack of Cohesion Of Methods (LCOM4) value of 2. Consider to split this class into 2 smaller classes.

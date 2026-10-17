@@ -1,0 +1,15 @@
+name: Functional explicitness
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    uses: quality-gates/mess-detection/.github/workflows/explicitness.yml@e0896093daeb17bd09afa635559a9b8bdc013283
+    with:
+      language: python
+      contract_ref: e0896093daeb17bd09afa635559a9b8bdc013283

@@ -1,0 +1,5 @@
+has space.py:1: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+percent%25.py:1: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/app/invoice.py:3: LongVariable [priority 3] Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35.
+src/app/invoice.py:4: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+weird&name.py:1: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.

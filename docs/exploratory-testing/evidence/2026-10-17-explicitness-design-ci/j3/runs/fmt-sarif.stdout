@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "messpy",
+          "version": "0.1.21",
+          "rules": [
+            {
+              "id": "DevelopmentCodeFragment",
+              "name": "DevelopmentCodeFragment",
+              "shortDescription": {
+                "text": "DevelopmentCodeFragment"
+              }
+            },
+            {
+              "id": "LongVariable",
+              "name": "LongVariable",
+              "shortDescription": {
+                "text": "LongVariable"
+              }
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "has%20space.py"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "percent%2525.py"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "LongVariable",
+          "level": "warning",
+          "message": {
+            "text": "Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/app/invoice.py"
+                },
+                "region": {
+                  "startLine": 3,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 3,
+            "context": "customer_name_that_is_far_too_descriptive",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/app/invoice.py"
+                },
+                "region": {
+                  "startLine": 4,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": false
+          }
+        },
+        {
+          "ruleId": "DevelopmentCodeFragment",
+          "level": "error",
+          "message": {
+            "text": "Development-only marker found in production source."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "weird%26name.py"
+                },
+                "region": {
+                  "startLine": 1,
+                  "startColumn": 1
+                }
+              }
+            }
+          ],
+          "properties": {
+            "priority": 2,
+            "context": "module",
+            "suppressed": false
+          }
+        }
+      ],
+      "invocations": [
+        {
+          "executionSuccessful": true
+        }
+      ]
+    }
+  ]
+}

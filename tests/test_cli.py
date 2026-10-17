@@ -4922,6 +4922,19 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "        return 2\n",
                 8,
             ),
+            "if_try_else_returns": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            return 0\n"
+                "        else:\n"
+                "            return val\n"
+                "    else:\n"
+                "        return -1\n",
+                10,
+            ),
         }
         quiet = {
             "for_breaks": (
@@ -5003,6 +5016,30 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "            pass\n"
                 "    else:\n"
                 "        return 2\n"
+            ),
+            "try_else_falls_through": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            return 0\n"
+                "        else:\n"
+                "            log(val)\n"
+                "    else:\n"
+                "        return -1\n"
+            ),
+            "try_else_handler_falls_through": (
+                "def parse(cond, text):\n"
+                "    if cond:\n"
+                "        try:\n"
+                "            val = int(text)\n"
+                "        except ValueError:\n"
+                "            pass\n"
+                "        else:\n"
+                "            return val\n"
+                "    else:\n"
+                "        return -1\n"
             ),
             "match_without_irrefutable_case": (
                 "def check(cond, value):\n"
@@ -6258,6 +6295,34 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertIn("class AliasedModuleDependencies has a coupling between objects value of 2", report)
         self.assertIn("class RelativeDependencies has a coupling between objects value of 2", report)
         self.assertIn("value of 3", report)
+
+    def test_coupling_between_objects_counts_class_keyword_dependencies(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "service.py"
+            ruleset = Path(temporary_directory) / "ruleset.xml"
+            source.write_text(
+                "from custom_meta import CustomMeta\n"
+                "\nclass Service(metaclass=CustomMeta, total=False):\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+            ruleset.write_text(
+                "<ruleset>"
+                "<rule ref=\"CouplingBetweenObjects\"><properties><property name=\"maximum\" value=\"1\"/></properties></rule>"
+                "</ruleset>",
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            status = run([str(source), "text", str(ruleset)], stdout, stderr)
+
+        self.assertEqual(2, status)
+        self.assertEqual("", stderr.getvalue())
+        self.assertIn(
+            "service.py:3: CouplingBetweenObjects [priority 2] The class Service has a coupling between objects value of 1.",
+            stdout.getvalue(),
+        )
 
     def test_controversial_adapts_stable_camel_case_rules_to_python_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
