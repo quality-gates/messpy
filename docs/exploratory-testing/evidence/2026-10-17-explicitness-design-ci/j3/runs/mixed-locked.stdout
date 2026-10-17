@@ -1,0 +1,2 @@
+mixed/ok/visible.py:1: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+mixed/secret:1: ProcessingError Could not process /Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-2026-10-17/j3/mixed/secret: [Errno 13] Permission denied: '/Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-2026-10-17/j3/mixed/secret'

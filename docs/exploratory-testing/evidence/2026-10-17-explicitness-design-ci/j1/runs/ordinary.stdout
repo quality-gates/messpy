@@ -1,0 +1,22 @@
+src/billing/ledger.py:9: UnknownEffect [priority 3] The method Ledger.preview() has an unknown effect from self.balance. Establish the callable's effects before treating it as a calculation.
+src/billing/ledger.py:12: UnknownEffect [priority 3] The method Ledger.post() has an unknown effect from self.balance. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:26: ImplicitInput [priority 3] The function read_mutable_tuple() reads the implicit input MUTABLE_TUPLE. Pass it as an argument instead.
+src/billing/pricing.py:30: ImplicitInput [priority 3] The function remember() reads the implicit input CACHE. Pass it as an argument instead.
+src/billing/pricing.py:33: ImplicitOutput [priority 3] The function remember() writes the implicit output CACHE. Return it instead.
+src/billing/pricing.py:38: ImplicitOutput [priority 3] The function announce() writes the implicit output print. Return it instead.
+src/billing/pricing.py:44: ImplicitOutput [priority 3] The function stamp() writes the implicit output items. Return it instead.
+src/billing/pricing.py:56: ImplicitOutput [priority 3] The function mutate_nested() writes the implicit output copied. Return it instead.
+src/billing/pricing.py:61: ImplicitOutput [priority 3] The function push() writes the implicit output target. Return it instead.
+src/billing/pricing.py:67: ImplicitOutput [priority 3] The function via_helper() writes the implicit output target. Return it instead.
+src/billing/pricing.py:80: ImplicitInput [priority 3] The function read() reads the implicit input items. Pass it as an argument instead.
+src/billing/pricing.py:86: ImplicitInput [priority 3] The function read_upper() reads the implicit input UPPER. Pass it as an argument instead.
+src/billing/pricing.py:90: ImplicitInput [priority 3] The function read_env() reads the implicit input os.environ. Pass it as an argument instead.
+src/billing/pricing.py:94: ImplicitInput [priority 3] The function read_note() reads the implicit input open. Pass it as an argument instead.
+src/billing/pricing.py:95: UnknownEffect [priority 3] The function read_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:99: ImplicitInput [priority 3] The function load_note() reads the implicit input open. Pass it as an argument instead.
+src/billing/pricing.py:99: UnknownEffect [priority 3] The function load_note() has an unknown effect from handle.read. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:107: UnknownEffect [priority 3] The function inject() has an unknown effect from callback. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:114: UnknownEffect [priority 3] The function <module>() has an unknown effect from <dynamic call>. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:114: UnknownEffect [priority 3] The function <module>() has an unknown effect from dataclass. Establish the callable's effects before treating it as a calculation.
+src/billing/pricing.py:127: ImplicitOutput [priority 3] The function dead_branch() writes the implicit output print. Return it instead.
+src/billing/pricing.py:133: UnknownEffect [priority 3] The function alias_print() has an unknown effect from say. Establish the callable's effects before treating it as a calculation.

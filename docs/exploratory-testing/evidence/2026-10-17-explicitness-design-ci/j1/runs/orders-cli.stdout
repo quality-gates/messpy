@@ -1,0 +1,2 @@
+src/billing/domain/orders.py:5: ImplicitOutput [priority 3] The function save_report() writes the implicit output print. Return it instead.
+src/billing/domain/orders.py:10: ImplicitOutput [priority 3] The function publish() writes the implicit output print. Return it instead.

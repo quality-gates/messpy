@@ -1,0 +1,22 @@
+[
+  {
+    "type": "issue",
+    "tool": {
+      "name": "messpy",
+      "version": "0.1.21"
+    },
+    "check_name": "ProcessingError",
+    "description": "Could not parse /Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-fp2/right/pkg/broken.py: '(' was never closed (context: )",
+    "fingerprint": "706b672f62726f6b656e2e70793a313a313a50726f63657373696e674572726f723a436f756c64206e6f74207061727365202f55736572732f6a6f6e617468616e62616c6469652f2e666c6565742f6576656e74732f736372617463682f303934633335386163386431323732333765663764623931393162336332633763336265363033643238656335643936663862656664343334666439383931352f6d65737370792d65742d6670322f72696768742f706b672f62726f6b656e2e70793a2027282720776173206e6576657220636c6f736564",
+    "severity": "blocker",
+    "location": {
+      "path": "pkg/broken.py",
+      "lines": {
+        "begin": 1
+      }
+    },
+    "priority": 1,
+    "context": "",
+    "suppressed": false
+  }
+]

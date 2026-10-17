@@ -1,0 +1,5 @@
+::warning file=has space.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)
+::warning file=percent%2525.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)
+::warning file=src/app/invoice.py,line=3,col=1,title=LongVariable [priority 3]::Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35. (context: customer_name_that_is_far_too_descriptive)
+::warning file=src/app/invoice.py,line=4,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)
+::warning file=weird&name.py,line=1,col=1,title=DevelopmentCodeFragment [priority 2]::Development-only marker found in production source. (context: module)

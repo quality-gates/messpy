@@ -1,0 +1,16 @@
+<checkstyle tool="messpy" version="0.1.21">
+  <file name="src/app/a&amp;b/view.py">
+    <error line="1" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="src/app/broken.py">
+    <error line="1" column="1" severity="error" message="Could not parse /Users/jonathanbaldie/.fleet/events/scratch/094c358ac8d127237ef7db9191b3c2c7c3be603d28ec5d96f8befd434fd98915/messpy-et-2026-10-17/j3/src/app/broken.py: &#x27;(&#x27; was never closed" source="messpy.ProcessingError" context="" priority="1" suppressed="false" />
+  </file>
+  <file name="src/app/invoice.py">
+    <error line="3" column="1" severity="warning" message="Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35." source="messpy.LongVariable" context="customer_name_that_is_far_too_descriptive" priority="3" suppressed="false" />
+    <error line="4" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+  <file name="src/app/priorities.py">
+    <error line="12" column="1" severity="warning" message="Avoid excessively long variable names like customer_name_that_is_far_too_descriptive. Configured maximum length is 35." source="messpy.LongVariable" context="customer_name_that_is_far_too_descriptive" priority="3" suppressed="false" />
+    <error line="13" column="1" severity="error" message="Development-only marker found in production source." source="messpy.DevelopmentCodeFragment" context="module" priority="2" suppressed="false" />
+  </file>
+</checkstyle>
