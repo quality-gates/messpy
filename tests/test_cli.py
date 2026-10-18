@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ElementTree
 from urllib.parse import unquote
 
@@ -438,14 +439,13 @@ class CommandAcceptanceTests(unittest.TestCase):
             status = run([str(project), "github", "unusedcode"], stdout, stderr)
 
         escaped_package = package.as_posix().replace("%", "%25").replace(":", "%3A").replace(",", "%2C")
-        escaped_source = str(package / "bad.py").replace("%", "%25")
         self.assertEqual(1, status)
         self.assertEqual("", stderr.getvalue())
         self.assertEqual(
             f"::warning file={escaped_package}/m.py,line=1,col=1,title=UnusedFormalParameter [priority 3]::"
             "Avoid unused parameters such as 'b'. (context: b)\n"
             f"::error file={escaped_package}/bad.py,line=1,col=1,title=ProcessingError::"
-            f"Could not parse {escaped_source}: invalid syntax\n",
+            "Could not parse: invalid syntax\n",
             stdout.getvalue(),
         )
 
@@ -607,17 +607,21 @@ class CommandAcceptanceTests(unittest.TestCase):
             source = project / ("bad" + chr(1) + "name.py")
             source.write_bytes(b"\xff\xfe not valid utf-8")
 
-            for report_format in ["xml", "checkstyle"]:
-                stdout = StringIO()
-                stderr = StringIO()
-                status = run([str(project), report_format, "python"], stdout, stderr)
+            def fake_open(p, *args, **kwargs):
+                raise OSError(f"invalid {chr(1)} payload")
 
-                self.assertEqual(1, status, report_format)
-                self.assertEqual("", stderr.getvalue(), report_format)
-                report = ElementTree.fromstring(stdout.getvalue())  # raises ParseError if not well-formed
-                message = report.find(".//error").get("message")
-                self.assertIn("\\x01", message, report_format)
-                self.assertNotIn("\x01", stdout.getvalue(), report_format)
+            with mock.patch("messpy.analyzer.tokenize.open", side_effect=fake_open):
+                for report_format in ["xml", "checkstyle"]:
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    status = run([str(project), report_format, "python"], stdout, stderr)
+
+                    self.assertEqual(1, status, report_format)
+                    self.assertEqual("", stderr.getvalue(), report_format)
+                    report = ElementTree.fromstring(stdout.getvalue())  # raises ParseError if not well-formed
+                    message = report.find(".//error").get("message")
+                    self.assertIn("\\x01", message, report_format)
+                    self.assertNotIn("\x01", stdout.getvalue(), report_format)
 
     def test_text_color_controls_do_not_color_redirected_output_by_default(self) -> None:
         source = str((FIXTURES / "long_function.py").resolve())
@@ -1025,7 +1029,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual([secret.resolve().as_posix()], [item["path"] for item in report["errors"]])
         self.assertEqual("ProcessingError", report["errors"][0]["ruleName"])
         self.assertEqual(1, report["errors"][0]["line"])
-        self.assertIn(f"Could not process {secret.resolve()}", report["errors"][0]["message"])
+        self.assertIn("Could not process", report["errors"][0]["message"])
         self.assertIn("Permission denied", report["errors"][0]["message"])
 
     def test_readable_file_and_unreadable_directory_are_both_reported(self) -> None:
@@ -1089,7 +1093,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("", stderr.getvalue())
         self.assertIn(_development_fragment(visible), report)
-        self.assertIn(f"{locked.resolve().as_posix()}:1: ProcessingError Could not process {locked.resolve()}", report)
+        self.assertIn(f"{locked.resolve().as_posix()}:1: ProcessingError Could not process: [Errno 13] Permission denied", report)
 
     def test_duplicate_parameter_name_reports_an_error_without_hiding_findings(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -7441,6 +7445,126 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("1", error_elem.attrib["priority"])
         self.assertEqual("false", error_elem.attrib["suppressed"])
 
+    def test_syntax_error_gitlab_fingerprint_and_message_are_invariant_to_working_root(self) -> None:
+        with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
+            root_a = Path(dir_a)
+            root_b = Path(dir_b)
+            (root_a / "pkg").mkdir(parents=True)
+            (root_b / "pkg").mkdir(parents=True)
+            (root_a / "pkg" / "broken.py").write_text("def broken(\n", encoding="utf-8")
+            (root_b / "pkg" / "broken.py").write_text("def broken(\n", encoding="utf-8")
+
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root_a)
+                stdout_a = StringIO()
+                stderr_a = StringIO()
+                status_a = run(["pkg", "gitlab", "python"], stdout_a, stderr_a)
+
+                os.chdir(root_b)
+                stdout_b = StringIO()
+                stderr_b = StringIO()
+                status_b = run(["pkg", "gitlab", "python"], stdout_b, stderr_b)
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(1, status_a)
+            self.assertEqual(1, status_b)
+            self.assertEqual("", stderr_a.getvalue())
+            self.assertEqual("", stderr_b.getvalue())
+
+            gitlab_a = json.loads(stdout_a.getvalue())
+            gitlab_b = json.loads(stdout_b.getvalue())
+            self.assertEqual(1, len(gitlab_a))
+            self.assertEqual(1, len(gitlab_b))
+            self.assertEqual("pkg/broken.py", gitlab_a[0]["location"]["path"])
+            self.assertEqual("pkg/broken.py", gitlab_b[0]["location"]["path"])
+            self.assertEqual(gitlab_a[0]["description"], gitlab_b[0]["description"])
+            self.assertEqual(gitlab_a[0]["fingerprint"], gitlab_b[0]["fingerprint"])
+
+            try:
+                os.chdir(root_a)
+                for fmt in ["text", "xml", "json", "html", "ansi", "github", "gitlab", "checkstyle", "sarif"]:
+                    stdout = StringIO()
+                    run(["pkg", fmt, "python"], stdout, StringIO())
+                    output = stdout.getvalue()
+                    self.assertNotIn(str(root_a.resolve()), output, fmt)
+                    self.assertNotIn(root_a.resolve().as_posix(), output, fmt)
+            finally:
+                os.chdir(previous_cwd)
+
+    def test_read_and_directory_discovery_errors_do_not_embed_absolute_root(self) -> None:
+        with tempfile.TemporaryDirectory() as dir_a, tempfile.TemporaryDirectory() as dir_b:
+            root_a = Path(dir_a)
+            root_b = Path(dir_b)
+            (root_a / "pkg").mkdir()
+            (root_b / "pkg").mkdir()
+            file_a = root_a / "pkg" / "locked.py"
+            file_b = root_b / "pkg" / "locked.py"
+            file_a.write_text("x = 1\n", encoding="utf-8")
+            file_b.write_text("x = 1\n", encoding="utf-8")
+
+            def fake_open(p, *args, **kwargs):
+                raise PermissionError(13, "Permission denied", str(Path(p).resolve()))
+
+            previous_cwd = Path.cwd()
+            try:
+                with mock.patch("messpy.analyzer.tokenize.open", side_effect=fake_open):
+                    os.chdir(root_a)
+                    stdout_a = StringIO()
+                    status_a = run(["pkg", "gitlab", "python"], stdout_a, StringIO())
+
+                    os.chdir(root_b)
+                    stdout_b = StringIO()
+                    status_b = run(["pkg", "gitlab", "python"], stdout_b, StringIO())
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(1, status_a)
+            self.assertEqual(1, status_b)
+            gitlab_a = json.loads(stdout_a.getvalue())
+            gitlab_b = json.loads(stdout_b.getvalue())
+            self.assertEqual(gitlab_a[0]["description"], gitlab_b[0]["description"])
+            self.assertEqual(gitlab_a[0]["fingerprint"], gitlab_b[0]["fingerprint"])
+            self.assertNotIn(str(root_a.resolve()), gitlab_a[0]["description"])
+            self.assertIn("Permission denied", gitlab_a[0]["description"])
+
+            secret_a = root_a / "pkg" / "secret"
+            secret_b = root_b / "pkg" / "secret"
+            secret_a.mkdir()
+            secret_b.mkdir()
+
+            original_iterdir = Path.iterdir
+
+            def fake_iterdir(self_path):
+                if self_path.name == "secret":
+                    raise PermissionError(13, "Permission denied", str(self_path.resolve()))
+                return original_iterdir(self_path)
+
+            try:
+                with mock.patch.object(Path, "iterdir", fake_iterdir):
+                    os.chdir(root_a)
+                    stdout_a = StringIO()
+                    status_a = run(["pkg", "gitlab", "python"], stdout_a, StringIO())
+
+                    os.chdir(root_b)
+                    stdout_b = StringIO()
+                    status_b = run(["pkg", "gitlab", "python"], stdout_b, StringIO())
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(1, status_a)
+            self.assertEqual(1, status_b)
+            gitlab_a = json.loads(stdout_a.getvalue())
+            gitlab_b = json.loads(stdout_b.getvalue())
+            dir_error_a = [e for e in gitlab_a if "secret" in e["location"]["path"]][0]
+            dir_error_b = [e for e in gitlab_b if "secret" in e["location"]["path"]][0]
+            self.assertEqual(dir_error_a["description"], dir_error_b["description"])
+            self.assertEqual(dir_error_a["fingerprint"], dir_error_b["fingerprint"])
+            self.assertNotIn(str(root_a.resolve()), dir_error_a["description"])
+            self.assertIn("Permission denied", dir_error_a["description"])
+
+
 
 
 def _long_function(name: str) -> str:
@@ -7472,7 +7596,7 @@ def _development_fragment(path: Path) -> str:
 
 def _directory_processing_error(path: Path) -> str:
     resolved = path.resolve()
-    return f"{resolved.as_posix()}:1: ProcessingError Could not process {resolved}:"
+    return f"{resolved.as_posix()}:1: ProcessingError Could not process: [Errno 13] Permission denied"
 
 
 def _require_blocked_listing(test: unittest.TestCase, directory: Path) -> None:

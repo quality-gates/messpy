@@ -221,7 +221,7 @@ class FacadeAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, len(analysis.errors))
         self.assertEqual(secret.resolve(), analysis.errors[0].path)
         self.assertEqual(1, analysis.errors[0].line)
-        self.assertIn(f"Could not process {secret.resolve()}", analysis.errors[0].message)
+        self.assertIn("Could not process", analysis.errors[0].message)
         self.assertIn("Permission denied", analysis.errors[0].message)
 
 
