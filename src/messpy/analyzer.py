@@ -467,6 +467,56 @@ class PrivateMemberUsage:
     requires_conservative_handling: bool
 
 
+def _sanitize_diagnostic_message(message: str, path: Path | None = None) -> str:
+    candidates: list[str] = []
+    if path is not None:
+        resolved = path.resolve()
+        candidates.extend(
+            [
+                f" for {str(resolved)!r}",
+                f" for {resolved.as_posix()!r}",
+                f" for {str(path)!r}",
+                f" for {path.as_posix()!r}",
+                f": {str(resolved)!r}",
+                f": {resolved.as_posix()!r}",
+                f": {str(path)!r}",
+                f": {path.as_posix()!r}",
+                str(resolved),
+                resolved.as_posix(),
+                str(path),
+                path.as_posix(),
+            ]
+        )
+    cwd = Path.cwd().resolve()
+    candidates.extend([str(cwd), cwd.as_posix()])
+    for candidate in candidates:
+        if candidate and candidate in message:
+            message = message.replace(candidate, "")
+    cleaned = message.strip(" :'\''\"")
+    return cleaned
+
+
+def _format_syntax_error(prefix: str, error: SyntaxError, path: Path | None = None) -> str:
+    msg = _sanitize_diagnostic_message(error.msg or "invalid syntax", path)
+    return f"{prefix}: {msg or 'invalid syntax'}"
+
+
+def _format_exception(error: BaseException, path: Path | None = None) -> str:
+    if isinstance(error, OSError):
+        if error.errno is not None and error.strerror is not None:
+            raw_message = f"[Errno {error.errno}] {error.strerror}"
+        elif error.strerror is not None:
+            raw_message = error.strerror
+        else:
+            raw_message = str(error)
+    elif isinstance(error, tokenize.TokenError) and error.args and isinstance(error.args[0], str):
+        raw_message = error.args[0]
+    else:
+        raw_message = str(error)
+    cleaned = _sanitize_diagnostic_message(raw_message, path)
+    return cleaned or error.__class__.__name__
+
+
 def _analyze(
     source_files: Sequence[Path], rules: Sequence[LoadedRule]
 ) -> tuple[list[Finding], list[ProcessingError]]:
@@ -481,11 +531,13 @@ def _analyze(
         except SyntaxError as error:
             line = error.lineno or 1
             processing_errors.append(
-                ProcessingError(source_file, line, f"Could not parse {source_file}: {error.msg}")
+                ProcessingError(source_file, line, _format_syntax_error("Could not parse", error, source_file))
             )
             continue
         except (RecursionError, MemoryError, OSError, UnicodeError) as error:
-            processing_errors.append(ProcessingError(source_file, 1, f"Could not process {source_file}: {error}"))
+            processing_errors.append(
+                ProcessingError(source_file, 1, f"Could not process: {_format_exception(error, source_file)}")
+            )
             continue
         try:
             findings.extend(_apply_suppressions(source, tree, _findings(identity, source, tree, rules)))
@@ -495,13 +547,14 @@ def _analyze(
             # tables can hit this second, stricter parse.
             line = error.lineno or 1
             processing_errors.append(
-                ProcessingError(source_file, line, f"Could not analyze {source_file}: {error.msg}")
+                ProcessingError(source_file, line, _format_syntax_error("Could not analyze", error, source_file))
             )
         except (RecursionError, MemoryError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
             processing_errors.append(
-                ProcessingError(source_file, 1, f"Could not process {source_file}: {error}")
+                ProcessingError(source_file, 1, f"Could not process: {_format_exception(error, source_file)}")
             )
     return findings, processing_errors
+
 
 
 def _findings(identity: SourceFile, source: str, tree: ast.Module, rules: Sequence[LoadedRule]) -> list[Finding]:
@@ -5303,7 +5356,9 @@ def _collect_directory_source_files(
         candidates = sorted(path.iterdir(), key=lambda entry: entry.name)
     except OSError as error:
         resolved = path.resolve()
-        return set(), [ProcessingError(resolved, 1, f"Could not process {resolved}: {error}")]
+        return set(), [
+            ProcessingError(resolved, 1, f"Could not process: {_format_exception(error, resolved)}")
+        ]
     for candidate in candidates:
         found, errors = _source_files_for_candidate(candidate, suffixes, exclusions, ignore_tests, root)
         source_files.update(found)
