@@ -4256,10 +4256,15 @@ def _excessive_parameter_list_findings(
 
 
 @dataclass(frozen=True)
+class _Cons:
+    head: object
+    tail: object = None
+
+
+@dataclass(frozen=True)
 class _NamingState:
-    targets: tuple[NamingTarget, ...] = ()
-    target_names: frozenset[NamingTarget] = frozenset()
-    callables: tuple[NamingCallable, ...] = ()
+    targets: _Cons | None = None
+    callables: _Cons | None = None
     contexts: tuple[str, ...] = ()
     class_depth: int = 0
     receivers: tuple[str | None, ...] = ()
@@ -4267,6 +4272,15 @@ class _NamingState:
     generic_target_ids: frozenset[int] = frozenset()
     visitor_method_ids: frozenset[int] = frozenset()
     type_alias_annotation_ids: frozenset[int] = frozenset()
+
+
+def _cons_to_list(cons: _Cons | None) -> list:
+    items = []
+    curr = cons
+    while curr is not None:
+        items.append(curr.head)
+        curr = curr.tail
+    return items
 
 
 def _naming_roles(tree: ast.Module, names: Names) -> tuple[list[NamingTarget], list[NamingCallable]]:
@@ -4279,8 +4293,11 @@ def _naming_roles(tree: ast.Module, names: Names) -> tuple[list[NamingTarget], l
     )
     for target in _named_binding_targets(tree):
         state = _with_naming_target(state, target.name, target.line, target.role)
-    targets = sorted(state.targets, key=lambda target: (target.line, target.role, target.name))
-    callables = sorted(state.callables, key=lambda callable_info: callable_info.node.lineno)
+    raw_targets = _cons_to_list(state.targets)
+    deduped_targets = set(raw_targets)
+    targets = sorted(deduped_targets, key=lambda target: (target.line, target.role, target.name))
+    raw_callables = _cons_to_list(state.callables)
+    callables = sorted(raw_callables, key=lambda callable_info: callable_info.node.lineno)
     return targets, callables
 
 
@@ -4354,7 +4371,7 @@ def _naming_function(node: ast.FunctionDef | ast.AsyncFunctionDef, state: _Namin
         role,
         id(node) in state.visitor_method_ids,
     )
-    state = replace(state, callables=(*state.callables, NamingCallable(node, role)))
+    state = replace(state, callables=_Cons(NamingCallable(node, role), state.callables))
     state = _naming_parameters(node.args, state)
     state = _naming_expressions(node.decorator_list, state)
     state = _naming_expressions(_present_defaults(node.args), state)
@@ -4475,9 +4492,7 @@ def _with_naming_target(
     contract: bool = False,
 ) -> _NamingState:
     target = NamingTarget(name, line, role, contract)
-    if target in state.target_names:
-        return state
-    return replace(state, targets=(*state.targets, target), target_names=state.target_names | {target})
+    return replace(state, targets=_Cons(target, state.targets))
 
 
 def _assignment_name_targets(targets: Sequence[ast.expr]) -> list[ast.Name]:

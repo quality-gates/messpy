@@ -224,6 +224,31 @@ class FacadeAcceptanceTests(unittest.TestCase):
         self.assertIn("Could not process", analysis.errors[0].message)
         self.assertIn("Permission denied", analysis.errors[0].message)
 
+    def test_naming_pass_scales_linearly_with_number_of_functions(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            rules = load_rulesets(["naming"])
+
+            def measure(n: int) -> float:
+                source_file = project / f"funcs_{n}.py"
+                source_file.write_text(
+                    "".join(
+                        f"def f{i}(a, b, c):\n    xx = a\n    yy = b\n    return c\n\n"
+                        for i in range(n)
+                    ),
+                    encoding="utf-8",
+                )
+                analyze([source_file], rules=rules)
+                start = time.process_time()
+                analyze([source_file], rules=rules)
+                return time.process_time() - start
+
+            t_400 = measure(400)
+            t_1600 = measure(1600)
+            self.assertLess(t_1600 / t_400, 7.0)
+
 
 def _require_blocked_listing(test: unittest.TestCase, directory: Path) -> None:
     geteuid = getattr(os, "geteuid", None)
