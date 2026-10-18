@@ -4852,18 +4852,18 @@ class CommandAcceptanceTests(unittest.TestCase):
                 "            continue\n",
                 8,
             ),
-            "for_returns": (
-                "def first(values):\n"
-                "    for value in values:\n"
-                "        return value\n"
+            "while_true_returns": (
+                "def hunt(items):\n"
+                "    while True:\n"
+                "        return items.pop()\n"
                 "    else:\n"
                 "        return None\n",
                 5,
             ),
-            "while_returns": (
+            "while_true_raises": (
                 "def hunt(items):\n"
-                "    while items:\n"
-                "        return items.pop()\n"
+                "    while 1:\n"
+                "        raise LookupError(items)\n"
                 "    else:\n"
                 "        return None\n",
                 5,
@@ -4937,6 +4937,55 @@ class CommandAcceptanceTests(unittest.TestCase):
             ),
         }
         quiet = {
+            "for_returns": (
+                "def first(values):\n"
+                "    for value in values:\n"
+                "        return value\n"
+                "    else:\n"
+                "        raise LookupError('empty')\n"
+            ),
+            "for_raises": (
+                "def reject(values):\n"
+                "    for value in values:\n"
+                "        raise ValueError(value)\n"
+                "    else:\n"
+                "        return True\n"
+            ),
+            "async_for_returns": (
+                "async def first(values):\n"
+                "    async for value in values:\n"
+                "        return value\n"
+                "    else:\n"
+                "        raise LookupError('empty')\n"
+            ),
+            "async_for_raises": (
+                "async def reject(values):\n"
+                "    async for value in values:\n"
+                "        raise ValueError(value)\n"
+                "    else:\n"
+                "        return True\n"
+            ),
+            "while_returns": (
+                "def pop_or_empty(items):\n"
+                "    while items:\n"
+                "        return items.pop()\n"
+                "    else:\n"
+                "        return 'empty'\n"
+            ),
+            "while_raises": (
+                "def reject(items):\n"
+                "    while items:\n"
+                "        raise ValueError(items)\n"
+                "    else:\n"
+                "        return True\n"
+            ),
+            "while_false_returns": (
+                "def fallback():\n"
+                "    while False:\n"
+                "        return 1\n"
+                "    else:\n"
+                "        return 2\n"
+            ),
             "for_breaks": (
                 "def hunt(items):\n"
                 "    for item in items:\n"

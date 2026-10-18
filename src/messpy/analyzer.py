@@ -36,7 +36,7 @@ from .callgraph import (
 )
 from .rulesets import LoadedRule
 from .ownership import CallableBody, Origin, Ownership, OwnershipProgram, Storage, argument_ownership, augmented_mutation, project_storage
-from .reachability import live_statements
+from .reachability import constant_truth, live_statements
 
 
 __all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "SourceFile", "analyze"]
@@ -2318,10 +2318,17 @@ def _dead_else_clause(elif_nodes: set[int], node: ast.AST) -> ast.stmt | None:
     if isinstance(node, ast.If):
         return None if id(node) in elif_nodes else _dead_else_after_if_chain(node)
     if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
-        return node.orelse[0] if node.orelse and _block_always_exits(node.body, allow_loop_jumps=False) else None
+        return node.orelse[0] if node.orelse and _loop_body_always_exits(node) else None
     if isinstance(node, (ast.Try, ast.TryStar)):
         return node.orelse[0] if node.orelse and _block_always_exits(node.body) else None
     return None
+
+
+def _loop_body_always_exits(node: ast.For | ast.AsyncFor | ast.While) -> bool:
+    # A loop that may run zero times reaches its else without entering the body.
+    if not isinstance(node, ast.While) or constant_truth(node.test) is not True:
+        return False
+    return _block_always_exits(node.body, allow_loop_jumps=False)
 
 
 def _is_single_if(statements: Sequence[ast.stmt]) -> bool:
