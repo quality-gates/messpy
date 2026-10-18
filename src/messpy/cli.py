@@ -4,6 +4,8 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
+import errno
+import io
 import json
 import os
 import re
@@ -153,7 +155,16 @@ def main(
     stdout: TextIO = sys.stdout,
     stderr: TextIO = sys.stderr,
 ) -> None:
-    raise SystemExit(run(argv[1:], stdout, stderr))
+    raise SystemExit(run(argv[1:], stdout if stdout is not None else _ClosedStream(), stderr))
+
+
+class _ClosedStream(io.TextIOBase):
+    """Stands in for ``sys.stdout`` when the process started with file descriptor 1 closed."""
+
+    def write(self, text: str) -> int:
+        if not text:
+            return 0
+        raise OSError(errno.EBADF, os.strerror(errno.EBADF))
 
 
 def _messpy_version() -> str:

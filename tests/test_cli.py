@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+import errno
 import json
 import os
 from io import StringIO
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -1481,6 +1483,26 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("", stdout.getvalue())
         self.assertIn("Unable to write report", stderr.getvalue())
+
+    @unittest.skipIf(sys.platform == "win32", "Closing fd 1 before exec needs POSIX preexec_fn.")
+    def test_closed_stdout_is_an_operational_error_without_a_traceback(self) -> None:
+        bad_file_descriptor = f"Error: [Errno {errno.EBADF}] {os.strerror(errno.EBADF)}\n"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source = Path(temporary_directory) / "violating.py"
+            source.write_text(_long_function("violating"), encoding="utf-8")
+            for arguments in ([str(source), "text", "codesize"], ["--help"]):
+                with self.subTest(arguments=arguments):
+                    result = subprocess.run(
+                        [sys.executable, "-c", "from messpy.cli import main; main()", *arguments],
+                        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+                        preexec_fn=lambda: os.close(1),
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+
+                    self.assertEqual(bad_file_descriptor, result.stderr)
+                    self.assertEqual(1, result.returncode)
 
     @unittest.skipIf(
         sys.platform == "win32",
