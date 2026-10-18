@@ -132,12 +132,106 @@ class Storage:
         )
 
 
+
+
+class _LayeredMap(Mapping):
+    __slots__ = ("_head", "_parent", "_len")
+
+    def __init__(self, head=None, parent=None, length=None):
+        self._head = head if head is not None else {}
+        self._parent = parent
+        if length is not None:
+            self._len = length
+        elif not self._head and parent is None:
+            self._len = 0
+        else:
+            self._len = len(self._head) + (len(parent) if parent else 0)
+
+    def __getitem__(self, key):
+        curr = self
+        while curr is not None:
+            if key in curr._head:
+                return curr._head[key]
+            curr = curr._parent
+        raise KeyError(key)
+
+    def get(self, key, default=None):
+        curr = self
+        while curr is not None:
+            if key in curr._head:
+                return curr._head[key]
+            curr = curr._parent
+        return default
+
+    def __contains__(self, key):
+        curr = self
+        while curr is not None:
+            if key in curr._head:
+                return True
+            curr = curr._parent
+        return False
+
+    def __iter__(self):
+        seen = set()
+        curr = self
+        while curr is not None:
+            for k in curr._head:
+                if k not in seen:
+                    seen.add(k)
+                    yield k
+            curr = curr._parent
+
+    def __len__(self):
+        return self._len
+
+    def with_entry(self, key, value):
+        if key in self._head:
+            if self._head[key] is value:
+                return self
+            return _LayeredMap({**self._head, key: value}, self._parent, self._len)
+        curr = self._parent
+        existed = False
+        while curr is not None:
+            if key in curr._head:
+                existed = True
+                break
+            curr = curr._parent
+        new_len = self._len if existed else self._len + 1
+        if len(self._head) < 32:
+            return _LayeredMap({**self._head, key: value}, self._parent, new_len)
+        return _LayeredMap({key: value}, self, new_len)
+
+
+def _with_entry(mapping: Mapping, key, value) -> _LayeredMap:
+    if isinstance(mapping, _LayeredMap):
+        return mapping.with_entry(key, value)
+    return _LayeredMap(dict(mapping)).with_entry(key, value)
+
+
+def _with_entries(mapping: Mapping, entries: Mapping) -> Mapping:
+    if not entries:
+        return mapping
+    result = mapping
+    for k, v in entries.items():
+        result = _with_entry(result, k, v)
+    return result
+
+
+def _without(mapping: Mapping, key) -> Mapping:
+    if key not in mapping:
+        return mapping
+    if isinstance(mapping, _LayeredMap) and key in mapping._head and mapping._parent is None:
+        new_head = {k: v for k, v in mapping._head.items() if k != key}
+        return _LayeredMap(new_head, None, len(new_head))
+    return _LayeredMap({k: v for k, v in mapping.items() if k != key})
+
+
 @dataclass(frozen=True)
 class _State(Mapping[str, Storage]):
     names: Mapping[str, _Cell] = field(default_factory=dict)
     cells: Mapping[_Cell, Storage] = field(default_factory=dict)
-    heap: Mapping[tuple[int, ...], Storage] = field(default_factory=dict)
-    evaluated: Mapping[int, Storage] = field(default_factory=dict)
+    heap: _LayeredMap = field(default_factory=_LayeredMap)
+    evaluated: _LayeredMap = field(default_factory=_LayeredMap)
     result: Storage = field(default_factory=lambda: Storage(kinds=frozenset()))
     calls: Mapping[tuple, tuple[Storage, Mapping, Mapping]] = field(default_factory=dict, compare=False)
 
@@ -573,7 +667,7 @@ def _frame_state(state: _State, captures: tuple[tuple[str, _Cell], ...], context
         cell = _Cell(context.activation, name)
         names[name] = cell
         cells[cell] = Storage(opaque=True)
-    return replace(state, names=names, cells=cells, evaluated={}, result=Storage(kinds=frozenset()))
+    return replace(state, names=names, cells=cells, evaluated=_LayeredMap(), result=Storage(kinds=frozenset()))
 
 
 def _visit_body(callable_node, bindings: _State, context: _Context) -> _Flow:
@@ -603,7 +697,7 @@ def _then(*traces) -> tuple:
 
 def _visit(node: ast.AST, bindings: _State, context: _Context) -> _Flow:
     if id(node) in bindings.evaluated:
-        bindings = replace(bindings, evaluated={key: value for key, value in bindings.evaluated.items() if key != id(node)})
+        bindings = replace(bindings, evaluated=_without(bindings.evaluated, id(node)))
     seen = _Seen(id(node), bindings)
     handler = _STATEMENT_HANDLERS.get(type(node), _visit_children)
     flow = handler(node, bindings, context)
@@ -827,9 +921,9 @@ def _allocated(node: ast.AST, value: Storage, state: _State, context: _Context) 
     stored = replace(value, references=frozenset(), slots=tuple((key, _stored(child)) for key, child in value.slots))
     if stored.indexed:
         stored = replace(stored, reachable=frozenset(), deep=False)
-    heap = {**state.heap, reference: stored}
+    heap = _with_entry(state.heap, reference, stored)
     selected = Storage(kinds=frozenset(), references=frozenset({reference}))
-    return replace(state, heap=heap, evaluated={**state.evaluated, id(node): selected})
+    return replace(state, heap=heap, evaluated=_with_entry(state.evaluated, id(node), selected))
 
 
 def _visit_import(node: ast.Import | ast.ImportFrom, bindings, context) -> _Flow:
@@ -894,7 +988,7 @@ def _memo_execution(body: CallableBody, closure: _Closure, call: ast.Call, value
     cached = state.calls.get(key)
     if cached is not None:
         cached_result, cell_delta, heap_delta = cached
-        return _cached(call, cached_result, replace(state, cells={**state.cells, **cell_delta}, heap={**state.heap, **heap_delta}))
+        return _cached(call, cached_result, replace(state, cells={**state.cells, **cell_delta}, heap=_with_entries(state.heap, heap_delta)))
     result = _execute_body(body, closure, call, values, state, context)
     cell_delta = {k: v for k, v in result.cells.items() if state.cells.get(k) is not v}
     heap_delta = {k: v for k, v in result.heap.items() if state.heap.get(k) is not v}
@@ -948,7 +1042,7 @@ def _uncertain_storage(value: Storage, state: _State, seen: frozenset[tuple[int,
 
 
 def _cached(node: ast.AST, value: Storage, state: _State) -> _State:
-    return replace(state, evaluated={**state.evaluated, id(node): value})
+    return replace(state, evaluated=_with_entry(state.evaluated, id(node), value))
 
 
 def _bound_values(body: CallableBody, call: ast.Call, state: _State, context: _Context) -> dict[str, Storage] | None:
@@ -1159,11 +1253,12 @@ def _with_slots(current: Storage, slots: tuple[tuple[tuple[str, str | int], Stor
 
 
 def _update_aliases(bindings: _State, current: Storage, updated: Storage) -> _State:
-    heap = dict(bindings.heap)
+    heap = bindings.heap
     stored = replace(updated, references=frozenset(), slots=tuple((key, _stored(child)) for key, child in updated.slots))
     for reference in current.references:
         previous = heap.get(reference, Storage(opaque=True))
-        heap[reference] = stored if len(current.references) == 1 else previous.join(stored)
+        new_stored = stored if len(current.references) == 1 else previous.join(stored)
+        heap = _with_entry(heap, reference, new_stored)
     cells = {cell: updated if value is current else value for cell, value in bindings.cells.items()}
     return replace(bindings, cells=cells, heap=heap)
 
@@ -1214,9 +1309,9 @@ def _join_bindings(left: _State, right: _State, _context: _Context) -> _State:
     )
 
 
-def _joined_entries(left: Mapping, right: Mapping) -> dict:
+def _joined_entries(left: Mapping, right: Mapping) -> Mapping:
     if left is right:
-        return dict(left)
+        return left
     result = dict(left)
     for key, right_value in right.items():
         left_value = result.get(key)
@@ -1224,5 +1319,5 @@ def _joined_entries(left: Mapping, right: Mapping) -> dict:
             result[key] = right_value
         elif left_value is not right_value:
             result[key] = left_value.join(right_value)
-    return result
+    return _LayeredMap(result) if (isinstance(left, _LayeredMap) or isinstance(right, _LayeredMap)) else result
 

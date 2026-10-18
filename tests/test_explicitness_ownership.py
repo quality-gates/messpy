@@ -297,3 +297,22 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(0, status)
         self.assertLess(elapsed, 0.5)
 
+    def test_container_literal_memory_scaling(self):
+        import tracemalloc
+
+        def measure(n: int) -> int:
+            source = "TABLE = [\n" + "".join(f"    ({i}, {i}),\n" for i in range(n)) + "]\n"
+            tracemalloc.start()
+            try:
+                status, _report = self.analyze(source)
+                self.assertEqual(0, status)
+                _curr, peak = tracemalloc.get_traced_memory()
+                return peak
+            finally:
+                tracemalloc.stop()
+
+        peak_500 = measure(500)
+        peak_1000 = measure(1000)
+        self.assertLess(peak_1000, 15 * 1024 * 1024)
+        self.assertLess(peak_1000 / peak_500, 2.5)
+
