@@ -130,7 +130,7 @@ Useful when an existing pipeline already knows Checkstyle XML:
 </checkstyle>
 ```
 
-Files are sorted by path. `source` is `messpy.` plus `ruleName`. Severity uses the priority table above. Boolean `suppressed` attributes are lowercase `true`/`false`.
+Files are sorted by path within each group. `source` is `messpy.` plus `ruleName`. Severity uses the priority table above. Boolean `suppressed` attributes are lowercase `true`/`false`.
 
 ### SARIF 2.1.0
 

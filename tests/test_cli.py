@@ -16,9 +16,16 @@ from urllib.parse import unquote
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.analyzer import _function_scopes, _is_protocol, _protocol_base_names, _scope_usage
+from messpy.analyzer import (
+    Finding,
+    ProcessingError,
+    _function_scopes,
+    _is_protocol,
+    _protocol_base_names,
+    _scope_usage,
+)
 from messpy.callgraph import _direct_bindings
-from messpy.cli import run
+from messpy.cli import _checkstyle_report, run
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -7261,6 +7268,179 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(0, status)
         self.assertEqual("", stdout.getvalue())
         self.assertEqual("", stderr.getvalue())
+
+    def test_checkstyle_report_emits_findings_before_processing_error_for_interleaved_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            src = Path(temporary_directory) / "src"
+            src.mkdir()
+            a_ok = src / "a_ok.py"
+            m_broken = src / "m_broken.py"
+            z_ok = src / "z_ok.py"
+            a_ok.write_text("# TODO: marker\n", encoding="utf-8")
+            m_broken.write_text("def broken(\n", encoding="utf-8")
+            z_ok.write_text("# TODO: later\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(src), "checkstyle", "python"], stdout, stderr)
+
+            self.assertEqual(1, status)
+            self.assertEqual("", stderr.getvalue())
+
+            root = ElementTree.fromstring(stdout.getvalue())
+            self.assertEqual("checkstyle", root.tag)
+            self.assertEqual("messpy", root.attrib.get("tool"))
+
+            files = root.findall("./file")
+            file_names = [f.attrib["name"] for f in files]
+            expected_names = [
+                a_ok.resolve().as_posix(),
+                z_ok.resolve().as_posix(),
+                m_broken.resolve().as_posix(),
+            ]
+            self.assertEqual(expected_names, file_names)
+
+            errors = root.findall(".//error")
+            error_sources = [e.attrib["source"] for e in errors]
+            self.assertEqual(
+                [
+                    "messpy.DevelopmentCodeFragment",
+                    "messpy.DevelopmentCodeFragment",
+                    "messpy.ProcessingError",
+                ],
+                error_sources,
+            )
+
+    def test_checkstyle_report_sorts_paths_within_findings_and_errors_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            src = Path(temporary_directory) / "src"
+            src.mkdir()
+            b_finding = src / "b_ok.py"
+            d_finding = src / "d_ok.py"
+            a_error = src / "a_broken.py"
+            c_error = src / "c_broken.py"
+
+            b_finding.write_text("# TODO: marker 1\n", encoding="utf-8")
+            d_finding.write_text("# TODO: marker 2\n", encoding="utf-8")
+            a_error.write_text("def broken_a(\n", encoding="utf-8")
+            c_error.write_text("def broken_c(\n", encoding="utf-8")
+
+            stdout = StringIO()
+            stderr = StringIO()
+            status = run([str(src), "checkstyle", "python"], stdout, stderr)
+
+            self.assertEqual(1, status)
+            self.assertEqual("", stderr.getvalue())
+
+            root = ElementTree.fromstring(stdout.getvalue())
+            files = root.findall("./file")
+            file_names = [f.attrib["name"] for f in files]
+            expected_names = [
+                b_finding.resolve().as_posix(),
+                d_finding.resolve().as_posix(),
+                a_error.resolve().as_posix(),
+                c_error.resolve().as_posix(),
+            ]
+            self.assertEqual(expected_names, file_names)
+
+            errors = root.findall(".//error")
+            error_sources = [e.attrib["source"] for e in errors]
+            self.assertEqual(
+                [
+                    "messpy.DevelopmentCodeFragment",
+                    "messpy.DevelopmentCodeFragment",
+                    "messpy.ProcessingError",
+                    "messpy.ProcessingError",
+                ],
+                error_sources,
+            )
+
+    def test_checkstyle_report_renderer_preserves_order_and_records_when_path_is_shared(self) -> None:
+        shared_path = Path("shared.py")
+        alpha_path = Path("alpha.py")
+        omega_path = Path("omega.py")
+
+        findings = [
+            Finding(
+                path=shared_path,
+                line=10,
+                rule_name="DevelopmentCodeFragment",
+                priority=2,
+                message="TODO in shared file",
+                context="func",
+                suppressed=False,
+            ),
+            Finding(
+                path=alpha_path,
+                line=5,
+                rule_name="EmptyModule",
+                priority=4,
+                message="Alpha is empty",
+                context="",
+                suppressed=False,
+            ),
+        ]
+        errors = [
+            ProcessingError(
+                path=omega_path,
+                line=1,
+                message="Omega syntax error",
+            ),
+            ProcessingError(
+                path=shared_path,
+                line=20,
+                message="Shared trailing error",
+            ),
+        ]
+
+        report_xml = _checkstyle_report(findings, errors)
+        root = ElementTree.fromstring(report_xml)
+
+        files = root.findall("./file")
+        file_names = [f.attrib["name"] for f in files]
+        # In findings group, alpha.py then shared.py.
+        # In errors group, omega.py then shared.py.
+        expected_file_names = [
+            "alpha.py",
+            "shared.py",
+            "omega.py",
+            "shared.py",
+        ]
+        self.assertEqual(expected_file_names, file_names)
+
+        errors_in_tree = root.findall(".//error")
+        self.assertEqual(4, len(errors_in_tree))
+        self.assertEqual(
+            [
+                "messpy.EmptyModule",
+                "messpy.DevelopmentCodeFragment",
+                "messpy.ProcessingError",
+                "messpy.ProcessingError",
+            ],
+            [e.attrib["source"] for e in errors_in_tree],
+        )
+
+        # Verify attributes on shared path error elements
+        finding_elem = files[1].find("./error")
+        self.assertEqual("10", finding_elem.attrib["line"])
+        self.assertEqual("1", finding_elem.attrib["column"])
+        self.assertEqual("error", finding_elem.attrib["severity"])
+        self.assertEqual("TODO in shared file", finding_elem.attrib["message"])
+        self.assertEqual("messpy.DevelopmentCodeFragment", finding_elem.attrib["source"])
+        self.assertEqual("func", finding_elem.attrib["context"])
+        self.assertEqual("2", finding_elem.attrib["priority"])
+        self.assertEqual("false", finding_elem.attrib["suppressed"])
+
+        error_elem = files[3].find("./error")
+        self.assertEqual("20", error_elem.attrib["line"])
+        self.assertEqual("1", error_elem.attrib["column"])
+        self.assertEqual("error", error_elem.attrib["severity"])
+        self.assertEqual("Shared trailing error", error_elem.attrib["message"])
+        self.assertEqual("messpy.ProcessingError", error_elem.attrib["source"])
+        self.assertEqual("", error_elem.attrib["context"])
+        self.assertEqual("1", error_elem.attrib["priority"])
+        self.assertEqual("false", error_elem.attrib["suppressed"])
+
 
 
 def _long_function(name: str) -> str:

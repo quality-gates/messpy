@@ -623,13 +623,11 @@ def _gitlab_report(findings: Sequence[Finding], processing_errors: Sequence[Proc
     return json.dumps(entries, indent=2) + "\n"
 
 
-def _checkstyle_report(findings: Sequence[Finding], processing_errors: Sequence[ProcessingError]) -> str:
-    records = [*(_finding_record(finding) for finding in _ordered_findings(findings))]
-    records.extend(_error_record(error) for error in _ordered_errors(processing_errors))
+def _checkstyle_file_elements(records: Sequence[dict[str, str | int | bool]]) -> list[str]:
     by_path: dict[str, list[dict[str, str | int | bool]]] = defaultdict(list)
     for record in records:
         by_path[str(record["path"])].append(record)
-    lines = [f'<checkstyle tool="messpy" version="{_messpy_version()}">']
+    lines: list[str] = []
     for path in sorted(by_path):
         lines.append(f'  <file name="{_xml_attribute_value(path)}">')
         for record in by_path[path]:
@@ -644,6 +642,15 @@ def _checkstyle_report(findings: Sequence[Finding], processing_errors: Sequence[
                 f' priority="{record["priority"]}" suppressed="{str(record["suppressed"]).lower()}" />'
             )
         lines.append("  </file>")
+    return lines
+
+
+def _checkstyle_report(findings: Sequence[Finding], processing_errors: Sequence[ProcessingError]) -> str:
+    finding_records = [_finding_record(finding) for finding in _ordered_findings(findings)]
+    error_records = [_error_record(error) for error in _ordered_errors(processing_errors)]
+    lines = [f'<checkstyle tool="messpy" version="{_messpy_version()}">']
+    lines.extend(_checkstyle_file_elements(finding_records))
+    lines.extend(_checkstyle_file_elements(error_records))
     lines.append("</checkstyle>")
     return "\n".join(lines) + "\n"
 
