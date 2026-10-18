@@ -2,6 +2,7 @@ from io import StringIO
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -250,3 +251,49 @@ class OwnershipTests(unittest.TestCase):
             "probe.py:4: ImplicitOutput [priority 3] The function change() writes the implicit output values. Return it instead.\n",
             report,
         )
+
+    def test_recursive_call_ring_and_repeated_helpers_scale_without_superlinear_overhead(self):
+        def ring_source(functions, calls):
+            parts = []
+            for i in range(functions):
+                parts.append(f"def g{i}(tokens, pos):\n    out = []\n    while pos < len(tokens):\n")
+                for c in range(calls):
+                    target = (i + 1 + c) % functions
+                    parts.append(
+                        f"        if tokens[pos] == {c}:\n"
+                        f"            node, pos = g{target}(tokens, pos + 1)\n"
+                        f"            out.append(node)\n"
+                    )
+                parts.append("        pos += 1\n    return out, pos\n\n")
+            return "".join(parts)
+
+        started = time.perf_counter()
+        status, report = self.analyze(ring_source(6, 2))
+        elapsed = time.perf_counter() - started
+        self.assertEqual(2, status)
+        self.assertEqual(6, report.count("ImplicitOutput"))
+        self.assertLess(elapsed, 2.0)
+
+        seq_parts = [
+            "def testformat(fmt, arg):\n"
+            "    try:\n"
+            "        r = fmt % arg\n"
+            "    except OverflowError:\n"
+            "        pass\n"
+            "    else:\n"
+            "        if r != '':\n"
+            "            pass\n"
+            "def testcommon(fmt, arg):\n"
+            "    testformat(fmt, arg)\n"
+            "    testformat(fmt, arg)\n"
+            "    testformat(fmt, arg)\n"
+            "def main():\n"
+        ]
+        for c in range(100):
+            seq_parts.append(f"    testcommon('%d', {c})\n")
+        started = time.perf_counter()
+        status, report = self.analyze("".join(seq_parts))
+        elapsed = time.perf_counter() - started
+        self.assertEqual(0, status)
+        self.assertLess(elapsed, 0.5)
+

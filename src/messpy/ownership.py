@@ -139,6 +139,7 @@ class _State(Mapping[str, Storage]):
     heap: Mapping[tuple[int, ...], Storage] = field(default_factory=dict)
     evaluated: Mapping[int, Storage] = field(default_factory=dict)
     result: Storage = field(default_factory=lambda: Storage(kinds=frozenset()))
+    calls: Mapping[tuple, tuple[Storage, Mapping, Mapping]] = field(default_factory=dict, compare=False)
 
     def __getitem__(self, name: str) -> Storage:
         return self.cells[self.names[name]]
@@ -883,7 +884,28 @@ def _execute(closure: _Closure, call: ast.Call, state: _State, context: _Context
     values = _bound_values(body, call, state, context)
     if values is None:
         return _cached(call, Storage(opaque=True), _invalidate_passed_slots(call, state, context))
-    return _execute_body(body, closure, call, values, state, context)
+    return _memo_execution(body, closure, call, values, state, context)
+
+
+def _memo_execution(body: CallableBody, closure: _Closure, call: ast.Call, values: Mapping[str, Storage], state: _State, context: _Context) -> _State:
+    if closure.bindings:
+        return _execute_body(body, closure, call, values, state, context)
+    key = (id(body.node), tuple(sorted(values.items())), context.active)
+    cached = state.calls.get(key)
+    if cached is not None:
+        cached_result, cell_delta, heap_delta = cached
+        return _cached(call, cached_result, replace(state, cells={**state.cells, **cell_delta}, heap={**state.heap, **heap_delta}))
+    result = _execute_body(body, closure, call, values, state, context)
+    cell_delta = {k: v for k, v in result.cells.items() if state.cells.get(k) is not v}
+    heap_delta = {k: v for k, v in result.heap.items() if state.heap.get(k) is not v}
+    return replace(result, calls={**result.calls, key: (result.evaluated[id(call)], cell_delta, heap_delta)})
+
+
+def _escaping_cells(storage: Storage) -> set[_Cell]:
+    cells = {cell for func in storage.functions for _, cell in func.bindings}
+    for _, child in storage.slots:
+        cells.update(_escaping_cells(child))
+    return cells
 
 
 def _execute_body(body: CallableBody, closure: _Closure, call: ast.Call, values: Mapping[str, Storage], state: _State, context: _Context) -> _State:
@@ -893,7 +915,12 @@ def _execute_body(body: CallableBody, closure: _Closure, call: ast.Call, values:
     for name, value in values.items():
         frame = _bound(frame, name, value, entered)
     output = _visit_body(body.node, frame, entered).bindings
-    restored = replace(output, names=state.names, evaluated=state.evaluated, result=state.result)
+    escaping = _escaping_cells(output.result)
+    retained_cells = {
+        cell: val for cell, val in output.cells.items()
+        if cell in escaping or cell.activation[:len(activation)] != activation
+    }
+    restored = replace(output, names=state.names, cells=retained_cells, evaluated=state.evaluated, result=state.result, calls=output.calls)
     return _cached(call, output.result if output.result.kinds else Storage(kinds=frozenset({"NoneType"})), restored)
 
 
@@ -1183,8 +1210,19 @@ def _join_bindings(left: _State, right: _State, _context: _Context) -> _State:
         _joined_entries(left.heap, right.heap),
         _joined_entries(left.evaluated, right.evaluated),
         _joined((left.result, right.result)),
+        {**left.calls, **right.calls},
     )
 
 
 def _joined_entries(left: Mapping, right: Mapping) -> dict:
-    return {key: _joined(value for value in (left.get(key), right.get(key)) if value is not None) for key in left.keys() | right.keys()}
+    if left is right:
+        return dict(left)
+    result = dict(left)
+    for key, right_value in right.items():
+        left_value = result.get(key)
+        if left_value is None:
+            result[key] = right_value
+        elif left_value is not right_value:
+            result[key] = left_value.join(right_value)
+    return result
+
