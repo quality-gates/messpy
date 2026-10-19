@@ -136,7 +136,7 @@ class OwnershipTests(unittest.TestCase):
         )
         self.assertEqual(2, status)
         self.assertIn(
-            "probe.py:6: ImplicitOutput [priority 3] The function top() writes the implicit output print. Return it instead.\n",
+            "probe.py:6: ImplicitOutput [priority 3] The function top() writes the implicit output print. Move this effect to the caller.\n",
             report,
         )
         self.assertNotIn("UnknownEffect", report)
@@ -150,11 +150,11 @@ class OwnershipTests(unittest.TestCase):
         )
         self.assertEqual(2, status)
         self.assertIn(
-            "probe.py:2: ImplicitOutput [priority 3] The function first() writes the implicit output print. Return it instead.\n",
+            "probe.py:2: ImplicitOutput [priority 3] The function first() writes the implicit output print. Move this effect to the caller.\n",
             report,
         )
         self.assertIn(
-            "probe.py:4: ImplicitOutput [priority 3] The function second() writes the implicit output print. Return it instead.\n",
+            "probe.py:4: ImplicitOutput [priority 3] The function second() writes the implicit output print. Move this effect to the caller.\n",
             report,
         )
 
@@ -202,7 +202,7 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(2, status)
         self.assertEqual(
             "probe.py:2: ImplicitOutput [priority 3] The function <lambda>() writes the implicit output print. "
-            "Return it instead.\n",
+            "Move this effect to the caller.\n",
             report,
         )
         self.assertNotIn("build()", report)
@@ -216,7 +216,7 @@ class OwnershipTests(unittest.TestCase):
         )
         self.assertEqual(2, status)
         self.assertIn(
-            "probe.py:5: ImplicitOutput [priority 3] The function run() writes the implicit output print. Return it instead.\n",
+            "probe.py:5: ImplicitOutput [priority 3] The function run() writes the implicit output print. Move this effect to the caller.\n",
             report,
         )
         self.assertNotIn("UnknownEffect", report)
