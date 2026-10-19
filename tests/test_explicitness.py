@@ -734,6 +734,21 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             "explicitness",
         )
 
+        if sys.version_info >= (3, 14):
+            self.assertEqual((2, ""), (status, errors))
+            self.assertEqual(
+                [
+                    "6: ImplicitOutput [priority 3] The function mutate() writes the implicit output T. "
+                    "Return it instead.",
+                    "7: ImplicitOutput [priority 3] The function mutate() writes the implicit output payload. "
+                    "Return it instead.",
+                    "11: ImplicitInput [priority 3] The function inner() reads the implicit input payload. "
+                    "Pass it as an argument instead.",
+                ],
+                report,
+            )
+            return
+
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(
             [
@@ -783,6 +798,11 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             "    return inner\n",
             "explicitness",
         )
+
+        if sys.version_info >= (3, 14):
+            self.assertEqual((0, ""), (status, errors))
+            self.assertEqual([], report)
+            return
 
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(

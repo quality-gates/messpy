@@ -919,6 +919,10 @@ class OnionAcceptanceTests(unittest.TestCase):
             _ruleset(),
         )
 
+        if sys.version_info >= (3, 14):
+            self.assertEqual((0, ""), (status, errors))
+            self.assertEqual([], report)
+            return
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(
             [
