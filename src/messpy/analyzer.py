@@ -22,6 +22,7 @@ from .dependencies import ClassInfo, measure_class_dependencies
 from .names import Names
 from .callgraph import (
     CallGraph,
+    _annotations_are_deferred,
     _arguments,
     _binding_scopes,
     _BindingScope,
@@ -1561,7 +1562,7 @@ def _implicit_input_findings(
 
 def _input_nodes(callable_info: CallableNode, chain: _ScopeChain) -> dict[str, ast.AST]:
     first_reads: dict[str, ast.AST] = {}
-    for node in _read_nodes(callable_info.node):
+    for node in _read_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1])):
         node_chain = chain.for_node(node)
         name = _free_variable_read(node, node_chain) or _ambient_read(node, node_chain)
         if name:
@@ -1573,7 +1574,7 @@ def _implicit_output_findings(
 
     path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
-    nodes = _evaluated_nodes(callable_info.node)
+    nodes = _evaluated_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
     ownership = _argument_ownership(callable_info, nodes, chain, _caller_owned_parameters(callable_info))
     return _explicitness_report(
         path, callable_info, rule, _output_nodes(nodes, chain, ownership),
@@ -1597,7 +1598,7 @@ def _implicit_instance_input_findings(
     receiver = _method_receiver(callable_info)
     if receiver is None:
         return []
-    nodes = _read_nodes(callable_info.node)
+    nodes = _read_nodes(callable_info.node, _annotations_are_deferred(_chain.scopes[-1]))
     called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
     first_reads: dict[str, ast.AST] = {}
     for node in nodes:
@@ -1617,7 +1618,7 @@ def _implicit_instance_output_findings(
     if receiver is None or callable_info.name in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
-    for node in _evaluated_nodes(callable_info.node):
+    for node in _evaluated_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1])):
         expression = _mutated_expression(node, chain.parents, chain.for_node(node))
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
@@ -1649,10 +1650,10 @@ def _method_receiver(callable_info: CallableNode) -> str | None:
     return positional[0].arg if positional else None
 
 
-def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
+def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, deferred: bool = False) -> list[ast.AST]:
     # An augmented assignment reads its target before it writes it.
     nodes: list[ast.AST] = []
-    for child in _evaluated_nodes(node):
+    for child in _evaluated_nodes(node, deferred):
         nodes.append(child)
         if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
             loaded = ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target)
@@ -1696,7 +1697,7 @@ def _ownership_program(owners, names, graph, parents, scopes) -> OwnershipProgra
     for owner in owners:
         chain = _ScopeChain((owner.node, *owner.enclosing), scopes, parents=parents, names=names, graph=graph)
         bodies[id(owner.node)] = _ownership_body(owner, chain)
-        for node in _evaluated_nodes(owner.node):
+        for node in _evaluated_nodes(owner.node, _annotations_are_deferred(chain.scopes[-1])):
             if isinstance(node, ast.Call):
                 site = graph.call_site(owner.node, node)
                 if site is not None:
@@ -1707,7 +1708,7 @@ def _ownership_program(owners, names, graph, parents, scopes) -> OwnershipProgra
 def _ownership_body(owner: CallableNode, chain: _ScopeChain) -> CallableBody:
     from .execution import cold_body, transformed_callable
 
-    nodes = _evaluated_nodes(owner.node)
+    nodes = _evaluated_nodes(owner.node, _annotations_are_deferred(chain.scopes[-1]))
     scope = chain.name_scopes[id(owner.node)]
     local = (scope.variables | scope.definitions | scope.imports) - scope.global_names - scope.nonlocal_names
     return CallableBody(

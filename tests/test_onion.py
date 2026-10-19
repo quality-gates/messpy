@@ -919,6 +919,25 @@ class OnionAcceptanceTests(unittest.TestCase):
             _ruleset(),
         )
 
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "2: DomainAction [priority 2] The function checkout() reads the implicit input open. "
+                "Pass it as an argument instead.",
+            ],
+            report,
+        )
+
+    def test_future_annotations_keep_nested_signature_expressions_quiet(self) -> None:
+        status, report, errors = _analyze_source(
+            "from __future__ import annotations\n"
+            "\n"
+            "def checkout():\n"
+            "    def inner(path: open('config.json')):\n"
+            "        return path\n",
+            _ruleset(),
+        )
+
         self.assertEqual((0, ""), (status, errors))
         self.assertEqual([], report)
 

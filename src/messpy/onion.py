@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .callables import module_callables
-from .callgraph import CallGraph, CallSite, _module_nodes
+from .callgraph import (
+    CallGraph,
+    CallSite,
+    _annotations_are_deferred,
+    _module_nodes,
+    _running_python_defers_annotations,
+    _signature_annotations,
+)
 from .names import Names
 from .reachability import evaluated_children, live_statements
 from .rulesets import LoadedRule
@@ -144,21 +151,6 @@ def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
     return nodes
 
 
-def _annotations_are_deferred(tree: ast.Module) -> bool:
-    if _running_python_defers_annotations():
-        return True
-    return any(
-        isinstance(statement, ast.ImportFrom)
-        and statement.module == "__future__"
-        and any(alias.name == "annotations" for alias in statement.names)
-        for statement in tree.body
-    )
-
-
-def _running_python_defers_annotations() -> bool:
-    # annotationlib ships with the Python release that defers annotations.
-    return importlib.util.find_spec("annotationlib") is not None
-
 
 def _import_time_node(node: ast.AST, deferred: bool) -> list[ast.AST]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -221,19 +213,6 @@ def _import_time_present(nodes: Sequence[ast.AST | None], deferred: bool) -> lis
     return found
 
 
-def _signature_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
-    annotations = [
-        argument.annotation
-        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
-        if argument.annotation is not None
-    ]
-    if node.args.vararg is not None and node.args.vararg.annotation is not None:
-        annotations.append(node.args.vararg.annotation)
-    if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
-        annotations.append(node.args.kwarg.annotation)
-    if node.returns is not None:
-        annotations.append(node.returns)
-    return annotations
 
 
 def _spread_findings(
