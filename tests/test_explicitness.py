@@ -702,6 +702,117 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_nested_function_signature_annotations_are_implicit_inputs(self) -> None:
+        status, report, errors = _analyze(
+            "T = int\n"
+            "payload = []\n"
+            "\n"
+            "def mutate():\n"
+            "    global T, payload\n"
+            "    T = str\n"
+            "    payload = [1]\n"
+            "\n"
+            "def build_param():\n"
+            "    def inner(value: T):\n"
+            "        return payload\n"
+            "    return inner\n"
+            "\n"
+            "def build_vararg():\n"
+            "    def inner(*args: T):\n"
+            "        return args\n"
+            "    return inner\n"
+            "\n"
+            "def build_kwarg():\n"
+            "    def inner(**kwargs: T):\n"
+            "        return kwargs\n"
+            "    return inner\n"
+            "\n"
+            "def build_return():\n"
+            "    def inner() -> T:\n"
+            "        return 1\n"
+            "    return inner\n",
+            "explicitness",
+        )
+
+        if sys.version_info >= (3, 14):
+            self.assertEqual((2, ""), (status, errors))
+            self.assertEqual(
+                [
+                    "6: ImplicitOutput [priority 3] The function mutate() writes the implicit output T. "
+                    "Return it instead.",
+                    "7: ImplicitOutput [priority 3] The function mutate() writes the implicit output payload. "
+                    "Return it instead.",
+                    "11: ImplicitInput [priority 3] The function inner() reads the implicit input payload. "
+                    "Pass it as an argument instead.",
+                ],
+                report,
+            )
+            return
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "6: ImplicitOutput [priority 3] The function mutate() writes the implicit output T. "
+                "Return it instead.",
+                "7: ImplicitOutput [priority 3] The function mutate() writes the implicit output payload. "
+                "Return it instead.",
+                "10: ImplicitInput [priority 3] The function build_param() reads the implicit input T. "
+                "Pass it as an argument instead.",
+                "11: ImplicitInput [priority 3] The function inner() reads the implicit input payload. "
+                "Pass it as an argument instead.",
+                "15: ImplicitInput [priority 3] The function build_vararg() reads the implicit input T. "
+                "Pass it as an argument instead.",
+                "20: ImplicitInput [priority 3] The function build_kwarg() reads the implicit input T. "
+                "Pass it as an argument instead.",
+                "25: ImplicitInput [priority 3] The function build_return() reads the implicit input T. "
+                "Pass it as an argument instead.",
+            ],
+            report,
+        )
+
+    def test_future_annotations_keep_nested_signature_annotations_quiet(self) -> None:
+        status, report, errors = _analyze(
+            "from __future__ import annotations\n"
+            "\n"
+            "Config = dict\n"
+            "\n"
+            "\n"
+            "def build():\n"
+            "    def inner(value: Config, *args: Config, **kwargs: Config) -> Config:\n"
+            "        return value\n"
+            "    return inner\n",
+            "explicitness",
+        )
+
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual([], report)
+
+    def test_nested_function_annotations_with_module_dict_are_implicit_inputs(self) -> None:
+        status, report, errors = _analyze(
+            "Config = dict\n"
+            "\n"
+            "\n"
+            "def build():\n"
+            "    def inner(value: Config) -> Config:\n"
+            "        return value\n"
+            "    return inner\n",
+            "explicitness",
+        )
+
+        if sys.version_info >= (3, 14):
+            self.assertEqual((0, ""), (status, errors))
+            self.assertEqual([], report)
+            return
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "5: ImplicitInput [priority 3] The function build() reads the implicit input Config. "
+                "Pass it as an argument instead.",
+            ],
+            report,
+        )
+
 
 def _analyze(source: str, ruleset: str) -> tuple[int, list[str], str]:
 

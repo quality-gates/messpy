@@ -12,6 +12,7 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+import importlib.util
 from pathlib import Path
 
 from .names import Names
@@ -118,8 +119,9 @@ def _resolved_calls(
     tree: ast.Module, index: _CallableIndex, masks: dict[int, frozenset[str]]
 ) -> list[tuple[int, ast.Call, int]]:
     resolved: list[tuple[int, ast.Call, int]] = []
+    deferred = _annotations_are_deferred(tree)
     for caller_id, node in ((index.module_id, tree), *index.nodes.items()):
-        for child in _evaluated_nodes(node):
+        for child in _evaluated_nodes(node, deferred):
             if not isinstance(child, ast.Call):
                 continue
             callee_id = _resolved_callee(index, caller_id, child, masks)
@@ -792,40 +794,79 @@ def _pattern_binding_names(node: ast.AST) -> set[str]:
     return set()
 
 
-def _evaluated_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.Module | ast.GeneratorExp) -> list[ast.AST]:
+def _running_python_defers_annotations() -> bool:
+    # annotationlib ships with the Python release that defers annotations.
+    return importlib.util.find_spec("annotationlib") is not None
+
+
+def _annotations_are_deferred(tree: ast.AST | None) -> bool:
+    if _running_python_defers_annotations():
+        return True
+    if not isinstance(tree, ast.Module):
+        return False
+    return any(
+        isinstance(statement, ast.ImportFrom)
+        and statement.module == "__future__"
+        and any(alias.name == "annotations" for alias in statement.names)
+        for statement in tree.body
+    )
+
+
+def _signature_annotations(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.expr]:
+    annotations = [
+        argument.annotation
+        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        if argument.annotation is not None
+    ]
+    if node.args.vararg is not None and node.args.vararg.annotation is not None:
+        annotations.append(node.args.vararg.annotation)
+    if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+        annotations.append(node.args.kwarg.annotation)
+    if node.returns is not None:
+        annotations.append(node.returns)
+    return annotations
+
+
+def _evaluated_nodes(
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.Module | ast.GeneratorExp,
+    deferred: bool = False,
+) -> list[ast.AST]:
     if isinstance(node, ast.GeneratorExp):
         generators = [node.generators[0].target, *node.generators[0].ifs, *node.generators[1:]]
-        return _evaluated_present([*generators, node.elt])
+        return _evaluated_present([*generators, node.elt], deferred)
     roots = [node.body] if isinstance(node, ast.Lambda) else live_statements(node.body)
     found: list[ast.AST] = []
     for root in roots:
-        found.extend(_evaluated_node_list(root))
+        found.extend(_evaluated_node_list(root, deferred))
     return found
 
 
-def _evaluated_node_list(node: ast.AST) -> list[ast.AST]:
+def _evaluated_node_list(node: ast.AST, deferred: bool = False) -> list[ast.AST]:
     # Python evaluates decorators, defaults, class bases, and nested class bodies here.
     if isinstance(node, ast.AnnAssign):
-        return [node, *_evaluated_present([node.target, node.value])]
+        return [node, *_evaluated_present([node.target, node.value], deferred)]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return [node, *_evaluated_present([*node.decorator_list, *node.args.defaults, *node.args.kw_defaults])]
+        evaluated = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
+        if not deferred:
+            evaluated.extend(_signature_annotations(node))
+        return [node, *_evaluated_present(evaluated, deferred)]
     if isinstance(node, ast.Lambda):
-        return _evaluated_present([*node.args.defaults, *node.args.kw_defaults])
+        return _evaluated_present([*node.args.defaults, *node.args.kw_defaults], deferred)
     if isinstance(node, ast.GeneratorExp):
-        return [node, *_evaluated_node_list(node.generators[0].iter)]
+        return [node, *_evaluated_node_list(node.generators[0].iter, deferred)]
     if isinstance(node, ast.ClassDef):
-        return [node, *_evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *live_statements(node.body)])]
+        return [node, *_evaluated_present([*node.decorator_list, *node.bases, *node.keywords, *live_statements(node.body)], deferred)]
     found = [node]
     for child in evaluated_children(node):
-        found.extend(_evaluated_node_list(child))
+        found.extend(_evaluated_node_list(child, deferred))
     return found
 
 
-def _evaluated_present(nodes: Sequence[ast.AST | None]) -> list[ast.AST]:
+def _evaluated_present(nodes: Sequence[ast.AST | None], deferred: bool = False) -> list[ast.AST]:
     found: list[ast.AST] = []
     for node in nodes:
         if node is not None:
-            found.extend(_evaluated_node_list(node))
+            found.extend(_evaluated_node_list(node, deferred))
     return found
 
 
