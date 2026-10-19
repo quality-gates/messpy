@@ -126,6 +126,23 @@ class CallGraphTests(unittest.TestCase):
         self.assertIs(cart, graph.method_class(_definition(tree, "total")))
         self.assertIsNone(graph.method_class(cart))
 
+    def test_nonstandard_receiver_calls_and_static_exclusion(self) -> None:
+        for decorator in ("", "@staticmethod", "@builtins.staticmethod"):
+            with self.subTest(decorator=decorator):
+                tree, graph = _graph(
+                    "class Cart:\n"
+                    f"    {decorator}\n"
+                    "    def total(this, /):\n"
+                    "        return this.subtotal()\n"
+                    "    def subtotal(this):\n"
+                    "        return 1\n"
+                )
+                calls = graph.callees(_definition(tree, "total"))
+                if decorator:
+                    self.assertEqual((), calls)
+                else:
+                    self.assertEqual((_definition(tree, "subtotal"),), tuple(site.callee for site in calls))
+
     def test_nested_function_reaches_the_method_receiver(self) -> None:
         tree, graph = _graph(
             "class Cart:\n"

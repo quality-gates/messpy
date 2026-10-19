@@ -24,6 +24,35 @@ def _callable(tree: ast.Module, name: str) -> CallableNode:
 
 
 class CallableModelTests(unittest.TestCase):
+    def test_receiver_identity_uses_binding_not_parameter_spelling(self) -> None:
+        tree = ast.parse(
+            "def function(self): pass\n"
+            "class Counter:\n"
+            "    callback = lambda self: self\n"
+            "    def ordinary(this, /): pass\n"
+            "    async def asynchronous(that): pass\n"
+            "    @classmethod\n"
+            "    def class_method(mcls): pass\n"
+            "    def __new__(cls): pass\n"
+            "    @staticmethod\n"
+            "    def static(self): pass\n"
+            "    @builtins.staticmethod\n"
+            "    def qualified_static(this): pass\n"
+            "    def no_arguments(): pass\n"
+            "    def keyword_only(*, self): pass\n"
+            "    def variadic(*self): pass\n"
+        )
+
+        self.assertEqual(
+            {
+                "function": None, "<lambda>": None, "ordinary": "this",
+                "asynchronous": "that", "class_method": "mcls", "__new__": "cls",
+                "static": None, "qualified_static": None, "no_arguments": None,
+                "keyword_only": None, "variadic": None,
+            },
+            {item.name: item.receiver for item in module_callables(tree)},
+        )
+
     def test_module_function_is_an_unowned_function_in_the_module_scope(self) -> None:
         tree = ast.parse("def load(path, *, mode='r'):\n    return path\n")
 

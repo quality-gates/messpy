@@ -11,7 +11,7 @@ import ast
 from dataclasses import dataclass
 from functools import lru_cache
 
-__all__ = ["CallableNode", "module_callables"]
+__all__ = ["CallableNode", "method_receiver", "module_callables"]
 
 _CALLABLE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
@@ -41,6 +41,13 @@ class CallableNode:
         return f"{self.owner_name}.{self.name}" if self.owner_name else self.name
 
     @property
+    def receiver(self) -> str | None:
+        """The parameter bound to the instance or class, if this is a method."""
+        if self.owner is None or not isinstance(self.node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return None
+        return method_receiver(self.node)
+
+    @property
     def parameter_count(self) -> int:
         if not isinstance(self.node, _CALLABLE_TYPES):
             return 0
@@ -52,6 +59,22 @@ class CallableNode:
             + int(arguments.vararg is not None)
             + int(arguments.kwarg is not None)
         )
+
+
+def method_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """Return the bound parameter of a known method, or None for a static method.
+
+    Callers with an unclassified callable must use CallableNode.receiver.
+    Receiver identity does not distinguish instance state from class state.
+    """
+    if any(
+        (isinstance(decorator, ast.Name) and decorator.id == "staticmethod")
+        or (isinstance(decorator, ast.Attribute) and decorator.attr == "staticmethod")
+        for decorator in node.decorator_list
+    ):
+        return None
+    positional = [*node.args.posonlyargs, *node.args.args]
+    return positional[0].arg if positional else None
 
 
 @lru_cache(maxsize=1)

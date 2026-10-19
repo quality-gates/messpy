@@ -15,7 +15,7 @@ import tokenize
 from io import StringIO
 from pathlib import Path
 
-from .callables import CallableNode, module_callables
+from .callables import CallableNode, method_receiver, module_callables
 from .constants import scope_constants
 from .captures import captured_read_is_fixed, write_only_receiver
 from .dependencies import ClassInfo, measure_class_dependencies
@@ -1377,10 +1377,13 @@ def _trivial_accessor_field(method: ast.FunctionDef | ast.AsyncFunctionDef) -> s
         return None
     statement = method.body[0]
     target = _accessor_target(statement, method)
+    # Keep class-state accessor classification unchanged.
+    class_state = _has_decorator(method, "classmethod") or method.name == "__new__"
+    receiver = "self" if class_state else method_receiver(method)
     if (
         isinstance(target, ast.Attribute)
         and isinstance(target.value, ast.Name)
-        and target.value.id == "self"
+        and target.value.id == receiver
     ):
         return target.attr
     return None
@@ -1595,7 +1598,7 @@ def _output_nodes(nodes: Sequence[ast.AST], chain: _ScopeChain, ownership: Owner
 def _implicit_instance_input_findings(
     path: Path, callable_info: CallableNode, rule: LoadedRule, _chain: _ScopeChain
 ) -> list[Finding]:
-    receiver = _method_receiver(callable_info)
+    receiver = callable_info.receiver
     if receiver is None:
         return []
     nodes = _read_nodes(callable_info.node, _annotations_are_deferred(_chain.scopes[-1]))
@@ -1614,7 +1617,7 @@ def _implicit_instance_input_findings(
 def _implicit_instance_output_findings(
     path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
-    receiver = _method_receiver(callable_info)
+    receiver = callable_info.receiver
     if receiver is None or callable_info.name in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
@@ -1641,15 +1644,6 @@ def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
     return ""
 
 
-def _method_receiver(callable_info: CallableNode) -> str | None:
-    # Python gives the receiver to each method that is not static, for example cls in __new__ and mcls in a metaclass.
-    node = callable_info.node
-    if callable_info.owner is None or isinstance(node, ast.Lambda) or _has_decorator(node, "staticmethod"):
-        return None
-    positional = [*node.args.posonlyargs, *node.args.args]
-    return positional[0].arg if positional else None
-
-
 def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, deferred: bool = False) -> list[ast.AST]:
     # An augmented assignment reads its target before it writes it.
     nodes: list[ast.AST] = []
@@ -1672,7 +1666,7 @@ def _caller_owned_parameters(callable_info: CallableNode) -> set[str]:
     arguments = callable_info.node.args
     packed = {argument.arg for argument in (arguments.vararg, arguments.kwarg) if argument is not None}
     parameters = {argument.arg for argument in _arguments(arguments)} - packed
-    parameters.discard(_method_receiver(callable_info) or "")
+    parameters.discard(callable_info.receiver or "")
     return parameters
 
 
@@ -1687,7 +1681,7 @@ def _argument_ownership(
     calls = _call_kinds(nodes, chain, frozenset())
     program = program or OwnershipProgram({id(callable_info.node): _ownership_body(callable_info, chain)})
     return argument_ownership(
-        callable_info.node, set(parameters), external, calls, _method_receiver(callable_info), program
+        callable_info.node, set(parameters), external, calls, callable_info.receiver, program
     )
 
 
@@ -1713,7 +1707,7 @@ def _ownership_body(owner: CallableNode, chain: _ScopeChain) -> CallableBody:
     local = (scope.variables | scope.definitions | scope.imports) - scope.global_names - scope.nonlocal_names
     return CallableBody(
         owner.node, local, _external_storage(nodes, chain), _call_kinds(nodes, chain, frozenset()),
-        _method_receiver(owner), cold_body(owner.node), transformed_callable(owner.node, chain.qualified_name),
+        owner.receiver, cold_body(owner.node), transformed_callable(owner.node, chain.qualified_name),
     )
 
 
@@ -5024,15 +5018,17 @@ def _instance_field_names(method: ast.FunctionDef | ast.AsyncFunctionDef) -> lis
 
 
 def _instance_receiver(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-    if _has_decorator(method, "staticmethod"):
-        return None
-    arguments = [*method.args.posonlyargs, *method.args.args]
-    if not arguments:
-        return None
-    receiver = arguments[0].arg
-    if receiver == "self" or (_has_decorator(method, "classmethod") and receiver == "cls"):
-        return receiver
-    return None
+    """Select state tracked by class rules from the shared receiver identity.
+
+    Keep the existing class-state policy for classmethods and __new__:
+    track self, and track cls only with an explicit classmethod decorator.
+    Ordinary instance methods have no receiver-name restriction.
+    """
+    receiver = method_receiver(method)
+    classmethod = _has_decorator(method, "classmethod")
+    if classmethod or method.name == "__new__":
+        return receiver if receiver == "self" or (classmethod and receiver == "cls") else None
+    return receiver
 
 
 def _shadows_receiver(function: ast.FunctionDef | ast.AsyncFunctionDef, receiver: str) -> bool:

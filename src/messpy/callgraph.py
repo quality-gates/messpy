@@ -15,6 +15,7 @@ from functools import lru_cache
 import importlib.util
 from pathlib import Path
 
+from .callables import method_receiver
 from .names import Names
 from .reachability import evaluated_children, live_statements
 
@@ -523,7 +524,7 @@ def _record_method(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionD
     class_node = state.classes[-1]
     methods = dict(state.class_methods.get(id(class_node), {}))
     methods[node.name] = id(node)
-    receiver = _receiver_name(node)
+    receiver = method_receiver(node) or ""
     receivers = {**state.receivers, id(node): receiver} if receiver else state.receivers
     return replace(
         state,
@@ -676,24 +677,6 @@ def _pattern_bindings(pattern: ast.pattern) -> list[str]:
         elif isinstance(node, ast.MatchMapping) and node.rest:
             names.append(node.rest)
     return names
-
-
-def _receiver_name(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    if _is_staticmethod(node):
-        return ""
-    positional = [*node.args.posonlyargs, *node.args.args]
-    if not positional:
-        return ""
-    return positional[0].arg
-
-
-def _is_staticmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for decorator in node.decorator_list:
-        if isinstance(decorator, ast.Name) and decorator.id == "staticmethod":
-            return True
-        if isinstance(decorator, ast.Attribute) and decorator.attr == "staticmethod":
-            return True
-    return False
 
 
 def _stored_names(node: ast.AST) -> list[str]:
