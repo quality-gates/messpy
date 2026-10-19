@@ -37,6 +37,7 @@ class Effect:
     reason: str = ""
     arguments: tuple[Storage, ...] | None = None
     keywords: tuple[tuple[str, Storage], ...] = ()
+    ambient: bool = False
 
 
 @dataclass(frozen=True)
@@ -265,8 +266,9 @@ def _direct_effects(callable_info: CallableNode, chain: _ScopeChain, ownership: 
 
     direct = {}
     for name, node in _input_nodes(callable_info, chain).items():
-        origin = Origin(id(chain.binding(name)[1]), name) if isinstance(node, ast.Name) and _free_variable_read(node, chain) else None
-        direct[Effect("ImplicitInput", name, origin)] = node
+        is_free = isinstance(node, ast.Name) and bool(_free_variable_read(node, chain))
+        origin = Origin(id(chain.binding(name)[1]), name) if is_free else None
+        direct[Effect("ImplicitInput", name, origin, ambient=not is_free)] = node
     receiver = _method_receiver(callable_info)
     read_nodes = _read_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
     called = {id(node.func) for node in read_nodes if isinstance(node, ast.Call)}
@@ -279,18 +281,28 @@ def _direct_effects(callable_info: CallableNode, chain: _ScopeChain, ownership: 
 
 
 def _write_effects(node: ast.AST, chain: _ScopeChain, ownership: Ownership, receiver: str | None) -> tuple[Effect, ...]:
-    from .analyzer import _ambient_write, _changed_object, _storage_write, changed_storage
+    from .analyzer import _ambient_write, _changed_object, _storage_write
 
     if isinstance(node, ast.AugAssign):
         return _augmented_effects(node, ownership)
-    name = _storage_write(node, chain, ownership) or _ambient_write(node, chain)
+    storage_name = _storage_write(node, chain, ownership)
+    ambient_name = _ambient_write(node, chain) if not storage_name else ""
+    name = storage_name or ambient_name
     changed = _changed_object(node, chain)
     if not name:
         return _unknown_mutation(changed, node, ownership, receiver)
-    origins = changed_storage(changed, node, ownership).outer if changed is not None else frozenset()
-    if not origins:
-        origins = _binding_write_origin(node, chain)
-    return tuple(Effect("ImplicitOutput", name, origin) for origin in origins or {None})
+    origins = _output_origins(changed, node, chain, ownership)
+    return tuple(Effect("ImplicitOutput", name, origin, ambient=bool(ambient_name)) for origin in origins or {None})
+
+
+def _output_origins(changed: ast.expr | None, node: ast.AST, chain: _ScopeChain, ownership: Ownership) -> frozenset[Origin]:
+    from .analyzer import changed_storage
+
+    if changed is not None:
+        origins = changed_storage(changed, node, ownership).outer
+        if origins:
+            return origins
+    return _binding_write_origin(node, chain)
 
 
 def _binding_write_origin(node: ast.AST, chain: _ScopeChain) -> frozenset[Origin]:
@@ -525,9 +537,9 @@ def _callback_binding_effects(effect, target, call, owner, graph, summaries) -> 
         return (Effect("UnknownEffect", "<callback binding>", reason="missing callback binding"),)
     qualified = graph.qualified_value(value)
     if qualified in IMPLICIT_OUTPUT_NAMES:
-        return (Effect("ImplicitOutput", qualified.removeprefix("builtins.")),)
+        return (Effect("ImplicitOutput", qualified.removeprefix("builtins."), ambient=True),)
     if qualified in IMPLICIT_INPUT_NAMES:
-        return (Effect("ImplicitInput", qualified.removeprefix("builtins.")),)
+        return (Effect("ImplicitInput", qualified.removeprefix("builtins."), ambient=True),)
     effect = _instantiated_arguments(effect, target, call, owner)
     site = graph.call_site(owner.callable.node, ast.copy_location(ast.Call(func=value, args=[], keywords=[]), call))
     if site is not None and not graph.masked_name(call, value):
@@ -593,7 +605,7 @@ def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: Callable
         if effect.rule == "ImplicitInput":
             return ()
         storage = project_storage(owner.ownership.value(ast.Name(origin.name, ast.Load()), call), origin.path)
-        return tuple(Effect(effect.rule, effect.name, source) for source in storage.outer)
+        return tuple(Effect(effect.rule, effect.name, source, ambient=effect.ambient) for source in storage.outer)
     if origin.scope != id(target):
         return (effect,)
     value = _bound_argument(target, call, origin.name)
@@ -605,7 +617,7 @@ def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: Callable
 def _mapped_through(effect: Effect, storage: Storage, label: str) -> tuple[Effect, ...]:
     if effect.origin is not None:
         storage = project_storage(storage, effect.origin.path)
-    mapped = tuple(Effect(effect.rule, effect.name, source) for source in storage.outer)
+    mapped = tuple(Effect(effect.rule, effect.name, source, ambient=effect.ambient) for source in storage.outer)
     if storage.opaque and effect.rule == "ImplicitOutput":
         mapped += (Effect("UnknownEffect", f"mutation of {label}", reason="unknown storage"),)
     return mapped
@@ -633,9 +645,11 @@ def _finding(path: Path, callable_info: CallableNode, rule: LoadedRule, effect: 
     if effect.rule == "UnknownEffect":
         phrase = f"has an unknown effect from {effect.name}. Establish the callable's effects before treating it as a calculation."
     elif effect.rule in {"ImplicitInput", "ImplicitInstanceInput"}:
-        phrase = f"reads the implicit input {effect.name}. Pass it as an argument instead."
+        advice = "Move this effect to the caller." if effect.ambient else "Pass it as an argument instead."
+        phrase = f"reads the implicit input {effect.name}. {advice}"
     else:
-        phrase = f"writes the implicit output {effect.name}. Return it instead."
+        advice = "Move this effect to the caller." if effect.ambient else "Return it instead."
+        phrase = f"writes the implicit output {effect.name}. {advice}"
     return Finding(path, node.lineno, rule.name, rule.priority, f"The {kind} {callable_info.context}() {phrase}", context=callable_info.context)
 
 

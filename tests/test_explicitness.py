@@ -165,7 +165,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             [
                 f"{line}: ImplicitInput [priority 3] The function snapshot() reads the implicit input {name}. "
-                "Pass it as an argument instead."
+                "Move this effect to the caller."
                 for line, name in [
                     (8, "open"),
                     (11, "time.time"),
@@ -327,7 +327,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             [
                 f"{line}: ImplicitOutput [priority 3] The function publish() writes the implicit output {name}. "
-                "Return it instead."
+                "Move this effect to the caller."
                 for line, name in [
                     (8, "print"),
                     (9, "sys.stderr"),
@@ -411,9 +411,10 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual((2, ""), (status, errors))
         self.assertEqual(
             [
-                f"{line}: ImplicitOutput [priority 3] The function install() writes the implicit output {name}. "
-                "Return it instead."
-                for line, name in [(5, "sys.path"), (6, "sys.modules"), (7, "sys.stdout"), (9, "subprocess.run")]
+                "5: ImplicitOutput [priority 3] The function install() writes the implicit output sys.path. Return it instead.",
+                "6: ImplicitOutput [priority 3] The function install() writes the implicit output sys.modules. Return it instead.",
+                "7: ImplicitOutput [priority 3] The function install() writes the implicit output sys.stdout. Return it instead.",
+                "9: ImplicitOutput [priority 3] The function install() writes the implicit output subprocess.run. Move this effect to the caller.",
             ],
             report,
         )
@@ -538,7 +539,7 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
         self.assertEqual(
             [
                 "3: ImplicitInput [priority 3] The function build() reads the implicit input open. "
-                "Pass it as an argument instead."
+                "Move this effect to the caller."
             ],
             report,
         )
@@ -809,6 +810,36 @@ class ExplicitnessAcceptanceTests(unittest.TestCase):
             [
                 "5: ImplicitInput [priority 3] The function build() reads the implicit input Config. "
                 "Pass it as an argument instead.",
+            ],
+            report,
+        )
+
+    def test_ambient_calls_advise_caller_movement_while_data_reads_and_writes_advise_passing_or_returning(self) -> None:
+        status, report, errors = _analyze(
+            "total = 0\n"
+            "\n"
+            "def read_data():\n"
+            "    return total\n"
+            "\n"
+            "def write_data():\n"
+            "    global total\n"
+            "    total = 1\n"
+            "\n"
+            "def read_ambient():\n"
+            "    return input()\n"
+            "\n"
+            "def write_ambient():\n"
+            "    print('hello')\n",
+            "explicitness",
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(
+            [
+                "4: ImplicitInput [priority 3] The function read_data() reads the implicit input total. Pass it as an argument instead.",
+                "8: ImplicitOutput [priority 3] The function write_data() writes the implicit output total. Return it instead.",
+                "11: ImplicitInput [priority 3] The function read_ambient() reads the implicit input input. Move this effect to the caller.",
+                "14: ImplicitOutput [priority 3] The function write_ambient() writes the implicit output print. Move this effect to the caller.",
             ],
             report,
         )
