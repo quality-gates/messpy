@@ -261,7 +261,7 @@ def _callback_origin(call: ast.Call, callable_info: CallableNode, chain: _ScopeC
 
 def _direct_effects(callable_info: CallableNode, chain: _ScopeChain, ownership: Ownership) -> dict[Effect, ast.AST]:
     from .analyzer import (
-        _free_variable_read, _input_nodes, _method_receiver, _read_nodes,
+        _free_variable_read, _input_nodes, _read_nodes,
     )
 
     direct = {}
@@ -269,7 +269,7 @@ def _direct_effects(callable_info: CallableNode, chain: _ScopeChain, ownership: 
         is_free = isinstance(node, ast.Name) and bool(_free_variable_read(node, chain))
         origin = Origin(id(chain.binding(name)[1]), name) if is_free else None
         direct[Effect("ImplicitInput", name, origin, ambient=not is_free)] = node
-    receiver = _method_receiver(callable_info)
+    receiver = callable_info.receiver
     read_nodes = _read_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
     called = {id(node.func) for node in read_nodes if isinstance(node, ast.Call)}
     for node in read_nodes:
@@ -360,7 +360,7 @@ def _instance_read(node: ast.AST, receiver: str, called: set[int]) -> str:
 
 
 def _established_call(call: ast.Call, callable_info: CallableNode, chain: _ScopeChain, ownership: Ownership) -> bool:
-    from .analyzer import IMPLICIT_INPUT_NAMES, IMPLICIT_OUTPUT_NAMES, OPEN_CALL_NAMES, _changed_object, _method_receiver
+    from .analyzer import IMPLICIT_INPUT_NAMES, IMPLICIT_OUTPUT_NAMES, OPEN_CALL_NAMES, _changed_object
 
     qualified = chain.qualified_name(call.func)
     known = IMPLICIT_INPUT_NAMES | IMPLICIT_OUTPUT_NAMES | OPEN_CALL_NAMES | {
@@ -368,7 +368,7 @@ def _established_call(call: ast.Call, callable_info: CallableNode, chain: _Scope
     }
     if qualified in known or _changed_object(call, chain) is not None:
         return True
-    receiver = _method_receiver(callable_info)
+    receiver = callable_info.receiver
     if receiver is not None and _receiver_call(call, receiver):
         return True
     if _type_alias_call(call, chain):
