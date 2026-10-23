@@ -11,10 +11,8 @@ from typing import TYPE_CHECKING
 from .callables import CallableNode, module_callables
 from .callgraph import (
     CallGraph,
-    _annotations_are_deferred,
     _arguments,
     _dotted_name,
-    _evaluated_nodes,
     _module_nodes,
     build_call_graph,
 )
@@ -138,7 +136,7 @@ def _owner_effects(callable_info, names, graph, parents, scopes, protocols, prog
     from .analyzer import _ScopeChain, _argument_ownership, _caller_owned_parameters
 
     chain = _ScopeChain((callable_info.node, *callable_info.enclosing), scopes, parents=parents, names=names, graph=graph)
-    nodes = _evaluated_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
+    nodes = callable_info.evaluated_nodes()
     ownership = _argument_ownership(callable_info, nodes, chain, _caller_owned_parameters(callable_info), program)
     aliases = _callable_aliases(callable_info, nodes, graph)
     keys = key_calls(nodes, chain.qualified_name)
@@ -270,7 +268,7 @@ def _direct_effects(callable_info: CallableNode, chain: _ScopeChain, ownership: 
         origin = Origin(id(chain.binding(name)[1]), name) if is_free else None
         direct[Effect("ImplicitInput", name, origin, ambient=not is_free)] = node
     receiver = callable_info.receiver
-    read_nodes = _read_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
+    read_nodes = _read_nodes(callable_info)
     called = {id(node.func) for node in read_nodes if isinstance(node, ast.Call)}
     for node in read_nodes:
         for effect in _write_effects(node, chain.for_node(node), ownership, receiver):
