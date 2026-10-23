@@ -11,6 +11,8 @@ import ast
 from dataclasses import dataclass
 from functools import lru_cache
 
+from .regions import annotations_are_deferred, evaluated_nodes, lexical_nodes
+
 __all__ = ["CallableNode", "method_receiver", "module_callables"]
 
 _CALLABLE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -31,6 +33,25 @@ class CallableNode:
     kind: str
     owner: ast.ClassDef | None
     enclosing: tuple[ast.AST, ...]
+
+    def evaluated_nodes(self) -> tuple[ast.AST, ...]:
+        """Nodes evaluated by this callable, in analysis traversal order.
+
+        Include nested defaults, decorators, class bases, keywords and bodies.
+        Exclude nested callable bodies and local annotations. Signature
+        annotations follow the enclosing module's annotation policy.
+        """
+        module = self.enclosing[-1] if self.enclosing else self.node
+        return evaluated_nodes(self.node, annotations_are_deferred(module))
+
+    def lexical_nodes(self) -> tuple[ast.AST, ...]:
+        """Body syntax for control-flow checks and local symtable corrections.
+
+        Exclude nested definitions in full: class bodies have separate locals,
+        and their control flow does not belong to the enclosing callable.
+        Do not prune unreachable branches, which can contain misleading else clauses.
+        """
+        return lexical_nodes(self.node)
 
     @property
     def owner_name(self) -> str | None:

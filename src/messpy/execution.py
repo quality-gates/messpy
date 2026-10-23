@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from .callgraph import _evaluated_nodes
+from .regions import evaluated_nodes
 from .ownership import Ownership, Storage
 
 
@@ -31,7 +31,7 @@ _TRUSTED_DECORATORS = frozenset({"builtins.staticmethod", "builtins.classmethod"
 def cold_body(node: ast.AST) -> bool:
     if isinstance(node, (ast.AsyncFunctionDef, ast.GeneratorExp)):
         return True
-    return isinstance(node, ast.FunctionDef) and any(isinstance(child, (ast.Yield, ast.YieldFrom)) for child in _evaluated_nodes(node))
+    return isinstance(node, ast.FunctionDef) and any(isinstance(child, (ast.Yield, ast.YieldFrom)) for child in evaluated_nodes(node))
 
 
 def executions(
@@ -103,7 +103,7 @@ def _deferred_call(expression: ast.Call, target: ast.AST | None) -> tuple[tuple[
     if target is not None and cold_body(target):
         return ((target, expression),)
     if isinstance(target, (ast.FunctionDef, ast.Lambda)):
-        returned = [target.body] if isinstance(target, ast.Lambda) else [node.value for node in _evaluated_nodes(target) if isinstance(node, ast.Return)]
+        returned = [target.body] if isinstance(target, ast.Lambda) else [node.value for node in evaluated_nodes(target) if isinstance(node, ast.Return)]
         if len(returned) == 1 and isinstance(returned[0], ast.GeneratorExp):
             return ((returned[0], expression),)
     return ()

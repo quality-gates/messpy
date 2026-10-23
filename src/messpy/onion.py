@@ -11,12 +11,10 @@ from .callables import module_callables
 from .callgraph import (
     CallGraph,
     CallSite,
-    _annotations_are_deferred,
     _module_nodes,
-    _running_python_defers_annotations,
-    _signature_annotations,
 )
 from .names import Names
+from .regions import annotations_are_deferred, _signature_annotations
 from .reachability import evaluated_children, live_statements
 from .rulesets import LoadedRule
 
@@ -144,7 +142,7 @@ def _ambient_findings(path: Path, rule: LoadedRule, found: dict[str, ast.AST], a
 
 
 def _import_time_nodes(tree: ast.Module) -> list[ast.AST]:
-    deferred = _annotations_are_deferred(tree)
+    deferred = annotations_are_deferred(tree)
     nodes: list[ast.AST] = []
     for statement in live_statements(tree.body):
         nodes.extend(_import_time_node(statement, deferred))

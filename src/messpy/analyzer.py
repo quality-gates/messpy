@@ -22,12 +22,10 @@ from .dependencies import ClassInfo, measure_class_dependencies
 from .names import Names
 from .callgraph import (
     CallGraph,
-    _annotations_are_deferred,
     _arguments,
     _binding_scopes,
     _BindingScope,
     _dotted_name,
-    _evaluated_nodes,
     _import_binding_names,
     _module_nodes,
     _recorded_binding_names,
@@ -1565,7 +1563,7 @@ def _implicit_input_findings(
 
 def _input_nodes(callable_info: CallableNode, chain: _ScopeChain) -> dict[str, ast.AST]:
     first_reads: dict[str, ast.AST] = {}
-    for node in _read_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1])):
+    for node in _read_nodes(callable_info):
         node_chain = chain.for_node(node)
         name = _free_variable_read(node, node_chain) or _ambient_read(node, node_chain)
         if name:
@@ -1577,7 +1575,7 @@ def _implicit_output_findings(
 
     path: Path, callable_info: CallableNode, rule: LoadedRule, chain: _ScopeChain
 ) -> list[Finding]:
-    nodes = _evaluated_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1]))
+    nodes = callable_info.evaluated_nodes()
     ownership = _argument_ownership(callable_info, nodes, chain, _caller_owned_parameters(callable_info))
     return _explicitness_report(
         path, callable_info, rule, _output_nodes(nodes, chain, ownership),
@@ -1601,7 +1599,7 @@ def _implicit_instance_input_findings(
     receiver = callable_info.receiver
     if receiver is None:
         return []
-    nodes = _read_nodes(callable_info.node, _annotations_are_deferred(_chain.scopes[-1]))
+    nodes = _read_nodes(callable_info)
     called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
     first_reads: dict[str, ast.AST] = {}
     for node in nodes:
@@ -1621,7 +1619,7 @@ def _implicit_instance_output_findings(
     if receiver is None or callable_info.name in CONSTRUCTOR_METHOD_NAMES:
         return []
     first_writes: dict[str, ast.AST] = {}
-    for node in _evaluated_nodes(callable_info.node, _annotations_are_deferred(chain.scopes[-1])):
+    for node in callable_info.evaluated_nodes():
         expression = _mutated_expression(node, chain.parents, chain.for_node(node))
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
@@ -1644,10 +1642,10 @@ def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
     return ""
 
 
-def _read_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda, deferred: bool = False) -> list[ast.AST]:
+def _read_nodes(callable_info: CallableNode) -> list[ast.AST]:
     # An augmented assignment reads its target before it writes it.
     nodes: list[ast.AST] = []
-    for child in _evaluated_nodes(node, deferred):
+    for child in callable_info.evaluated_nodes():
         nodes.append(child)
         if isinstance(child, ast.AugAssign) and isinstance(child.target, ast.Name):
             loaded = ast.copy_location(ast.Name(child.target.id, ast.Load()), child.target)
@@ -1691,7 +1689,7 @@ def _ownership_program(owners, names, graph, parents, scopes) -> OwnershipProgra
     for owner in owners:
         chain = _ScopeChain((owner.node, *owner.enclosing), scopes, parents=parents, names=names, graph=graph)
         bodies[id(owner.node)] = _ownership_body(owner, chain)
-        for node in _evaluated_nodes(owner.node, _annotations_are_deferred(chain.scopes[-1])):
+        for node in owner.evaluated_nodes():
             if isinstance(node, ast.Call):
                 site = graph.call_site(owner.node, node)
                 if site is not None:
@@ -1702,7 +1700,7 @@ def _ownership_program(owners, names, graph, parents, scopes) -> OwnershipProgra
 def _ownership_body(owner: CallableNode, chain: _ScopeChain) -> CallableBody:
     from .execution import cold_body, transformed_callable
 
-    nodes = _evaluated_nodes(owner.node, _annotations_are_deferred(chain.scopes[-1]))
+    nodes = owner.evaluated_nodes()
     scope = chain.name_scopes[id(owner.node)]
     local = (scope.variables | scope.definitions | scope.imports) - scope.global_names - scope.nonlocal_names
     return CallableBody(
@@ -2333,7 +2331,7 @@ def _else_expression_findings(
     findings: list[Finding] = []
     for callable_info in callables:
         context = callable_info.context
-        nodes = _executable_nodes(callable_info.node)
+        nodes = callable_info.lexical_nodes()
         elif_nodes = _elif_nodes(nodes)
         for node in nodes:
             else_clause = _dead_else_clause(elif_nodes, node)
@@ -2487,7 +2485,7 @@ def _static_accesses(
     callable_info: CallableNode, exceptions: set[str]
 ) -> list[tuple[ast.Call, ast.Name]]:
     accesses: list[tuple[ast.Call, ast.Name]] = []
-    for node in _executable_nodes(callable_info.node):
+    for node in callable_info.evaluated_nodes():
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
         receiver = node.func.value
@@ -2609,23 +2607,6 @@ def _static_tuple_key(node: ast.Tuple) -> tuple[bool, object]:
         if all(known for known, _ in values)
         else (False, None)
     )
-
-
-def _executable_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda) -> list[ast.AST]:
-    roots = [node.body] if isinstance(node, ast.Lambda) else node.body
-    found: list[ast.AST] = []
-    for root in roots:
-        found.extend(_executable_node_list(root))
-    return found
-
-
-def _executable_node_list(node: ast.AST) -> list[ast.AST]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
-        return []
-    found = [node]
-    for child in ast.iter_child_nodes(node):
-        found.extend(_executable_node_list(child))
-    return found
 
 
 def _exception_names(rule: LoadedRule) -> set[str]:
@@ -2859,7 +2840,8 @@ def _function_scopes(
     tables = _function_tables(symtable.symtable(source, "<source>", "exec"))
     scopes = []
     usage_cache: dict[int, ScopeUsage] = {}
-    for node in (callable_info.node for callable_info in module_callables(tree)):
+    for callable_info in module_callables(tree):
+        node = callable_info.node
         name = node.name if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) else "lambda"
         candidates = tables[(name, node.lineno)]
         if not candidates:
@@ -2871,8 +2853,8 @@ def _function_scopes(
         usage, usage_cache = _scope_usage(table, usage_cache)
         used_names = (
             usage.used_names
-            | _comprehension_referenced_names(node)
-            | _augmented_assignment_names(node)
+            | _comprehension_referenced_names(callable_info)
+            | _augmented_assignment_names(callable_info)
             | _annotation_referenced_names(node)
         )
         scopes.append((node, table, used_names))
@@ -2893,25 +2875,25 @@ def _take_function_table(
 
 
 def _comprehension_referenced_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    callable_info: CallableNode,
 ) -> frozenset[str]:
     # symtable can omit enclosing-scope references used only by comprehensions.
     # Record those loads so they count as uses in the current callable.
     referenced: set[str] = set()
-    for descendant in _executable_nodes(node):
+    for descendant in callable_info.lexical_nodes():
         if isinstance(descendant, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             referenced.update(_loaded_non_target_names(descendant))
     return frozenset(referenced)
 
 
 def _augmented_assignment_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    callable_info: CallableNode,
 ) -> frozenset[str]:
     # symtable does not mark a plain Name target of an augmented assignment as
     # referenced, yet `name += 1` reads the previous value before storing.
     return frozenset(
         descendant.target.id
-        for descendant in _executable_nodes(node)
+        for descendant in callable_info.lexical_nodes()
         if isinstance(descendant, ast.AugAssign) and isinstance(descendant.target, ast.Name)
     )
 

@@ -24,6 +24,38 @@ def _callable(tree: ast.Module, name: str) -> CallableNode:
 
 
 class CallableModelTests(unittest.TestCase):
+    def test_evaluated_region_preserves_definition_expression_order_and_exclusions(self) -> None:
+        tree = ast.parse(
+            "def outer():\n"
+            "    local: annotation_only() = assigned()\n"
+            "    @decorate()\n"
+            "    async def inner(value=default(), *, option=keyword_default()):\n"
+            "        nested_body()\n"
+            "    callback = lambda value=lambda_default(): lambda_body()\n"
+            "    @class_decorator()\n"
+            "    class Local(base(), metaclass=meta()):\n"
+            "        made = class_body()\n"
+            "    return callback\n"
+        )
+        outer = _callable(tree, "outer")
+        region = outer.evaluated_nodes()
+
+        self.assertIsInstance(region, tuple)
+        self.assertIs(region, outer.evaluated_nodes())
+        self.assertEqual(
+            ["assigned", "decorate", "default", "keyword_default", "lambda_default",
+             "class_decorator", "base", "meta", "class_body"],
+            [node.func.id for node in region if isinstance(node, ast.Call)],
+        )
+        self.assertEqual(
+            ["nested_body"],
+            [node.func.id for node in _callable(tree, "inner").evaluated_nodes() if isinstance(node, ast.Call)],
+        )
+        self.assertEqual(
+            ["lambda_body"],
+            [node.func.id for node in _callable(tree, "<lambda>").evaluated_nodes() if isinstance(node, ast.Call)],
+        )
+
     def test_receiver_identity_uses_binding_not_parameter_spelling(self) -> None:
         tree = ast.parse(
             "def function(self): pass\n"
