@@ -4,11 +4,12 @@ import ast
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from .callables import CallableNode, module_callables
+from .callables import CallableNode, method_receiver, module_callables
 from .callgraph import (
     CallGraph,
     _arguments,
@@ -18,7 +19,8 @@ from .callgraph import (
 )
 from .names import Names
 from .execution import Execution, cold_body, decorator_calls, executions, key_calls, transformed_callable
-from .ownership import Origin, Ownership, Storage, augmented_mutation, project_storage
+from .ownership import Origin, Ownership, Storage, augmented_mutation, bound_storage, project_storage
+from .parameters import Bound, bind_arguments, bind_call
 from .protocols import Protocols, uncertainties
 from .rulesets import LoadedRule
 
@@ -517,8 +519,8 @@ def _call_effects(
     if factory_call is not None and effect.origin is not None:
         factory = _target_in_scope(factory_call, owner.callable, graph, owner.callable_aliases)
         if factory is not None and effect.origin.scope == id(factory):
-            return _substitute(effect, factory, factory_call, owner)
-    return _substitute(effect, target, call, owner)
+            return _substitute(effect, factory, factory_call, owner, graph)
+    return _substitute(effect, target, call, owner, graph)
 
 
 def _factory_creation(target: ast.AST, call: ast.Call) -> ast.Call | None:
@@ -530,7 +532,8 @@ def _factory_creation(target: ast.AST, call: ast.Call) -> ast.Call | None:
 def _callback_binding_effects(effect, target, call, owner, graph, summaries) -> tuple[Effect, ...]:
     from .analyzer import IMPLICIT_INPUT_NAMES, IMPLICIT_OUTPUT_NAMES
 
-    value = _bound_argument(target, call, effect.callback.name)
+    bound = _call_binding(target, call, graph)
+    value = bound.get(effect.callback.name, Bound()).argument if bound is not None else None
     if value is None:
         return (Effect("UnknownEffect", "<callback binding>", reason="missing callback binding"),)
     qualified = graph.qualified_value(value)
@@ -538,10 +541,10 @@ def _callback_binding_effects(effect, target, call, owner, graph, summaries) -> 
         return (Effect("ImplicitOutput", qualified.removeprefix("builtins."), ambient=True),)
     if qualified in IMPLICIT_INPUT_NAMES:
         return (Effect("ImplicitInput", qualified.removeprefix("builtins."), ambient=True),)
-    effect = _instantiated_arguments(effect, target, call, owner)
+    effect = _instantiated_arguments(effect, target, bound, call, owner)
     site = graph.call_site(owner.callable.node, ast.copy_location(ast.Call(func=value, args=[], keywords=[]), call))
     if site is not None and not graph.masked_name(call, value):
-        return _callback_effects(site.callee, value, effect, call, owner, summaries)
+        return _callback_effects(site.callee, value, effect, call, owner, graph, summaries)
     return _unresolved_callback(value, effect, owner)
 
 
@@ -554,18 +557,48 @@ def _unresolved_callback(value: ast.expr, effect: Effect, owner: CallableEffects
     return (Effect("UnknownEffect", effect.name, reason="unresolved callback"),)
 
 
-def _instantiated_arguments(effect: Effect, target: ast.AST, call: ast.Call, owner: CallableEffects) -> Effect:
-    from .analyzer import _instantiate_storage
-
+def _instantiated_arguments(
+    effect: Effect, target: ast.AST, bound: dict[str, Bound[ast.expr]] | None, call: ast.Call, owner: CallableEffects
+) -> Effect:
     if effect.arguments is None:
         return effect
-    arguments = tuple(_instantiate_storage(storage, target, call, owner.ownership) for storage in effect.arguments)
-    keywords = tuple((name, _instantiate_storage(storage, target, call, owner.ownership)) for name, storage in effect.keywords)
+    arguments = tuple(_instantiate_storage(storage, target, bound, call, owner.ownership) for storage in effect.arguments)
+    keywords = tuple((name, _instantiate_storage(storage, target, bound, call, owner.ownership)) for name, storage in effect.keywords)
     return replace(effect, arguments=arguments, keywords=keywords)
 
 
+def _instantiate_storage(
+    storage: Storage, target: ast.AST, bound: dict[str, Bound[ast.expr]] | None, call: ast.Call, caller_ownership: Ownership
+) -> Storage:
+    instantiated = replace(
+        storage, outer=_kept_origins(storage.outer, target), reachable=_kept_origins(storage.reachable, target),
+        slots=tuple((key, _instantiate_storage(child, target, bound, call, caller_ownership)) for key, child in storage.slots),
+        references=frozenset(),
+    )
+    for origin in storage.outer | storage.reachable:
+        if origin.scope != id(target):
+            continue
+        actual = _argument_storage(origin, bound, call, caller_ownership)
+        if origin in storage.outer:
+            instantiated = actual if not instantiated.outer and not instantiated.slots else instantiated.join(actual)
+        if origin in storage.reachable:
+            instantiated = instantiated.join(Storage(reachable=actual.everything, kinds=frozenset(), deep=actual.reaches_unknown))
+    return instantiated
+
+
+def _argument_storage(origin: Origin, bound: dict[str, Bound[ast.expr]] | None, call: ast.Call, ownership: Ownership) -> Storage:
+    parameter = bound.get(origin.name) if bound is not None else None
+    if parameter is None:
+        return Storage(opaque=True)
+    return project_storage(bound_storage(parameter, partial(ownership.value, node=call)), origin.path)
+
+
+def _kept_origins(origins: frozenset[Origin], target: ast.AST) -> frozenset[Origin]:
+    return frozenset(origin for origin in origins if origin.scope != id(target))
+
+
 def _callback_effects(
-    target: ast.AST, value: ast.expr, effect: Effect, call: ast.Call, owner: CallableEffects, summaries
+    target: ast.AST, value: ast.expr, effect: Effect, call: ast.Call, owner: CallableEffects, graph: CallGraph, summaries
 ) -> tuple[Effect, ...]:
     if cold_body(target):
         return ()
@@ -573,7 +606,7 @@ def _callback_effects(
     for fact in summaries[id(target)].facts:
         origin = fact.origin
         if origin is None or origin.scope != id(target):
-            mapped.extend(_substitute(fact, target, call, owner))
+            mapped.extend(_substitute(fact, target, call, owner, graph))
             continue
         storage = _callback_parameter(target, value, effect, origin.name)
         if storage is None:
@@ -586,16 +619,16 @@ def _callback_effects(
 def _callback_parameter(target: ast.AST, value: ast.expr, effect: Effect, name: str) -> Storage | None:
     if effect.arguments is None or isinstance(value, ast.Attribute) or not isinstance(target, _FUNCTIONS):
         return None
-    for keyword, storage in effect.keywords:
-        if keyword == name:
-            return storage
-    positional = [argument.arg for argument in (*target.args.posonlyargs, *target.args.args)]
-    if name in positional and positional.index(name) < len(effect.arguments):
-        return effect.arguments[positional.index(name)]
-    return None
+    bound = bind_arguments(target.args, effect.arguments, effect.keywords)
+    parameter = bound.get(name) if bound is not None else None
+    return bound_storage(parameter, _same_storage) if parameter is not None else None
 
 
-def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: CallableEffects) -> tuple[Effect, ...]:
+def _same_storage(storage: Storage) -> Storage:
+    return storage
+
+
+def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: CallableEffects, graph: CallGraph) -> tuple[Effect, ...]:
     origin = effect.origin
     if origin is None:
         return (effect,)
@@ -606,10 +639,20 @@ def _substitute(effect: Effect, target: ast.AST, call: ast.Call, owner: Callable
         return tuple(Effect(effect.rule, effect.name, source, ambient=effect.ambient) for source in storage.outer)
     if origin.scope != id(target):
         return (effect,)
-    value = _bound_argument(target, call, origin.name)
-    if value is None or isinstance(value, ast.Starred):
+    parameter = (_call_binding(target, call, graph) or {}).get(origin.name)
+    if parameter is None:
         return (Effect("UnknownEffect", "<argument binding>", reason="missing argument binding"),)
-    return _mapped_through(effect, owner.ownership.value(value, call), _dotted_name(value) or "<argument>")
+    return _mapped_through(effect, bound_storage(parameter, partial(owner.ownership.value, node=call)), _argument_label(parameter))
+
+
+def _call_binding(target: ast.AST, call: ast.Call, graph: CallGraph) -> dict[str, Bound[ast.expr]] | None:
+    receiver = graph.method_class(target) is not None and method_receiver(target) is not None
+    return bind_call(target, call, receiver)
+
+
+def _argument_label(parameter: Bound[ast.expr]) -> str:
+    label = _dotted_name(parameter.argument) if parameter.argument is not None else ""
+    return label or "<argument>"
 
 
 def _mapped_through(effect: Effect, storage: Storage, label: str) -> tuple[Effect, ...]:
@@ -619,21 +662,6 @@ def _mapped_through(effect: Effect, storage: Storage, label: str) -> tuple[Effec
     if storage.opaque and effect.rule == "ImplicitOutput":
         mapped += (Effect("UnknownEffect", f"mutation of {label}", reason="unknown storage"),)
     return mapped
-
-
-def _bound_argument(target: ast.AST, call: ast.Call, name: str) -> ast.expr | None:
-    if not isinstance(target, _FUNCTIONS):
-        return None
-    for keyword in call.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    arguments = [*target.args.posonlyargs, *target.args.args]
-    if isinstance(call.func, ast.Attribute) and arguments and arguments[0].arg in {"self", "cls"}:
-        arguments = arguments[1:]
-    for argument, value in zip(arguments, call.args):
-        if argument.arg == name:
-            return value
-    return None
 
 
 def _finding(path: Path, callable_info: CallableNode, rule: LoadedRule, effect: Effect, node: ast.AST) -> Finding:

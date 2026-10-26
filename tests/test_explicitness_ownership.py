@@ -252,6 +252,141 @@ class OwnershipTests(unittest.TestCase):
             report,
         )
 
+    def assert_helper_mutation_binds_through(self, helper, private_call, forwarded_call):
+        status, report = self.analyze(
+            f"{helper}"
+            "def build():\n"
+            "    values = []\n"
+            f"    {private_call}\n"
+            "    return values\n"
+            "def change(values):\n"
+            f"    {forwarded_call}\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("ImplicitOutput [priority 3] The function mutate() writes the implicit output", report)
+        self.assertNotIn("build()", report)
+        self.assertNotIn("UnknownEffect", report)
+        self.assertRegex(report, r"probe\.py:\d+: ImplicitOutput \[priority 3\] The function change\(\) writes the implicit output \w+\.")
+
+    def test_helper_mutation_binds_every_parameter_kind_to_the_caller_argument(self):
+        cases = {
+            "positional": ("def mutate(values):\n    values.append(1)\n", "mutate(values)"),
+            "keyword-only": ("def mutate(*, values):\n    values.append(1)\n", "mutate(values=values)"),
+            "variadic positional": ("def mutate(*items):\n    items[0].append(1)\n", "mutate(values)"),
+            "variadic keyword": ('def mutate(**named):\n    named["v"].append(1)\n', "mutate(v=values)"),
+            "variadic element": ("def mutate(*items):\n    for item in items:\n        item.append(1)\n", "mutate(values)"),
+        }
+        for kind, (helper, call) in cases.items():
+            with self.subTest(kind):
+                self.assert_helper_mutation_binds_through(helper, call, call)
+
+    def test_omitted_constant_default_does_not_bind_caller_storage(self):
+        status, report = self.analyze(
+            "def mutate(values=None):\n"
+            "    if values is not None:\n"
+            "        values.append(1)\n"
+            "def build():\n"
+            "    mutate()\n"
+            "    return 1\n"
+            "def change(values):\n"
+            "    mutate(values)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:3: ImplicitOutput [priority 3] The function mutate() writes the implicit output values.", report)
+        self.assertIn("probe.py:8: ImplicitOutput [priority 3] The function change() writes the implicit output values.", report)
+        self.assertNotIn("build()", report)
+        self.assertNotIn("UnknownEffect", report)
+
+    def test_omitted_non_constant_default_keeps_uncertainty(self):
+        status, report = self.analyze(
+            "SHARED = []\n"
+            "def mutate(values=SHARED):\n"
+            "    values.append(1)\n"
+            "def build():\n"
+            "    mutate()\n"
+            "    return 1\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:5: UnknownEffect [priority 3] The function build()", report)
+
+    def test_star_expansion_keeps_argument_binding_uncertain(self):
+        status, report = self.analyze(
+            "def mutate(*items):\n"
+            "    items[0].append(1)\n"
+            "def build(pending):\n"
+            "    mutate(*pending)\n"
+            "    return pending\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:4: UnknownEffect [priority 3] The function build() has an unknown effect from <argument binding>.", report)
+
+    def test_method_call_binds_the_declared_receiver_whatever_its_spelling(self):
+        status, report = self.analyze(
+            "class Box:\n"
+            "    def fill(this, values):\n"
+            "        values.append(1)\n"
+            "    def build(this):\n"
+            "        values = []\n"
+            "        this.fill(values)\n"
+            "        return values\n"
+            "    def change(this, values):\n"
+            "        this.fill(values)\n"
+            "    @staticmethod\n"
+            "    def stuff(self):\n"
+            "        self.append(1)\n"
+            "    def restock(this, values):\n"
+            "        this.stuff(values)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertNotIn("Box.build()", report)
+        self.assertNotIn("UnknownEffect", report)
+        self.assertIn("probe.py:9: ImplicitOutput [priority 3] The method Box.change() writes the implicit output values.", report)
+        self.assertIn("probe.py:14: ImplicitOutput [priority 3] The method Box.restock() writes the implicit output self.", report)
+
+    def test_callback_substitution_binds_receiver_and_packed_parameters(self):
+        status, report = self.analyze(
+            "def record(*items):\n"
+            "    items[0].append(1)\n"
+            "def apply(callback, values):\n"
+            "    callback(values)\n"
+            "class Box:\n"
+            "    def run(this, callback, values):\n"
+            "        callback(values)\n"
+            "    def build(this):\n"
+            "        values = []\n"
+            "        this.run(record, values)\n"
+            "        return values\n"
+            "def build():\n"
+            "    values = []\n"
+            "    apply(record, values)\n"
+            "    return values\n"
+            "def change(values):\n"
+            "    apply(record, values)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertIn("probe.py:4: UnknownEffect [priority 3] The function apply() has an unknown effect from callback.", report)
+        self.assertNotIn("The function build()", report)
+        self.assertNotIn("Box.build()", report)
+        self.assertNotIn("<callback", report)
+        self.assertIn("probe.py:17: ImplicitOutput [priority 3] The function change() writes the implicit output items.", report)
+
+    def test_variadic_returned_alias_keeps_caller_provenance(self):
+        status, report = self.analyze(
+            "def pick(*items, **named):\n"
+            "    return items[0] if items else named['v']\n"
+            "def build():\n"
+            "    values = []\n"
+            "    alias = pick(values)\n"
+            "    alias.append(1)\n"
+            "    return values\n"
+            "def change(values):\n"
+            "    alias = pick(v=values)\n"
+            "    alias.append(1)\n"
+        )
+        self.assertEqual(2, status)
+        self.assertNotIn("build()", report)
+        self.assertIn("probe.py:10: ImplicitOutput [priority 3] The function change() writes the implicit output alias.", report)
+
     def test_recursive_call_ring_and_repeated_helpers_scale_without_superlinear_overhead(self):
         def ring_source(functions, calls):
             parts = []
