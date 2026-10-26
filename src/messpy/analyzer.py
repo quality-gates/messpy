@@ -34,7 +34,7 @@ from .callgraph import (
     build_call_graph,
 )
 from .rulesets import LoadedRule
-from .ownership import CallableBody, Origin, Ownership, OwnershipProgram, Storage, argument_ownership, augmented_mutation, project_storage
+from .ownership import CallableBody, Origin, Ownership, OwnershipProgram, Storage, argument_ownership, augmented_mutation
 from .reachability import constant_truth, live_statements
 
 
@@ -1761,54 +1761,6 @@ def _call_result_kind(node: ast.Call, chain: _ScopeChain) -> str:
     if _empty_constructor(node, chain):
         return "record"
     return "fresh" if builtin in _FRESH_CALLS or name.startswith("math.") else ""
-
-
-def _instantiate_storage(
-    storage: Storage,
-    target: ast.AST,
-    call: ast.Call,
-    caller_ownership: Ownership,
-) -> Storage:
-    instantiated = replace(
-        storage, outer=_kept_origins(storage.outer, target), reachable=_kept_origins(storage.reachable, target),
-        slots=tuple((key, _instantiate_storage(child, target, call, caller_ownership)) for key, child in storage.slots),
-        references=frozenset(),
-    )
-    for origin in storage.outer | storage.reachable:
-        if origin.scope != id(target):
-            continue
-        actual = _argument_storage(origin, target, call, caller_ownership)
-        if origin in storage.outer:
-            instantiated = actual if not instantiated.outer and not instantiated.slots else instantiated.join(actual)
-        if origin in storage.reachable:
-            instantiated = instantiated.join(Storage(reachable=actual.everything, kinds=frozenset(), deep=actual.reaches_unknown))
-    return instantiated
-
-
-def _argument_storage(origin: Origin, target: ast.AST, call: ast.Call, ownership: Ownership) -> Storage:
-    value = _bound_argument(target, call, origin.name)
-    if value is None or isinstance(value, ast.Starred):
-        return Storage(opaque=True)
-    return project_storage(ownership.value(value, call), origin.path)
-
-
-def _kept_origins(origins: frozenset[Origin], target: ast.AST) -> frozenset[Origin]:
-    return frozenset(origin for origin in origins if origin.scope != id(target))
-
-
-def _bound_argument(target: ast.AST, call: ast.Call, name: str) -> ast.expr | None:
-    if not isinstance(target, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-        return None
-    for keyword in call.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    arguments = [*target.args.posonlyargs, *target.args.args]
-    if isinstance(call.func, ast.Attribute) and arguments and arguments[0].arg in {"self", "cls"}:
-        arguments = arguments[1:]
-    for argument, value in zip(arguments, call.args):
-        if argument.arg == name:
-            return value
-    return None
 
 
 def _storage_write(node: ast.AST, chain: _ScopeChain, ownership: Ownership) -> str:

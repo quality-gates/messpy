@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from functools import partial
 from types import MappingProxyType
+from typing import TypeVar
 
+from .parameters import Bound, bind_call
 from .reachability import constant_truth, evaluated_children, live_statements
 
 __all__ = [
@@ -16,6 +19,7 @@ __all__ = [
     "Storage",
     "argument_ownership",
     "augmented_mutation",
+    "bound_storage",
     "project_storage",
     "storage_value",
 ]
@@ -1046,58 +1050,41 @@ def _cached(node: ast.AST, value: Storage, state: _State) -> _State:
 
 
 def _bound_values(body: CallableBody, call: ast.Call, state: _State, context: _Context) -> dict[str, Storage] | None:
-    if _spread_arguments(call):
+    bound = bind_call(body.node, call, body.receiver is not None)
+    if bound is None:
         return None
-    arguments = body.node.args
-    positional = [*arguments.posonlyargs, *arguments.args]
-    values = [context.value(value, state) for value in call.args]
-    if body.receiver and isinstance(call.func, ast.Attribute):
-        values.insert(0, context.value(call.func.value, state))
-    bound = {argument.arg: value for argument, value in zip(positional, values)}
-    bound.update((keyword.arg, context.value(keyword.value, state)) for keyword in call.keywords)
-    bound = _with_defaults(arguments, positional, bound, state, context)
-    return _packed_values(arguments, positional, values, bound)
+    value = partial(context.value, bindings=state)
+    default = partial(_default_value, state=state, context=context)
+    return {name: bound_storage(parameter, value, default) for name, parameter in bound.items()}
 
 
-def _spread_arguments(call: ast.Call) -> bool:
-    return any(isinstance(value, ast.Starred) for value in call.args) or any(keyword.arg is None for keyword in call.keywords)
+def _default_value(expression: ast.expr, state: _State, context: _Context) -> Storage:
+    """A default the definition evaluated is its value there; an unevaluated constant default is fresh."""
+    return context.value(expression, state) if id(expression) in state.evaluated else _fixed_default(expression)
 
 
-def _with_defaults(arguments: ast.arguments, positional, bound, state: _State, context: _Context):
-    bound = dict(bound)
-    for argument, value in zip(positional[-len(arguments.defaults):], arguments.defaults):
-        bound.setdefault(argument.arg, _default_value(value, state, context))
-    for argument, value in zip(arguments.kwonlyargs, arguments.kw_defaults):
-        if value is not None:
-            bound.setdefault(argument.arg, _default_value(value, state, context))
-    return bound
+_T = TypeVar("_T")
 
 
-def _default_value(node: ast.expr, state: _State, context: _Context) -> Storage:
-    return context.value(node, state) if isinstance(node, ast.Constant) or id(node) in state.evaluated else Storage(opaque=True)
+def bound_storage(
+    bound: Bound[_T], value: Callable[[_T], Storage], default: Callable[[ast.expr], Storage] | None = None
+) -> Storage:
+    """The storage a bound parameter holds, given the storage of each argument and default.
+
+    Without a default evaluator, only a constant default has known storage.
+    """
+    if bound.pack:
+        slots = tuple((key, value(item)) for key, item in bound.items)
+        return Storage(kinds=frozenset({bound.pack}), slots=slots, indexed=True)
+    if bound.default is not None:
+        return (default or _fixed_default)(bound.default)
+    return value(bound.argument)
 
 
-def _packed_values(arguments: ast.arguments, positional, values, bound) -> dict[str, Storage] | None:
-    if not _complete_arguments(arguments, positional, values, bound):
-        return None
-    bound = dict(bound)
-    if arguments.vararg is not None:
-        slots = tuple((("item", index), value) for index, value in enumerate(values[len(positional):]))
-        bound[arguments.vararg.arg] = Storage(kinds=frozenset({"tuple"}), slots=slots, indexed=True)
-    known = {argument.arg for argument in [*positional, *arguments.kwonlyargs]}
-    if arguments.kwarg is not None:
-        slots = tuple((("item", name), value) for name, value in bound.items() if name not in known)
-        bound[arguments.kwarg.arg] = Storage(kinds=frozenset({"dict"}), slots=slots, indexed=True)
-    return bound
-
-
-def _complete_arguments(arguments: ast.arguments, positional, values, bound) -> bool:
-    known = {argument.arg for argument in [*positional, *arguments.kwonlyargs]}
-    if not known <= bound.keys():
-        return False
-    if arguments.vararg is None and len(values) > len(positional):
-        return False
-    return arguments.kwarg is not None or bound.keys() <= known
+def _fixed_default(expression: ast.expr) -> Storage:
+    if isinstance(expression, ast.Constant):
+        return Storage(kinds=frozenset({type(expression.value).__name__}))
+    return Storage(opaque=True)
 
 
 def _linked_call_arguments(node: ast.Call, bindings: _State, context: _Context) -> _State:
