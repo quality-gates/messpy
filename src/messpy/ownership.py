@@ -1059,7 +1059,7 @@ def _bound_values(body: CallableBody, call: ast.Call, state: _State, context: _C
 
 
 def _default_value(expression: ast.expr, state: _State, context: _Context) -> Storage:
-    """A default the definition evaluated is its value there; an unevaluated constant default is fresh."""
+    """Use the value of a default that the definition evaluated. Otherwise, use a fresh value."""
     return context.value(expression, state) if id(expression) in state.evaluated else _fixed_default(expression)
 
 

@@ -1,9 +1,9 @@
 """Bind a call's arguments to the parameters of the callable it calls.
 
-One binding answers "which argument gives this parameter its value?" for heap
-execution, storage-origin instantiation, effect substitution and callback
-substitution. Binding reads syntax only. Each caller interprets the bound
-arguments, defaults and packs as its own values.
+One binding answers "which argument gives this parameter its value?" for every
+analysis that maps a callee's parameters back to its caller. Binding reads
+syntax only. Each caller interprets the bound arguments, defaults and packs as
+its own values.
 """
 
 from __future__ import annotations
