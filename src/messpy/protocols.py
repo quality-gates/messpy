@@ -4,7 +4,8 @@ import ast
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .callgraph import CallGraph, _dotted_name, _module_nodes
+from .callgraph import CallGraph
+from .syntax import dotted_name, module_nodes
 from .execution import effect_site
 from .ownership import Ownership
 
@@ -17,7 +18,7 @@ class Protocols:
 
     @classmethod
     def collect(cls, tree: ast.Module) -> Protocols:
-        classes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
+        classes = [node for node in module_nodes(tree) if isinstance(node, ast.ClassDef)]
         methods = _class_methods(classes)
         properties = frozenset(node.name for _, node in methods if _property(node))
         overrides = frozenset((ancestor, node.name) for owner, node in methods for ancestor in _ancestors(owner, classes, frozenset()))
@@ -29,11 +30,11 @@ def _class_methods(classes: Sequence[ast.ClassDef]):
 
 
 def _property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(_dotted_name(decorator).split(".")[-1] == "property" for decorator in node.decorator_list)
+    return any(dotted_name(decorator).split(".")[-1] == "property" for decorator in node.decorator_list)
 
 
 def _ancestors(owner: ast.ClassDef, classes: Sequence[ast.ClassDef], visited: frozenset[str]) -> frozenset[str]:
-    direct = frozenset(_dotted_name(base) for base in owner.bases) - visited
+    direct = frozenset(dotted_name(base) for base in owner.bases) - visited
     parents = [node for node in classes if node.name in direct]
     return direct | frozenset(ancestor for parent in parents for ancestor in _ancestors(parent, classes, visited | direct))
 

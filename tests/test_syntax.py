@@ -1,18 +1,59 @@
 from __future__ import annotations
 
 import ast
+from collections import Counter
+from io import StringIO
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from messpy.callgraph import build_call_graph
+from messpy.cli import run
 from messpy.names import Names
 
 
 class SyntaxResolutionTests(unittest.TestCase):
+    def test_sparse_design_rules_reuse_active_tree_indexes(self) -> None:
+        counts = Counter()
+
+        def profile(frame, event, _arg):
+            if event != "call" or frame.f_globals.get("__name__") != "messpy.syntax":
+                return
+            name = frame.f_code.co_name
+            if name not in {"module_nodes", "parent_map", "comprehension_masks"}:
+                return
+            tree = frame.f_locals["tree"]
+            if tree.body:
+                counts[name] += 1
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "example.py"
+            path.write_text("shared = []\ndef read():\n    return shared\n", encoding="utf-8")
+            stdout, stderr = StringIO(), StringIO()
+            previous_profile = sys.getprofile()
+            sys.setprofile(profile)
+            try:
+                status = run(
+                    [str(path), "text", "design,explicitness", "--only", "GlobalVariable,ImplicitInput"],
+                    stdout,
+                    stderr,
+                )
+            finally:
+                sys.setprofile(previous_profile)
+
+        self.assertEqual(2, status)
+        self.assertEqual(
+            f"{path}:3: ImplicitInput [priority 3] The function read() reads the implicit input shared. "
+            "Pass it as an argument instead.\n",
+            stdout.getvalue(),
+        )
+        self.assertEqual("", stderr.getvalue())
+        self.assertEqual({"module_nodes": 1, "parent_map": 1, "comprehension_masks": 1}, dict(counts))
+
     def test_names_and_calls_preserve_comprehension_scopes(self) -> None:
         tree = ast.parse(
             "import sys as system\n"

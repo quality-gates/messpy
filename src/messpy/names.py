@@ -11,6 +11,8 @@ import ast
 from dataclasses import dataclass
 from pathlib import Path
 
+from .syntax import comprehension_masks, dotted_name, module_nodes, parent_map
+
 __all__ = ["Names"]
 
 _FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -49,9 +51,9 @@ class Names:
     @classmethod
     def build(cls, tree: ast.Module, *, module: tuple[str, ...] | None, path: Path) -> Names:
         package = _package(module, path)
-        parents = _parent_map(tree)
+        parents = parent_map(tree)
         records = {id(scope): _record(package, scope) for scope in _scopes(tree)}
-        return cls(tree, package, parents, records, _expression_masks(tree))
+        return cls(tree, package, parents, records, comprehension_masks(tree))
 
     def qualified(self, node: ast.expr, *, scope: ast.AST | None = None) -> str:
         return _qualified(self, node, scope)
@@ -75,7 +77,7 @@ def _package(module: tuple[str, ...] | None, path: Path) -> tuple[str, ...] | No
 def _qualified(names: Names, node: ast.expr, scope: ast.AST | None) -> str:
     if _root_masked(names, node):
         return ""
-    dotted = _dotted_name(node)
+    dotted = dotted_name(node)
     if not dotted:
         return ""
     root, separator, member = dotted.partition(".")
@@ -91,11 +93,11 @@ def _qualified(names: Names, node: ast.expr, scope: ast.AST | None) -> str:
 def _imported(names: Names, node: ast.expr, scope: ast.AST | None) -> tuple[str, bool] | None:
     if _root_masked(names, node):
         return None
-    root = _root_name(node)
-    if not root:
+    root = _root_node(node)
+    if not isinstance(root, ast.Name):
         return None
-    record, bound = _resolved_record(names, root, _scopes_for(names, node, scope))
-    binding = record.imports.get(root) if bound else None
+    record, bound = _resolved_record(names, root.id, _scopes_for(names, node, scope))
+    binding = record.imports.get(root.id) if bound else None
     if binding is None:
         return None
     return binding.canonical, binding.symbol
@@ -202,20 +204,6 @@ def _root_node(node: ast.expr) -> ast.expr:
     return current
 
 
-def _root_name(node: ast.expr) -> str:
-    root = _root_node(node)
-    return root.id if isinstance(root, ast.Name) else ""
-
-
-def _dotted_name(node: ast.expr) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else ""
-    return ""
-
-
 def _record(package: tuple[str, ...] | None, scope: ast.AST) -> _ScopeRecord:
     global_names = _declared(scope, ast.Global)
     nonlocal_names = _declared(scope, ast.Nonlocal)
@@ -234,20 +222,10 @@ def _scopes(tree: ast.Module) -> list[ast.AST]:
     scopes: list[ast.AST] = [tree]
     scopes.extend(
         node
-        for node in _module_nodes(tree)
+        for node in module_nodes(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
     )
     return scopes
-
-
-def _parent_map(tree: ast.Module) -> dict[int, ast.AST]:
-    return {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
-
-
-def _module_nodes(tree: ast.Module) -> tuple[ast.AST, ...]:
-    from .callgraph import _module_nodes as nodes
-
-    return nodes(tree)
 
 
 def _statements(scope: ast.AST) -> list[ast.AST]:
@@ -365,44 +343,3 @@ def _pattern_names(node: ast.AST) -> set[str]:
     if isinstance(node, ast.MatchMapping) and node.rest is not None:
         return {node.rest}
     return set()
-
-
-def _expression_masks(tree: ast.Module) -> dict[int, frozenset[str]]:
-    masks: dict[int, frozenset[str]] = {}
-    pending: list[tuple[ast.AST, frozenset[str]]] = [(tree, frozenset())]
-    while pending:
-        node, masked = pending.pop()
-        if masked and isinstance(node, (ast.Name, ast.Attribute)):
-            masks[id(node)] = masked
-        pending.extend(_masked_children(node, masked))
-    return masks
-
-
-def _masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [(child, frozenset()) for child in ast.iter_child_nodes(node)]
-    if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return [(child, masked) for child in ast.iter_child_nodes(node)]
-    outer_iter = node.generators[0].iter
-    targets = masked.union(*(_stored_names(generator.target) for generator in node.generators))
-    return [(child, masked if child is outer_iter else targets) for child in _comprehension_children(node)]
-
-
-def _comprehension_children(node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> list[ast.AST]:
-    children: list[ast.AST] = []
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.comprehension):
-            children.extend(ast.iter_child_nodes(child))
-        else:
-            children.append(child)
-    return children
-
-
-def _stored_names(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Name):
-        return [node.id]
-    if isinstance(node, ast.Starred):
-        return _stored_names(node.value)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return [name for element in node.elts for name in _stored_names(element)]
-    return []

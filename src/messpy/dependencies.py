@@ -11,7 +11,8 @@ import builtins
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
-from .callgraph import _arguments, _direct_bindings, _dotted_name
+from .callgraph import _arguments, _direct_bindings
+from .syntax import dotted_name
 from .names import Names
 
 __all__ = ["ClassInfo", "measure_class_dependencies"]
@@ -103,7 +104,7 @@ def _dependency_reference(
         if isinstance(node.ctx, ast.Load):
             return _with_dependency(node, names, scope, local_names, dependencies)
         return dependencies
-    if isinstance(node, ast.Attribute) and _dotted_name(node):
+    if isinstance(node, ast.Attribute) and dotted_name(node):
         return _with_dependency(node, names, scope, local_names, dependencies)
     return None
 
@@ -193,7 +194,7 @@ def _dependency_name(
     scope: ast.AST,
     local_names: set[str],
 ) -> str:
-    dotted = _dotted_name(node)
+    dotted = dotted_name(node)
     if not dotted:
         return ""
     root, *tail = dotted.split(".")

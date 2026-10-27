@@ -1246,84 +1246,71 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(60, len(created))
 
     def test_design_call_resolution_walks_nested_calls_once(self) -> None:
-        # Regression for GH #176: the two call-based design rules used to
-        # resolve every call independently, walking all enclosing scopes for
-        # each resolution.
-        import messpy.analyzer as engine_module
-        import messpy.callgraph as callgraph_module
-        import messpy.names as names_module
+        source = (
+            "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
+            "def terminate():\n    exit()\n"
+        )
+        counts = {"masked_visits": 0, "parent_maps": 0, "mask_maps": 0, "node_walks": 0, "name_builds": 0}
 
-        source = "x = " + "lambda:" * 20 + "(" + ", ".join(["f()"] * 20) + ")\n"
-        original_parents = engine_module._selected_design_parents
-        original_build = names_module.Names.__dict__["build"]
-        original_masked_children = callgraph_module._masked_children
-        parent_maps: list[dict[int, ast.AST]] = []
-        name_build_count = 0
-        masked_visits = 0
+        def profile(frame, event, _arg):
+            if event != "call":
+                return
+            module = frame.f_globals.get("__name__", "")
+            name = frame.f_code.co_name
+            if module in {"messpy.syntax", "messpy.names", "messpy.callgraph"}:
+                if name == "_masked_children":
+                    counts["masked_visits"] += 1
+                if name in {"comprehension_masks", "_comprehension_masks", "_expression_masks"}:
+                    counts["mask_maps"] += 1
+                if name == "parent_map":
+                    counts["parent_maps"] += 1
+                if name == "module_nodes":
+                    counts["node_walks"] += 1
+            if module == "messpy.names" and name == "build":
+                counts["name_builds"] += 1
 
-        class CountingParents(dict[int, ast.AST]):
-            def __init__(self, values: dict[int, ast.AST]) -> None:
-                super().__init__(values)
-                self.lookups = 0
-
-            def __contains__(self, key: object) -> bool:
-                self.lookups += 1
-                return super().__contains__(key)
-
-        def selected_parents(tree: ast.Module, rule_names: object) -> CountingParents:
-            parents = CountingParents(original_parents(tree, rule_names))
-            parent_maps.append(parents)
-            return parents
-
-        def counting_build(
-            cls: type[names_module.Names],
-            tree: ast.Module,
-            *,
-            module: tuple[str, ...] | None,
-            path: Path,
-        ) -> names_module.Names:
-            nonlocal name_build_count
-            name_build_count += 1
-            return original_build.__func__(cls, tree, module=module, path=path)
-
-        def masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
-            nonlocal masked_visits
-            masked_visits += 1
-            return original_masked_children(node, masked)
-
-        engine_module._selected_design_parents = selected_parents
-        names_module.Names.build = classmethod(counting_build)
-        callgraph_module._masked_children = masked_children
-        try:
-            with tempfile.TemporaryDirectory() as temporary_directory:
-                source_path = Path(temporary_directory) / "nested_calls.py"
-                source_path.write_text(source, encoding="utf-8")
-                stdout = StringIO()
-                stderr = StringIO()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            source_path = Path(temporary_directory) / "nested_calls.py"
+            source_path.write_text(source, encoding="utf-8")
+            ruleset = Path(temporary_directory) / "onion.xml"
+            ruleset.write_text(
+                '<ruleset name="test"><rule ref="onion"><properties>'
+                '<property name="domain" value="*" />'
+                '<property name="outer-layers" value="requests" />'
+                '</properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+            previous_profile = sys.getprofile()
+            sys.setprofile(profile)
+            try:
                 status = run(
                     [
                         str(source_path),
                         "text",
-                        "design",
+                        f"design,explicitness,{ruleset}",
                         "--only",
-                        "ExitExpression,DevelopmentCodeFragment",
+                        "ExitExpression,DevelopmentCodeFragment,ImplicitInput,ImplicitOutput,DomainAction",
                     ],
                     stdout,
                     stderr,
                 )
-        finally:
-            engine_module._selected_design_parents = original_parents
-            names_module.Names.build = original_build
-            callgraph_module._masked_children = original_masked_children
+            finally:
+                sys.setprofile(previous_profile)
 
-        self.assertEqual(0, status)
-        self.assertEqual("", stdout.getvalue())
+        self.assertEqual(2, status)
+        self.assertEqual(
+            f"{source_path}:3: ExitExpression [priority 1] The terminate contains an exit expression.\n",
+            stdout.getvalue(),
+        )
         self.assertEqual("", stderr.getvalue())
-        self.assertEqual(1, name_build_count)
-        self.assertEqual(1, len(parent_maps))
+        self.assertEqual(1, counts["name_builds"])
+        self.assertEqual(1, counts["mask_maps"])
+        self.assertEqual(1, counts["parent_maps"])
+        self.assertEqual(1, counts["node_walks"])
         node_count = len(list(ast.walk(ast.parse(source))))
-        self.assertLess(parent_maps[0].lookups, 2 * node_count)
-        self.assertLessEqual(masked_visits, node_count)
+        self.assertLessEqual(counts["masked_visits"], node_count)
 
     def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
         # Regression for GH #178: the column lookup used to split the whole
