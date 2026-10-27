@@ -11,11 +11,11 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
 from pathlib import Path
 
 from .callables import CallableNode, method_receiver, module_callables
 from .names import Names
+from .syntax import comprehension_masks, dotted_name, module_nodes, stored_names
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
 
@@ -95,7 +95,7 @@ class _CallLinks:
 
 def build_call_graph(tree: ast.Module, names: Names | None = None) -> CallGraph:
     index = _index_callables(tree)
-    masks = _comprehension_masks(tree)
+    masks = comprehension_masks(tree)
     resolved = _resolved_calls(tree, index, masks)
     callees = _call_edges(index, resolved)
     resolved_names = names if names is not None else Names.build(tree, module=None, path=Path())
@@ -258,45 +258,6 @@ def _returned_callable(index: _CallableIndex, factory_id: int) -> int | None:
     return None
 
 
-def _comprehension_masks(tree: ast.Module) -> dict[int, frozenset[str]]:
-    """Map each call to the comprehension targets that hide names at that call.
-
-    Targets apply through lambdas but not definitions, and never to the
-    outermost iterable, which is evaluated in the enclosing scope.
-    """
-    masks: dict[int, frozenset[str]] = {}
-    pending: list[tuple[ast.AST, frozenset[str]]] = [(tree, frozenset())]
-    while pending:
-        node, masked = pending.pop()
-        if isinstance(node, ast.Call) and masked:
-            masks[id(node)] = masked
-        pending.extend(_masked_children(node, masked))
-    return masks
-
-
-def _masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [(child, frozenset()) for child in ast.iter_child_nodes(node)]
-    if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return [(child, masked) for child in ast.iter_child_nodes(node)]
-    outer_iter = node.generators[0].iter
-    targets = masked.union(*(_stored_names(generator.target) for generator in node.generators))
-    return [
-        (child, masked if child is outer_iter else targets)
-        for child in _comprehension_children(node)
-    ]
-
-
-def _comprehension_children(node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> list[ast.AST]:
-    children: list[ast.AST] = []
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.comprehension):
-            children.extend(ast.iter_child_nodes(child))
-        else:
-            children.append(child)
-    return children
-
-
 def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
     scopes = (caller_id, *index.enclosing.get(caller_id, ()))
     for scope_id in scopes:
@@ -351,7 +312,7 @@ def _resolve_class_method(index: _CallableIndex, caller_id: int, name: str, meth
             target = index.class_methods.get(id(class_node), {}).get(method)
             function = index.nodes.get(target)
             decorators = getattr(function, "decorator_list", ())
-            trusted = any(_dotted_name(decorator) in {"staticmethod", "classmethod", "builtins.staticmethod", "builtins.classmethod"} for decorator in decorators)
+            trusted = any(dotted_name(decorator) in {"staticmethod", "classmethod", "builtins.staticmethod", "builtins.classmethod"} for decorator in decorators)
             return target if trusted else None
         if _lookup_scope(index, scope_id, name)[0]:
             return None
@@ -575,7 +536,7 @@ def _shadow(state: _BindState, name: str) -> _BindState:
 
 
 def _shadow_target(state: _BindState, node: ast.AST) -> _BindState:
-    for name in _stored_names(node):
+    for name in stored_names(node):
         state = _shadow(state, name)
     return state
 
@@ -678,42 +639,14 @@ def _pattern_bindings(pattern: ast.pattern) -> list[str]:
     return names
 
 
-def _stored_names(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Name):
-        return [node.id]
-    if isinstance(node, ast.Starred):
-        return _stored_names(node.value)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        names: list[str] = []
-        for element in node.elts:
-            names.extend(_stored_names(element))
-        return names
-    return []
-
-
 _BindingScope = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef
-
-
-def _dotted_name(node: ast.expr) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else ""
-    return ""
-
-
-@lru_cache(maxsize=1)
-def _module_nodes(tree: ast.Module) -> tuple[ast.AST, ...]:
-    """Return ``ast.walk(tree)`` once per module; rules walk the same tree many times."""
-    return tuple(ast.walk(tree))
 
 
 def _binding_scopes(tree: ast.Module) -> list[_BindingScope]:
     scopes: list[_BindingScope] = [tree]
     scopes.extend(
         node
-        for node in _module_nodes(tree)
+        for node in module_nodes(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))
     )
     return scopes

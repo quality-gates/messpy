@@ -13,8 +13,6 @@ from .callables import CallableNode, method_receiver, module_callables
 from .callgraph import (
     CallGraph,
     _arguments,
-    _dotted_name,
-    _module_nodes,
     build_call_graph,
 )
 from .names import Names
@@ -23,6 +21,7 @@ from .ownership import Origin, Ownership, Storage, augmented_mutation, bound_sto
 from .parameters import Bound, bind_arguments, bind_call
 from .protocols import Protocols, uncertainties
 from .rulesets import LoadedRule
+from .syntax import dotted_name, parent_map, root_name
 
 if TYPE_CHECKING:
     from .analyzer import Finding, _ScopeChain
@@ -124,7 +123,7 @@ def explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRu
 def _callable_effects(tree: ast.Module, names: Names, graph: CallGraph) -> tuple[CallableEffects, ...]:
     from .analyzer import _name_scopes, _ownership_program
 
-    parents = {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
+    parents = parent_map(tree)
     scopes = _name_scopes(tree)
     protocols = Protocols.collect(tree)
     owners = _execution_owners(tree, parents)
@@ -190,7 +189,7 @@ def _unknown_calls(calls, callable_info, chain, ownership, graph, callable_alias
             continue
         callback = _callback_origin(call, callable_info, chain)
         arguments, keywords = _call_arguments(call, ownership) if callback is not None else (None, ())
-        name = _dotted_name(call.func) or "<dynamic call>"
+        name = dotted_name(call.func) or "<dynamic call>"
         unknown[Effect("UnknownEffect", name, callback=callback, reason="unresolved call", arguments=arguments, keywords=keywords)] = call
     return unknown
 
@@ -312,11 +311,11 @@ def _binding_write_origin(node: ast.AST, chain: _ScopeChain) -> frozenset[Origin
 
 
 def _unknown_mutation(changed: ast.expr | None, node: ast.AST, ownership: Ownership, receiver: str | None) -> tuple[Effect, ...]:
-    from .analyzer import _root_name, changed_storage
+    from .analyzer import changed_storage
 
     if changed is None or not changed_storage(changed, node, ownership).opaque:
         return ()
-    root = _root_name(changed)
+    root = root_name(changed)
     if root and root == receiver:
         return ()
     return (Effect("UnknownEffect", f"mutation of {root or '<expression>'}", reason="unknown storage"),)
@@ -651,7 +650,7 @@ def _call_binding(target: ast.AST, call: ast.Call, graph: CallGraph) -> dict[str
 
 
 def _argument_label(parameter: Bound[ast.expr]) -> str:
-    label = _dotted_name(parameter.argument) if parameter.argument is not None else ""
+    label = dotted_name(parameter.argument) if parameter.argument is not None else ""
     return label or "<argument>"
 
 

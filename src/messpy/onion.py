@@ -8,15 +8,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .callables import module_callables
-from .callgraph import (
-    CallGraph,
-    CallSite,
-    _module_nodes,
-)
+from .callgraph import CallGraph, CallSite
 from .names import Names
 from .regions import annotations_are_deferred, _signature_annotations
 from .reachability import evaluated_children, live_statements
 from .rulesets import LoadedRule
+from .syntax import parent_map
 
 if TYPE_CHECKING:
     from .analyzer import Finding, SourceFile
@@ -75,7 +72,7 @@ def _direct_actions(path: Path, tree: ast.Module, rule: LoadedRule, names: Names
         _name_scopes,
     )
 
-    parents = {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
+    parents = parent_map(tree)
     name_scopes = _name_scopes(tree)
     findings = []
     phrases: dict[int, str] = {}
@@ -109,7 +106,7 @@ def _action_phrase(message: str) -> str:
 def _import_time_findings(path: Path, tree: ast.Module, rule: LoadedRule, names: Names) -> list:
     from .analyzer import _ScopeChain, _ambient_read, _ambient_write, _name_scopes
 
-    parents = {id(child): parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    parents = parent_map(tree)
     chain = _ScopeChain((tree,), _name_scopes(tree), parents=parents, names=names)
     reads: dict[str, ast.AST] = {}
     writes: dict[str, ast.AST] = {}

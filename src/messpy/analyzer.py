@@ -25,9 +25,7 @@ from .callgraph import (
     _arguments,
     _binding_scopes,
     _BindingScope,
-    _dotted_name,
     _import_binding_names,
-    _module_nodes,
     _recorded_binding_names,
     _scope_bindings,
     _scope_statements,
@@ -36,6 +34,7 @@ from .callgraph import (
 from .rulesets import LoadedRule
 from .ownership import CallableBody, Origin, Ownership, OwnershipProgram, Storage, argument_ownership, augmented_mutation
 from .reachability import constant_truth, live_statements
+from .syntax import dotted_name, module_nodes, parent_map, root_name
 
 
 __all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "SourceFile", "analyze"]
@@ -735,7 +734,7 @@ def _selected_design_parents(tree: ast.Module, rule_names: AbstractSet[str]) -> 
     }
     if not _has_any_rule(rule_names, parent_rules):
         return {}
-    return {id(child): parent for parent in _module_nodes(tree) for child in ast.iter_child_nodes(parent)}
+    return parent_map(tree)
 
 
 def _selected_design_contexts(
@@ -771,7 +770,7 @@ def _is_exit_call(node: ast.Call, graph: CallGraph) -> bool:
     resolved = graph.qualified_name(node)
     if resolved in EXIT_CALL_NAMES:
         return True
-    raw = _dotted_name(node.func)
+    raw = dotted_name(node.func)
     # An unbound spelling of a known exit call is still an exit. A local binding resolves to "".
     return raw in EXIT_CALL_NAMES and resolved == f"builtins.{raw}"
 
@@ -780,7 +779,7 @@ def _development_call_name(node: ast.Call, graph: CallGraph, unwanted: set[str])
     resolved = graph.qualified_name(node)
     if resolved in unwanted:
         return resolved
-    raw = _dotted_name(node.func)
+    raw = dotted_name(node.func)
     # Built-in debug names stay relevant when nothing binds them. User names do not.
     if raw in DEVELOPMENT_CALL_NAMES and resolved == f"builtins.{raw}":
         return raw
@@ -800,7 +799,7 @@ def _exit_expression_findings(
         return []
     reported_scopes: set[int] = set()
     findings: list[Finding] = []
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, ast.Call) or not _is_exit_call(node, graph):
             continue
         scope, context = _design_scope(node, parents, contexts)
@@ -832,7 +831,7 @@ def _count_in_loop_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for loop in _module_nodes(tree):
+    for loop in module_nodes(tree):
         if not isinstance(loop, ast.While):
             continue
         calls = _expression_calls(loop.test)
@@ -884,7 +883,7 @@ def _development_call_findings(
     graph: CallGraph,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         name = _development_call_name(node, graph, unwanted)
@@ -938,7 +937,7 @@ def _empty_catch_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for handler in _module_nodes(tree):
+    for handler in module_nodes(tree):
         if not isinstance(handler, ast.ExceptHandler) or not _is_empty_handler(handler):
             continue
         _, context = _design_scope(handler, parents, contexts)
@@ -1049,7 +1048,7 @@ def _mutated_global_names(
 ) -> set[str]:
     return {
         name
-        for node in _module_nodes(tree)
+        for node in module_nodes(tree)
         if (name := _mutated_global_name(node, candidates, initial_targets, parents, bindings, MUTATOR_METHOD_NAMES))
     }
 
@@ -1106,7 +1105,7 @@ def _unshadowed_candidate_root(
     parents: dict[int, ast.AST],
     bindings: dict[int, set[str]],
 ) -> str:
-    root = _root_name(node)
+    root = root_name(node)
     return root if root in candidates and not _is_function_shadowed(root, node, parents, bindings) else ""
 
 
@@ -1173,13 +1172,6 @@ def _same_scope(node: ast.AST, scope: ast.AST, parents: dict[int, ast.AST]) -> b
         if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
             return False
     return False
-
-
-def _root_name(node: ast.AST) -> str:
-    current = node
-    while isinstance(current, (ast.Attribute, ast.Subscript)):
-        current = current.value
-    return current.id if isinstance(current, ast.Name) else ""
 
 
 def _cohesion_findings(
@@ -1778,7 +1770,7 @@ def _changed_storage_write(changed: ast.expr, node: ast.AST, chain: _ScopeChain,
     storage = changed_storage(changed, node, ownership)
     if storage.outer:
         return _dotted_prefix(changed) or _storage_name(storage)
-    return _dotted_prefix(changed) if not _is_local_object(_root_name(changed), chain) else ""
+    return _dotted_prefix(changed) if not _is_local_object(root_name(changed), chain) else ""
 
 
 def _augmented_storage_write(node: ast.AugAssign, ownership: Ownership) -> str:
@@ -1829,7 +1821,7 @@ def _state_write(node: ast.AST, chain: _ScopeChain, parameters: AbstractSet[str]
     changed = _changed_object(node, chain)
     if changed is None:
         return ""
-    root = _root_name(changed)
+    root = root_name(changed)
     caller_owned = root in parameters and chain.binding(root)[1] is chain.callable_node
     return _dotted_prefix(changed) if caller_owned or not _is_local_object(root, chain) else ""
 
@@ -1859,9 +1851,9 @@ def _module_receiver(expression: ast.expr, chain: _ScopeChain) -> bool:
 
 def _dotted_prefix(expression: ast.expr) -> str:
     current = expression
-    while not _dotted_name(current) and isinstance(current, (ast.Attribute, ast.Subscript)):
+    while not dotted_name(current) and isinstance(current, (ast.Attribute, ast.Subscript)):
         current = current.value
-    return _dotted_name(current)
+    return dotted_name(current)
 
 
 def _mutated_expression(
@@ -2060,7 +2052,7 @@ class _NameScope:
 
 
 def _name_scopes(tree: ast.Module) -> dict[int, _NameScope]:
-    declared_globals = {name for node in _module_nodes(tree) if isinstance(node, ast.Global) for name in node.names}
+    declared_globals = {name for node in module_nodes(tree) if isinstance(node, ast.Global) for name in node.names}
     name_scopes: dict[int, _NameScope] = {}
     for scope in _binding_scopes(tree):
         extra = declared_globals if isinstance(scope, ast.Module) else (
@@ -2456,7 +2448,7 @@ def _if_statement_assignment_findings(
         return []
     lines = source.splitlines()
     findings: list[Finding] = []
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, (ast.If, ast.While)):
             continue
         findings.extend(
@@ -2495,7 +2487,7 @@ def _duplicated_array_key_findings(
     if rule is None:
         return []
     findings: list[Finding] = []
-    for dictionary in _module_nodes(tree):
+    for dictionary in module_nodes(tree):
         if not isinstance(dictionary, ast.Dict):
             continue
         keys: dict[object, ast.expr] = {}
@@ -2779,7 +2771,7 @@ def _protocol_method_ids(tree: ast.Module) -> set[int]:
     protocol_names = _protocol_base_names(tree)
     return {
         id(method)
-        for node in _module_nodes(tree)
+        for node in module_nodes(tree)
         if isinstance(node, ast.ClassDef) and _is_protocol(node, protocol_names)
         for method in _class_member_statements(node.body)
         if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -3484,7 +3476,7 @@ def _class_hierarchy_loads(tree: ast.Module) -> dict[int, frozenset[str]]:
     same-class parameters alike), or when its receiver is one of those classes
     by name or a direct instantiation of one.
     """
-    class_nodes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
+    class_nodes = [node for node in module_nodes(tree) if isinstance(node, ast.ClassDef)]
     bases = _local_bases(tree, class_nodes)
     subclasses: dict[int, tuple[ast.ClassDef, ...]] = {}
     for node in class_nodes:
@@ -3516,7 +3508,7 @@ def _local_bases(tree: ast.Module, class_nodes: list[ast.ClassDef]) -> dict[int,
 def _receiver_loads(tree: ast.Module) -> defaultdict[str, set[str]]:
     """Map a bare receiver name to the attributes loaded on it or on a call to it."""
     loads: defaultdict[str, set[str]] = defaultdict(set)
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, ast.Attribute) or not isinstance(node.ctx, ast.Load):
             continue
         receiver = node.value.func if isinstance(node.value, ast.Call) else node.value
@@ -3561,7 +3553,7 @@ def _dynamic_access_aliases(tree: ast.Module) -> set[str]:
 def _exported_names(tree: ast.Module) -> tuple[set[str], bool]:
     names: set[str] = set()
     has_unknown_exports = False
-    for statement in _module_nodes(tree):
+    for statement in module_nodes(tree):
         targets, value, augmented = _export_assignment(statement)
         if augmented:
             has_unknown_exports = True
@@ -4232,7 +4224,7 @@ def _naming_roles(tree: ast.Module, names: Names) -> tuple[list[NamingTarget], l
 
 def _named_binding_targets(tree: ast.Module) -> list[NamingTarget]:
     targets: list[NamingTarget] = []
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if isinstance(node, ast.ExceptHandler) and node.name is not None:
             targets.append(NamingTarget(node.name, node.lineno, "variable"))
         elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name is not None:
@@ -4698,7 +4690,7 @@ def _classes(tree: ast.Module, names: Names) -> list[ClassInfo]:
     protocol_names = _protocol_base_names(tree)
     visitor_ids = _ast_visitor_class_ids(tree, names)
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, ast.ClassDef) or _is_protocol(node, protocol_names):
             continue
         classes.append(
@@ -4712,7 +4704,7 @@ def _classes(tree: ast.Module, names: Names) -> list[ClassInfo]:
 
 
 def _ast_visitor_class_ids(tree: ast.Module, names: Names) -> set[int]:
-    class_nodes = [node for node in _module_nodes(tree) if isinstance(node, ast.ClassDef)]
+    class_nodes = [node for node in module_nodes(tree) if isinstance(node, ast.ClassDef)]
     visitor_ids = _direct_ast_visitor_class_ids(class_nodes, names)
     qualified_names, classes_by_qualified_name = _qualified_class_index(tree)
     inherited_ids = _inherited_ast_visitor_class_ids(
@@ -4735,7 +4727,7 @@ def _child_statements(node: ast.AST) -> list[ast.stmt]:
 
 
 def _base_dotted_name(node: ast.expr) -> str:
-    return _dotted_name(_base_expression(node))
+    return dotted_name(_base_expression(node))
 
 
 def _base_expression(node: ast.expr) -> ast.expr:
@@ -4882,7 +4874,7 @@ def _ast_visitor_method_ids(tree: ast.Module, names: Names) -> set[int]:
     visitor_ids = _ast_visitor_class_ids(tree, names)
     return {
         id(statement)
-        for node in _module_nodes(tree)
+        for node in module_nodes(tree)
         if isinstance(node, ast.ClassDef) and id(node) in visitor_ids
         for statement in _class_member_statements(node.body)
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -5135,7 +5127,7 @@ def _apply_suppressions(source: str, tree: ast.Module, findings: Sequence[Findin
 
 def _definition_header_lines(tree: ast.Module) -> dict[int, range]:
     header_lines: dict[int, range] = {}
-    for node in _module_nodes(tree):
+    for node in module_nodes(tree):
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         header = range(node.lineno, _signature_end_line(node) + 1)
