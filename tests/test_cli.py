@@ -1301,7 +1301,7 @@ class CommandAcceptanceTests(unittest.TestCase):
 
         self.assertEqual(2, status)
         self.assertEqual(
-            f"{source_path}:3: ExitExpression [priority 1] The terminate contains an exit expression.\n",
+            f"{source_path.resolve().as_posix()}:3: ExitExpression [priority 1] The terminate contains an exit expression.\n",
             stdout.getvalue(),
         )
         self.assertEqual("", stderr.getvalue())

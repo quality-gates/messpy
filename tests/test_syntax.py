@@ -47,7 +47,7 @@ class SyntaxResolutionTests(unittest.TestCase):
 
         self.assertEqual(2, status)
         self.assertEqual(
-            f"{path}:3: ImplicitInput [priority 3] The function read() reads the implicit input shared. "
+            f"{path.resolve().as_posix()}:3: ImplicitInput [priority 3] The function read() reads the implicit input shared. "
             "Pass it as an argument instead.\n",
             stdout.getvalue(),
         )
