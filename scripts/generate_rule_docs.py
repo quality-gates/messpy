@@ -102,14 +102,18 @@ NOTES = {
         "Function, lambda, coroutine, and generator bodies belong to their own owner. "
         "Cold body effects transfer at established forcing operations rather than creation. "
         "Load-time effects belong to `<module>`. Only literal dead branches are pruned. "
-        "Fixed scalar captures and fixed fresh built-in container captures stay quiet inside the supported subset."
+        "Fixed scalar captures and fixed fresh built-in container captures stay quiet inside the supported subset. "
+        "For a body finding, place `# messpy-disable-next-line ImplicitInput` immediately above the flagged body line, not above `def`. "
+        "A next-line directive above `def` covers only the signature."
     ),
     "ImplicitOutput": (
         "Mutation is recognized by assignment, `del`, and common mutator methods such as `append` and `update`. "
         "Ownership is observed at the mutation site. Aliases retain their origins, and branches join possible origins. "
         "Fresh shallow copies have private outer storage and can retain caller-owned elements. "
         "Writes to those reachable elements remain outputs. Private outer mutation stays quiet. "
-        "The method receiver is left to `ImplicitInstanceOutput`; excluded receiver facts retain `UnknownEffect`."
+        "The method receiver is left to `ImplicitInstanceOutput`; excluded receiver facts retain `UnknownEffect`. "
+        "For a body finding, place `# messpy-disable-next-line ImplicitOutput` immediately above the flagged body line, not above `def`. "
+        "A next-line directive above `def` covers only the signature."
     ),
     "UnknownEffect": (
         "Uses the native AST, lexical resolver, and call graph. Same-file calculations and modeled standard operations stay quiet. "
