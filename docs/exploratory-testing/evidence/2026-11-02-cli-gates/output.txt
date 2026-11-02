@@ -1,0 +1,105 @@
+
+$ messpy src text python --ignore-tests
+src/app.py:2: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/broken.py:1: ProcessingError Could not parse: (' was never closed
+exit=1
+
+$ messpy src text python --ignore-tests --ignore-errors-on-exit --strict
+src/app.py:2: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/app.py:6: DevelopmentCodeFragment [priority 2] [suppressed] Development-only marker found in production source.
+src/broken.py:1: ProcessingError Could not parse: (' was never closed
+exit=2
+
+$ messpy src text team.xml --ignore-tests --ignore-errors-on-exit
+src/app.py:1: LongVariable [priority 3] Avoid excessively long variable names like customer_identifier. Configured maximum length is 12.
+src/broken.py:1: ProcessingError Could not parse: (' was never closed
+exit=2
+
+$ messpy src json bad.xml --reportfile reports/gate.json
+Error: Unknown ruleset reference 'NoSuchRule'.
+exit=1
+report after invalid policy: sentinel
+
+$ messpy src json python --ignore-tests --reportfile reports/gate.json
+exit=1
+saved report after processing error:
+{
+    "tool": {
+        "name": "messpy",
+        "version": "0.1.22"
+    },
+    "findings": [
+        {
+            "path": "src/app.py",
+            "line": 2,
+            "column": 1,
+            "ruleName": "DevelopmentCodeFragment",
+            "priority": 2,
+            "message": "Development-only marker found in production source.",
+            "context": "module",
+            "suppressed": false
+        }
+    ],
+    "errors": [
+        {
+            "path": "src/broken.py",
+            "line": 1,
+            "column": 1,
+            "ruleName": "ProcessingError",
+            "priority": 1,
+            "message": "Could not parse: (' was never closed",
+            "context": "",
+            "suppressed": false
+        }
+    ]
+}
+
+$ messpy src json python --ignore-tests --reportfile reports/gate.json
+exit=2
+saved report after correction:
+{
+    "tool": {
+        "name": "messpy",
+        "version": "0.1.22"
+    },
+    "findings": [
+        {
+            "path": "src/app.py",
+            "line": 2,
+            "column": 1,
+            "ruleName": "DevelopmentCodeFragment",
+            "priority": 2,
+            "message": "Development-only marker found in production source.",
+            "context": "module",
+            "suppressed": false
+        }
+    ],
+    "errors": []
+}
+
+$ messpy src text python
+src/app.py:2: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+src/test_app.py:2: DevelopmentCodeFragment [priority 2] Development-only marker found in production source.
+exit=2
+
+$ messpy src text python --ignore-tests
+exit=0
+
+$ messpy src text python --ignore-tests --strict
+src/app.py:5: DevelopmentCodeFragment [priority 2] [suppressed] Development-only marker found in production source.
+exit=2
+
+$ messpy src json python --ignore-tests --reportfile reports/gate.json
+exit=0
+saved report after removing the finding:
+{
+    "tool": {
+        "name": "messpy",
+        "version": "0.1.22"
+    },
+    "findings": [],
+    "errors": []
+}
+
+$ messpy src text team.xml --ignore-tests
+exit=0
