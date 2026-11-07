@@ -148,7 +148,7 @@ Keep team thresholds next to the code:
 messpy src text path/to/team-policy.xml --ignore-tests
 ```
 
-References are case-insensitive and may name a built-in, one rule, `rulesets/name.xml`, or another XML file relative to the current file. Rulesets can nest; cycles and unknown references fail. Later references override earlier priority and property values. `<exclude name="..."/>` removes a rule from the referenced set.
+References are case-insensitive and may name a built-in, one rule, `rulesets/name.xml`, or another XML file relative to the current file. Rulesets can nest; cycles and unknown references fail. Later explicitly configured priority and property values override earlier values. Fields omitted by a later reference keep their earlier values. `<exclude name="..."/>` removes a rule from the referenced set.
 
 ## Onion architecture
 

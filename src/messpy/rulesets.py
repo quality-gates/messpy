@@ -47,6 +47,13 @@ class LoadedRule:
         return cast(list[str], self._values.get(property_name, _items(default)))
 
 
+@dataclass(frozen=True)
+class _ConfiguredRule:
+    rule: LoadedRule
+    explicit_priority: bool = False
+    explicit_properties: frozenset[str] = frozenset()
+
+
 class RulesetError(Exception):
     pass
 
@@ -281,7 +288,7 @@ def built_in_ruleset_names() -> tuple[str, ...]:
 
 
 def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
-    loaded: dict[str, LoadedRule] = {}
+    loaded: dict[str, _ConfiguredRule] = {}
     for reference in references:
         try:
             loaded = _merge(loaded, _load_reference(reference, Path.cwd(), ()))
@@ -289,7 +296,7 @@ def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
             if str(error) == f"Unknown ruleset reference '{reference}'.":
                 raise RulesetError(f"Unknown ruleset '{reference}'.") from error
             raise
-    rules = list(loaded.values())
+    rules = [configured.rule for configured in loaded.values()]
     _validate_required_items(rules)
     return rules
 
@@ -344,12 +351,12 @@ def _rule_is_selected(
 
 def _load_reference(
     reference: str, directory: Path, ancestry: tuple[Path, ...]
-) -> list[LoadedRule]:
+) -> list[_ConfiguredRule]:
     identity = _built_in_identity(reference)
     if identity in _BUILT_IN_RULESETS:
         return [_built_in_rule(reference) for reference in _BUILT_IN_RULESETS[identity]]
     if identity in _CATALOG:
-        return [_catalog_rule(reference)]
+        return [_ConfiguredRule(_catalog_rule(reference))]
 
     candidate = Path(reference)
     if not candidate.is_absolute():
@@ -362,7 +369,7 @@ def _load_reference(
     return _load_xml(resolved, (*ancestry, resolved))
 
 
-def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[LoadedRule]:
+def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[_ConfiguredRule]:
     try:
         root = ElementTree.parse(path).getroot()
     except (ElementTree.ParseError, OSError) as error:
@@ -370,18 +377,18 @@ def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[LoadedRule]:
     if _tag(root) != "ruleset":
         raise RulesetError(f"Ruleset '{path}' must have a ruleset root element.")
 
-    loaded: dict[str, LoadedRule] = {}
+    loaded: dict[str, _ConfiguredRule] = {}
     for element in root:
         loaded = _merge_ruleset_element(loaded, element, path, ancestry)
     return list(loaded.values())
 
 
 def _merge_ruleset_element(
-    loaded: dict[str, LoadedRule],
+    loaded: dict[str, _ConfiguredRule],
     element: ElementTree.Element,
     path: Path,
     ancestry: tuple[Path, ...],
-) -> dict[str, LoadedRule]:
+) -> dict[str, _ConfiguredRule]:
     if _tag(element) == "exclude":
         return _exclude(loaded, _required_name(element, path))
     if _tag(element) != "rule":
@@ -393,37 +400,42 @@ def _merge_ruleset_element(
     referenced = _without_rule_exclusions(referenced, element, path)
     properties = _properties(element, path)
     _validate_property_names(properties, referenced, reference)
-    return _merge_reference(loaded, referenced, element, path, properties)
+    return _merge(loaded, _overrides(referenced, element, path, properties))
 
 
 def _without_rule_exclusions(
-    referenced: list[LoadedRule], element: ElementTree.Element, path: Path
-) -> list[LoadedRule]:
+    referenced: list[_ConfiguredRule], element: ElementTree.Element, path: Path
+) -> list[_ConfiguredRule]:
     excluded = [_required_name(item, path) for item in element if _tag(item) == "exclude"]
-    referenced_names = {_identity(rule.name) for rule in referenced}
+    referenced_names = {_identity(configured.rule.name) for configured in referenced}
     for name in excluded:
         if _identity(name) not in referenced_names:
             raise RulesetError(f"Unknown rule exclusion '{name}'.")
     excluded_names = {_identity(name) for name in excluded}
-    return [rule for rule in referenced if _identity(rule.name) not in excluded_names]
+    return [configured for configured in referenced if _identity(configured.rule.name) not in excluded_names]
 
 
 def _overrides(
-    rules: Iterable[LoadedRule],
+    rules: Iterable[_ConfiguredRule],
     element: ElementTree.Element,
     path: Path,
     properties: dict[str, str],
-) -> list[LoadedRule]:
+) -> list[_ConfiguredRule]:
     priority = _priority(element, path)
     if priority is None and not properties:
         return list(rules)
     return [
         replace(
-            rule,
-            priority=priority if priority is not None else rule.priority,
-            properties={**rule.properties, **properties},
+            configured,
+            rule=replace(
+                configured.rule,
+                priority=priority if priority is not None else configured.rule.priority,
+                properties={**configured.rule.properties, **properties},
+            ),
+            explicit_priority=configured.explicit_priority or priority is not None,
+            explicit_properties=configured.explicit_properties | frozenset(properties),
         )
-        for rule in rules
+        for configured in rules
     ]
 
 
@@ -457,54 +469,62 @@ def _properties(element: ElementTree.Element, path: Path) -> dict[str, str]:
 
 
 def _validate_property_names(
-    properties: dict[str, str], referenced: list[LoadedRule], reference: str
+    properties: dict[str, str], referenced: list[_ConfiguredRule], reference: str
 ) -> None:
-    known_names = {name for rule in referenced for name in rule.properties}
+    known_names = {name for configured in referenced for name in configured.rule.properties}
     for name in properties:
         if name in known_names:
             continue
         if len(referenced) == 1:
-            target = f"rule '{referenced[0].name}'"
+            target = f"rule '{referenced[0].rule.name}'"
         else:
             target = f"ruleset reference '{reference}'"
         raise RulesetError(f"Unknown property '{name}' for {target}.")
 
 
-def _merge(current: dict[str, LoadedRule], rules: Iterable[LoadedRule]) -> dict[str, LoadedRule]:
+def _merge(
+    current: dict[str, _ConfiguredRule], rules: Iterable[_ConfiguredRule]
+) -> dict[str, _ConfiguredRule]:
     merged = dict(current)
-    for rule in rules:
-        merged[_identity(rule.name)] = rule
+    for configured in rules:
+        identity = _identity(configured.rule.name)
+        previous = merged.get(identity)
+        if previous is None:
+            merged[identity] = configured
+            continue
+        merged[identity] = _ConfiguredRule(
+            rule=replace(
+                previous.rule,
+                priority=(
+                    configured.rule.priority if configured.explicit_priority else previous.rule.priority
+                ),
+                properties={
+                    **previous.rule.properties,
+                    **{name: configured.rule.properties[name] for name in configured.explicit_properties},
+                },
+            ),
+            explicit_priority=previous.explicit_priority or configured.explicit_priority,
+            explicit_properties=previous.explicit_properties | configured.explicit_properties,
+        )
     return merged
 
 
-def _merge_reference(
-    current: dict[str, LoadedRule],
-    referenced: Iterable[LoadedRule],
-    element: ElementTree.Element,
-    path: Path,
-    properties: dict[str, str],
-) -> dict[str, LoadedRule]:
-    merged = dict(current)
-    for rule in referenced:
-        identity = _identity(rule.name)
-        existing = merged.get(identity, rule)
-        merged[identity] = _overrides([existing], element, path, properties)[0]
-    return merged
-
-
-def _exclude(rules: dict[str, LoadedRule], name: str) -> dict[str, LoadedRule]:
+def _exclude(rules: dict[str, _ConfiguredRule], name: str) -> dict[str, _ConfiguredRule]:
     identity = _identity(name)
     if identity not in rules:
         raise RulesetError(f"Unknown rule exclusion '{name}'.")
     return {key: rule for key, rule in rules.items() if key != identity}
 
 
-def _built_in_rule(reference: str | tuple[str, tuple[tuple[str, str], ...]]) -> LoadedRule:
+def _built_in_rule(reference: str | tuple[str, tuple[tuple[str, str], ...]]) -> _ConfiguredRule:
     if isinstance(reference, str):
-        return _catalog_rule(reference)
+        return _ConfiguredRule(_catalog_rule(reference))
     name, properties = reference
     rule = _catalog_rule(name)
-    return replace(rule, properties={**rule.properties, **dict(properties)})
+    return _ConfiguredRule(
+        replace(rule, properties={**rule.properties, **dict(properties)}),
+        explicit_properties=frozenset(name for name, _ in properties),
+    )
 
 
 def _catalog_rule(name: str) -> LoadedRule:
