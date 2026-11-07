@@ -116,6 +116,55 @@ def verify_partial_override(directory: Path) -> bool:
     return passed
 
 
+def verify_partial_policies(directory: Path) -> bool:
+    first = directory / "policy-4-3.xml"
+    later = directory / "later.xml"
+    wrapper = directory / "partial-wrapper.xml"
+    inner = directory / "inner.xml"
+    outer = directory / "outer.xml"
+    wrapper.write_text(
+        '<ruleset><rule ref="policy-4-3.xml"/><rule ref="later.xml"/></ruleset>',
+        encoding="utf-8",
+    )
+    inner.write_text(
+        '<ruleset><rule ref="ExcessiveMethodLength"/><rule ref="later.xml"/></ruleset>',
+        encoding="utf-8",
+    )
+    outer.write_text(
+        '<ruleset><rule ref="policy-4-3.xml"/><rule ref="inner.xml"/></ruleset>',
+        encoding="utf-8",
+    )
+    cases = (
+        ("priority only", "<priority>2</priority>", Policy(2, 3)),
+        ("minimum only", '<properties><property name="minimum" value="5"/></properties>', Policy(4, 5)),
+        (
+            "explicit defaults",
+            '<priority>3</priority><properties><property name="minimum" value="100"/></properties>',
+            Policy(3, 100),
+        ),
+    )
+    passed = True
+    for label, override, expected in cases:
+        later.write_text(
+            f'<ruleset><rule ref="ExcessiveMethodLength">{override}</rule></ruleset>',
+            encoding="utf-8",
+        )
+        for description, references in (
+            ("top level", [str(first), str(later)]),
+            ("nested", [str(wrapper)]),
+            ("twice nested", [str(outer)]),
+        ):
+            rules = load_rulesets(references)
+            actual = [Policy(rule.priority, rule.integer("minimum")) for rule in rules]
+            case_passed = actual == [expected]
+            print(
+                f"Partial policy {label}, {description}: {'PASS' if case_passed else 'FAIL'}: "
+                f"expected={[expected]!r}, actual={actual!r}"
+            )
+            passed = passed and case_passed
+    return passed
+
+
 def verify_symbolic() -> bool:
     contracts = Path(__file__).with_name("contracts.py")
     tree = ast.parse(contracts.read_text(encoding="utf-8"), filename=str(contracts))
@@ -123,7 +172,7 @@ def verify_symbolic() -> bool:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = str(ROOT / "src")
     passed = True
-    for name in ("nested_priority", "nested_minimum"):
+    for name in ("nested_priority", "nested_minimum", "omitted_priority", "omitted_minimum"):
         if name not in lines:
             print(f"CrossHair {name}: ERROR: contract is missing")
             passed = False
@@ -169,8 +218,9 @@ def main() -> int:
         xml_passed = verify_xml(directory)
         cli_passed = verify_cli(directory)
         partial_override_passed = verify_partial_override(directory)
+        partial_policies_passed = verify_partial_policies(directory)
     symbolic_passed = verify_symbolic()
-    return 0 if xml_passed and cli_passed and partial_override_passed and symbolic_passed else 1
+    return 0 if xml_passed and cli_passed and partial_override_passed and partial_policies_passed and symbolic_passed else 1
 
 
 if __name__ == "__main__":
