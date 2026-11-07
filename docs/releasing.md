@@ -81,8 +81,20 @@ stops publication.
 
 ## Safe retries
 
-Manually run **Release standalone executables** with its existing stable `tag`
-input.
+Manually run **Release standalone executables** from a stable tag with the
+existing release tag as its `tag` input. For a normal retry, use the same tag
+for both:
+
+```console
+gh workflow run release.yml --ref vVERSION -f tag=vVERSION
+```
+
+If that tag's workflow is broken, merge a fix and create a new stable release
+tag. Run the corrected workflow from the new tag with the older tag as the
+input. The workflow validates and builds the input tag's source. Hold approval
+of the new tag's automatic run until the older release and its formula update
+are complete. Then publish the newer release, so it remains latest. Keep both
+tag and environment protections in place.
 
 - A matching draft keeps matching assets and uploads only missing assets.
 - A draft containing different bytes or extra assets stops. Automation never
