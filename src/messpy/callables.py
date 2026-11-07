@@ -8,12 +8,16 @@ scopes that enclose it.
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
 from .regions import annotations_are_deferred, evaluated_nodes, lexical_nodes
 
-__all__ = ["CallableNode", "method_receiver", "module_callables"]
+__all__ = [
+    "CallableNode", "has_decorator", "has_property_decorator", "instance_receiver",
+    "is_contract_method", "method_receiver", "module_callables",
+]
 
 _CALLABLE_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
@@ -124,3 +128,71 @@ def _callable_node(
     if isinstance(scope, ast.ClassDef):
         return CallableNode(node, node.name, "method", scope, enclosing)
     return CallableNode(node, node.name, "function", None, enclosing)
+
+
+def instance_receiver(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    """Select state tracked by class rules from the shared receiver identity.
+
+    Keep the existing class-state policy for classmethods and __new__:
+    track self, and track cls only with an explicit classmethod decorator.
+    Ordinary instance methods have no receiver-name restriction.
+    """
+    receiver = method_receiver(method)
+    classmethod = has_decorator(method, "classmethod")
+    if classmethod or method.name == "__new__":
+        return receiver if receiver == "self" or (classmethod and receiver == "cls") else None
+    return receiver
+
+
+def is_contract_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return has_decorator(method, "overload") or _is_stub_body(method.body)
+
+
+def has_property_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return has_decorator(method, "property") or any(
+        isinstance(decorator, ast.Attribute) and decorator.attr in {"getter", "setter", "deleter"}
+        for decorator in method.decorator_list
+    )
+
+
+def has_decorator(method: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    return any(
+        (isinstance(decorator, ast.Name) and decorator.id == name)
+        or (isinstance(decorator, ast.Attribute) and decorator.attr == name)
+        for decorator in method.decorator_list
+    )
+
+
+def _is_stub_body(statements: Sequence[ast.stmt]) -> bool:
+    body = _body_without_docstring(statements)
+    if not body:
+        return True
+    if all(isinstance(statement, ast.Pass) for statement in body):
+        return True
+    return len(body) == 1 and (_is_ellipsis_statement(body[0]) or (
+        isinstance(body[0], ast.Raise) and _raises_not_implemented(body[0])
+    ))
+
+
+def _body_without_docstring(statements: Sequence[ast.stmt]) -> list[ast.stmt]:
+    body = list(statements)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        return body[1:]
+    return body
+
+
+def _is_ellipsis_statement(statement: ast.stmt) -> bool:
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is Ellipsis
+    )
+
+
+def _raises_not_implemented(statement: ast.Raise) -> bool:
+    exception = statement.exc
+    if isinstance(exception, ast.Name):
+        return exception.id == "NotImplementedError"
+    return isinstance(exception, ast.Call) and isinstance(exception.func, ast.Name) and exception.func.id == "NotImplementedError"
