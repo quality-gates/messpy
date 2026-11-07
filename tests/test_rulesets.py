@@ -115,6 +115,89 @@ class RulesetPrecedenceTests(unittest.TestCase):
                         self.assertEqual(priority, rules[0].priority)
                         self.assertEqual(minimum, rules[0].integer("minimum"))
 
+    def test_built_in_rule_override_is_explicit_in_nested_and_direct_references(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            first = directory / "first.xml"
+            wrapper = directory / "wrapper.xml"
+            first.write_text(
+                '<ruleset><rule ref="LongVariable"><priority>4</priority>'
+                '<properties><property name="maximum" value="7"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper.write_text(
+                '<ruleset><rule ref="first.xml"/><rule ref="rulesets/PyThOn.xml"/></ruleset>',
+                encoding="utf-8",
+            )
+            for references in ((str(first), "python"), (str(wrapper),)):
+                with self.subTest(references=references):
+                    rule = next(rule for rule in load_rulesets(references) if rule.name == "LongVariable")
+                    self.assertEqual(4, rule.priority)
+                    self.assertEqual(35, rule.integer("maximum"))
+
+    def test_nested_reference_exclusion_does_not_remove_an_earlier_rule(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "first.xml").write_text(
+                '<ruleset><rule ref="LongVariable"><priority>4</priority>'
+                '<properties><property name="maximum" value="7"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper = directory / "wrapper.xml"
+            wrapper.write_text(
+                '<ruleset><rule ref="first.xml"/><rule ref="python">'
+                '<exclude name="longvariable"/></rule></ruleset>',
+                encoding="utf-8",
+            )
+            rule = next(rule for rule in load_rulesets([str(wrapper)]) if rule.name == "LongVariable")
+            self.assertEqual(4, rule.priority)
+            self.assertEqual(7, rule.integer("maximum"))
+
+    def test_wrapper_overrides_apply_after_the_nested_policy(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            (directory / "nested.xml").write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength"><priority>4</priority>'
+                '<properties><property name="minimum" value="3"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper = directory / "wrapper.xml"
+            wrapper.write_text(
+                '<ruleset><rule ref="nested.xml"><priority>1</priority>'
+                '<properties><property name="minimum" value="5"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            rule, = load_rulesets([str(wrapper)])
+            self.assertEqual(1, rule.priority)
+            self.assertEqual(5, rule.integer("minimum"))
+
+    def test_invalid_earlier_value_fails_even_if_a_later_policy_replaces_it(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            first = directory / "first.xml"
+            second = directory / "second.xml"
+            wrapper = directory / "wrapper.xml"
+            first.write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength">'
+                '<properties><property name="minimum" value="invalid"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            second.write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength">'
+                '<properties><property name="minimum" value="3"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper.write_text(
+                '<ruleset><rule ref="first.xml"/><rule ref="second.xml"/></ruleset>',
+                encoding="utf-8",
+            )
+            for references in ((str(first), str(second)), (str(wrapper),)):
+                with self.subTest(references=references):
+                    with self.assertRaisesRegex(
+                        RulesetError, "ExcessiveMethodLength property 'minimum' must be an integer"
+                    ):
+                        load_rulesets(references)
+
 
 class BuiltInRulesetNamesTests(unittest.TestCase):
     def test_lists_every_documented_built_in_ruleset(self) -> None:
