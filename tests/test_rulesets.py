@@ -74,6 +74,48 @@ class RuleSelectionTests(unittest.TestCase):
                         RuleSelection(rulesets=("codesize",), **{field: priority})
 
 
+class RulesetPrecedenceTests(unittest.TestCase):
+    def test_later_explicit_values_override_at_each_nesting_depth(self) -> None:
+        cases = (
+            ("priority only", "<priority>2</priority>", 2, 3),
+            ("property only", '<properties><property name="minimum" value="5"/></properties>', 4, 5),
+            (
+                "explicit catalog defaults",
+                '<priority>3</priority><properties><property name="minimum" value="100"/></properties>',
+                3,
+                100,
+            ),
+        )
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            first = directory / "first.xml"
+            second = directory / "second.xml"
+            wrapper = directory / "wrapper.xml"
+            outer = directory / "outer.xml"
+            first.write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength"><priority>4</priority>'
+                '<properties><property name="minimum" value="3"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper.write_text(
+                '<ruleset><rule ref="first.xml"/><rule ref="second.xml"/></ruleset>',
+                encoding="utf-8",
+            )
+            outer.write_text('<ruleset><rule ref="wrapper.xml"/></ruleset>', encoding="utf-8")
+            for label, override, priority, minimum in cases:
+                second.write_text(
+                    f'<ruleset><rule ref="ExcessiveMethodLength">{override}</rule></ruleset>',
+                    encoding="utf-8",
+                )
+                for references in ((str(first), str(second)), (str(wrapper),), (str(outer),)):
+                    with self.subTest(case=label, references=references):
+                        rules = load_rulesets(references)
+                        self.assertEqual(1, len(rules))
+                        self.assertEqual("ExcessiveMethodLength", rules[0].name)
+                        self.assertEqual(priority, rules[0].priority)
+                        self.assertEqual(minimum, rules[0].integer("minimum"))
+
+
 class BuiltInRulesetNamesTests(unittest.TestCase):
     def test_lists_every_documented_built_in_ruleset(self) -> None:
         self.assertEqual(
