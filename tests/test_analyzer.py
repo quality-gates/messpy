@@ -84,6 +84,7 @@ class FacadeAcceptanceTests(unittest.TestCase):
         short_name = analyze_source("def broken(:\n", rules=rules, filename="in")
         self.assertEqual("Could not parse: invalid syntax", short_name.errors[0].message)
 
+    @unittest.skipIf(sys.platform == "win32", "Windows cannot remove the current working directory")
     def test_analyze_source_reports_errors_when_working_directory_is_deleted(self) -> None:
         script = (
             "import os, tempfile\n"
@@ -116,7 +117,7 @@ class FacadeAcceptanceTests(unittest.TestCase):
             )
             rules = load_rulesets([str(policy)])
             disk = analyze([source_file], rules=rules)
-            memory = analyze_source(source, rules=rules, filename=source_file, module=("app",))
+            memory = analyze_source(source, rules=rules, filename=source_file.resolve(), module=("app",))
 
         self.assertEqual(disk, memory)
         self.assertEqual(["DomainOuterImport"], [finding.rule_name for finding in memory.findings])
