@@ -107,6 +107,14 @@ for error in analysis.errors:
 
 Suppression directives are applied and recorded on each finding through its `suppressed` flag; reports omit those findings unless `--strict` is set. `analyze` accepts `Path` objects or strings for `paths`, and optional `suffixes`, `exclusions`, and `ignore_tests` mirror the command-line options with the same defaults.
 
+Use `analyze_source` for a source string without file discovery or reading. It accepts the same `rules` and an optional `filename`, which defaults to `<string>`. The filename appears in findings and errors and determines domain path matching. For relative imports, pass the module name as a tuple of components, such as `module=("app", "domain", "orders")`. Without it, the module name is unknown. For a package, use an `__init__.py` filename so relative imports resolve within that package.
+
+```python
+from messpy.analyzer import analyze_source
+
+analysis = analyze_source("def work():\n    pass\n", rules=rules, filename="buffer.py")
+```
+
 ## What gets scanned
 
 - Paths are resolved, walked recursively, normalized to `/`, sorted, and deduplicated so repeated inputs do not double findings.

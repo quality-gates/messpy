@@ -1,27 +1,22 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import atheris
 
 with atheris.instrument_imports(include=["messpy"], enable_loader_override=False):
-    from messpy.analyzer import Analysis, analyze
+    from messpy.analyzer import Analysis, analyze_source
     from messpy.rulesets import RuleSelection, select_rules
     from scan_profile import RULESETS
 
 
+RULE_SELECTIONS = [select_rules(RuleSelection(rulesets=tuple(name.split(",")))) for name in RULESETS]
+
+
 def fuzz_findings(data: bytes) -> None:
     fdp = atheris.FuzzedDataProvider(data)
-    ruleset = fdp.PickValueInList(RULESETS)
-    ignore_tests = fdp.ConsumeBool()
-    source_bytes = fdp.ConsumeBytes(sys.maxsize)
-
-    with TemporaryDirectory() as temporary_directory:
-        source_file = Path(temporary_directory) / "source.py"
-        source_file.write_bytes(source_bytes)
-        rules = select_rules(RuleSelection(rulesets=tuple(ruleset.split(","))))
-        analysis = analyze([source_file], rules=rules, ignore_tests=ignore_tests)
+    rules = fdp.PickValueInList(RULE_SELECTIONS)
+    source = fdp.ConsumeBytes(sys.maxsize).decode("utf-8", errors="replace")
+    analysis = analyze_source(source, rules=rules, filename="source.py")
 
     assert isinstance(analysis, Analysis)
     for finding in analysis.findings:

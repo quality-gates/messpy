@@ -37,7 +37,7 @@ from .reachability import constant_truth, live_statements
 from .syntax import dotted_name, module_nodes, parent_map, root_name
 
 
-__all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "SourceFile", "analyze"]
+__all__ = ["DEFAULT_SUFFIXES", "Analysis", "Finding", "ProcessingError", "SourceFile", "analyze", "analyze_source"]
 
 DEFAULT_SUFFIXES = frozenset({".py", ".pyi"})
 
@@ -70,6 +70,32 @@ def analyze(
     source_files, discovery_errors = _source_files(input_paths, suffixes, exclusions, ignore_tests)
     findings, processing_errors = _analyze(source_files, rules)
     return Analysis(findings=tuple(findings), errors=tuple([*discovery_errors, *processing_errors]))
+
+
+def analyze_source(
+    source: str,
+    *,
+    rules: Sequence[LoadedRule],
+    filename: str | Path = "<string>",
+    module: tuple[str, ...] | None = None,
+) -> Analysis:
+    path = Path(filename)
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as error:
+        message = _format_syntax_error("Could not parse", error, path)
+        return Analysis((), (ProcessingError(path, error.lineno or 1, message),))
+    except (RecursionError, MemoryError, ValueError, UnicodeError) as error:
+        return Analysis((), (ProcessingError(path, 1, f"Could not process: {_format_exception(error, path)}"),))
+
+    try:
+        findings = _apply_suppressions(source, tree, _findings(SourceFile(path, module), source, tree, rules))
+        return Analysis(tuple(findings), ())
+    except SyntaxError as error:
+        message = _format_syntax_error("Could not analyze", error, path)
+        return Analysis((), (ProcessingError(path, error.lineno or 1, message),))
+    except (RecursionError, MemoryError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
+        return Analysis((), (ProcessingError(path, 1, f"Could not process: {_format_exception(error, path)}"),))
 
 
 METHOD_LENGTH_RULE_NAME = "ExcessiveMethodLength"
@@ -468,25 +494,15 @@ class PrivateMemberUsage:
 def _sanitize_diagnostic_message(message: str, path: Path | None = None) -> str:
     candidates: list[str] = []
     if path is not None:
-        resolved = path.resolve()
-        candidates.extend(
-            [
-                f" for {str(resolved)!r}",
-                f" for {resolved.as_posix()!r}",
-                f" for {str(path)!r}",
-                f" for {path.as_posix()!r}",
-                f": {str(resolved)!r}",
-                f": {resolved.as_posix()!r}",
-                f": {str(path)!r}",
-                f": {path.as_posix()!r}",
-                str(resolved),
-                resolved.as_posix(),
-                str(path),
-                path.as_posix(),
-            ]
-        )
-    cwd = Path.cwd().resolve()
-    candidates.extend([str(cwd), cwd.as_posix()])
+        candidates.extend([f" for {str(path)!r}", f": {str(path)!r}"])
+        if path.is_absolute():
+            candidates.extend([str(path), path.as_posix()])
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        cwd = None
+    if cwd is not None:
+        candidates.extend([str(cwd), cwd.as_posix()])
     for candidate in candidates:
         if candidate and candidate in message:
             message = message.replace(candidate, "")
@@ -522,10 +538,9 @@ def _analyze(
     processing_errors: list[ProcessingError] = []
     for source_file in source_files:
         try:
-            identity = SourceFile(source_file, _module_name(source_file))
+            module = _module_name(source_file)
             with tokenize.open(source_file) as source_handle:
                 source = source_handle.read()
-            tree = ast.parse(source, filename=str(source_file))
         except SyntaxError as error:
             line = error.lineno or 1
             processing_errors.append(
@@ -537,20 +552,9 @@ def _analyze(
                 ProcessingError(source_file, 1, f"Could not process: {_format_exception(error, source_file)}")
             )
             continue
-        try:
-            findings.extend(_apply_suppressions(source, tree, _findings(identity, source, tree, rules)))
-        except SyntaxError as error:
-            # ast.parse() above accepts some sources (e.g. duplicate parameter
-            # names) that symtable.symtable() rejects; rules that build symbol
-            # tables can hit this second, stricter parse.
-            line = error.lineno or 1
-            processing_errors.append(
-                ProcessingError(source_file, line, _format_syntax_error("Could not analyze", error, source_file))
-            )
-        except (RecursionError, MemoryError, tokenize.TokenError, ValueError, OSError, UnicodeError) as error:
-            processing_errors.append(
-                ProcessingError(source_file, 1, f"Could not process: {_format_exception(error, source_file)}")
-            )
+        result = analyze_source(source, rules=rules, filename=source_file, module=module)
+        findings.extend(result.findings)
+        processing_errors.extend(result.errors)
     return findings, processing_errors
 
 
