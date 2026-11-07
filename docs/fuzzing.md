@@ -11,7 +11,7 @@ messpy’s analyzer is a parser-facing surface: random and hostile bytes should 
 - `FORMATS` comes from `messpy.cli.REPORT_FORMATS`.
 - `run_scan()` and `run_command()` run the command and reject any exit status other than 0, 1 or 2.
 
-A findings-level target, `fuzz/fuzz_findings.py`, drives the same input through `messpy.analyzer.analyze()` with no render step and asserts the `Analysis` invariants (finding and error shapes) directly.
+The findings-level target, `fuzz/fuzz_findings.py`, decodes input as UTF-8 with replacement and passes the string to `messpy.analyzer.analyze_source()`. It checks `Analysis` invariants without a render step. The command target still exercises source encoding detection and discovery.
 
 ## Run a campaign
 

@@ -5,6 +5,7 @@ from io import StringIO
 import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from messpy.analyzer import DEFAULT_SUFFIXES, Analysis, Finding, ProcessingError, analyze
+from messpy.analyzer import DEFAULT_SUFFIXES, Analysis, Finding, ProcessingError, analyze, analyze_source
 from messpy.cli import run
 from messpy.rulesets import load_rulesets
 
@@ -60,6 +61,66 @@ def _analysis_entries(analysis: Analysis, include_suppressed: bool = False) -> s
 
 
 class FacadeAcceptanceTests(unittest.TestCase):
+    def test_analyze_source_preserves_filename_and_suppressions(self) -> None:
+        source = "# messpy-disable-next-line ExcessiveMethodLength\n" + _long_function("waived_run")
+        result = analyze_source(source, rules=load_rulesets(["codesize"]), filename="buffer.py")
+
+        self.assertEqual((), result.errors)
+        self.assertEqual(
+            [(Path("buffer.py"), 2, "ExcessiveMethodLength", True)],
+            [(item.path, item.line, item.rule_name, item.suppressed) for item in result.findings],
+        )
+
+    def test_analyze_source_returns_parse_and_analysis_errors(self) -> None:
+        rules = load_rulesets(["unusedcode"])
+        malformed = analyze_source("def broken(:\n", rules=rules)
+        duplicate = analyze_source("def f(x, x):\n    pass\n", rules=rules, filename="buffer.py")
+
+        self.assertEqual(Path("<string>"), malformed.errors[0].path)
+        self.assertEqual(1, malformed.errors[0].line)
+        self.assertIn("Could not parse", malformed.errors[0].message)
+        self.assertEqual(Path("buffer.py"), duplicate.errors[0].path)
+        self.assertIn("Could not analyze", duplicate.errors[0].message)
+        short_name = analyze_source("def broken(:\n", rules=rules, filename="in")
+        self.assertEqual("Could not parse: invalid syntax", short_name.errors[0].message)
+
+    def test_analyze_source_reports_errors_when_working_directory_is_deleted(self) -> None:
+        script = (
+            "import os, tempfile\n"
+            "from messpy.analyzer import analyze_source\n"
+            "d = tempfile.mkdtemp()\n"
+            "os.chdir(d)\n"
+            "os.rmdir(d)\n"
+            "result = analyze_source('def f(:\\n', rules=[])\n"
+            "print(result.errors[0].message)\n"
+        )
+        env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("Could not parse: invalid syntax\n", result.stdout)
+
+    def test_analyze_source_matches_package_file_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            project = Path(temporary_directory)
+            package = project / "app"
+            package.mkdir()
+            source_file = package / "__init__.py"
+            source = "from . import infra\n"
+            source_file.write_text(source, encoding="utf-8")
+            policy = project / "policy.xml"
+            policy.write_text(
+                '<ruleset name="test"><rule ref="onion"><properties>'
+                '<property name="domain" value="*" />'
+                '<property name="outer-layers" value="app.infra" />'
+                '</properties></rule></ruleset>', encoding="utf-8"
+            )
+            rules = load_rulesets([str(policy)])
+            disk = analyze([source_file], rules=rules)
+            memory = analyze_source(source, rules=rules, filename=source_file, module=("app",))
+
+        self.assertEqual(disk, memory)
+        self.assertEqual(["DomainOuterImport"], [finding.rule_name for finding in memory.findings])
+
     def test_analyze_matches_the_rendered_text_report(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             project = Path(temporary_directory)

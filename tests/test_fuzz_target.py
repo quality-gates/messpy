@@ -133,6 +133,19 @@ class SourceAnalysisReplayAcceptanceTests(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("atheris"), "Atheris is not installed")
 class SourceAnalysisFuzzTargetAcceptanceTests(unittest.TestCase):
+    def test_bounded_findings_fuzz_command_completes(self) -> None:
+        environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+        with TemporaryDirectory() as temporary_directory:
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "fuzz/fuzz_findings.py"), "-runs=20"],
+                cwd=temporary_directory,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_bounded_source_analysis_fuzz_command_completes(self) -> None:
         environment = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
 
