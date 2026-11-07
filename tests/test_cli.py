@@ -1628,6 +1628,42 @@ class CommandAcceptanceTests(unittest.TestCase):
         )
         self.assertEqual("", stderr.getvalue())
 
+    def test_nested_rulesets_apply_later_policy_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary = Path(temporary_directory)
+            source = temporary / "short.py"
+            first = temporary / "first.xml"
+            second = temporary / "second.xml"
+            wrapper = temporary / "wrapper.xml"
+            source.write_text(_function_with_passes("short", 3), encoding="utf-8")
+            first.write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength"><priority>4</priority>'
+                '<properties><property name="minimum" value="50"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            second.write_text(
+                '<ruleset><rule ref="ExcessiveMethodLength"><priority>2</priority>'
+                '<properties><property name="minimum" value="3"/></properties></rule></ruleset>',
+                encoding="utf-8",
+            )
+            wrapper.write_text(
+                '<ruleset><rule ref="first.xml"/><rule ref="second.xml"/></ruleset>',
+                encoding="utf-8",
+            )
+            expected = (
+                f"{source.resolve().as_posix()}:1: ExcessiveMethodLength "
+                "[priority 2] The function short() has 4 lines of code. "
+                "Current threshold is set to 3. Avoid really long methods.\n"
+            )
+            for rulesets in (f"{first},{second}", str(wrapper)):
+                with self.subTest(rulesets=rulesets):
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    result = run([str(source), "text", rulesets], stdout, stderr)
+                    self.assertEqual(2, result)
+                    self.assertEqual(expected, stdout.getvalue())
+                    self.assertEqual("", stderr.getvalue())
+
     def test_nested_ruleset_and_filters_select_only_loaded_rules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary = Path(temporary_directory)
