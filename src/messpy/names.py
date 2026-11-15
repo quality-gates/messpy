@@ -127,16 +127,17 @@ class _ResolvedName:
 class _NameLookup:
     name: str
     scopes: tuple[ast.AST, ...]
+    position: int = 0
 
     def advance(self, names: Names) -> _NameLookup | _ResolvedName:
-        record = names._records[id(self.scopes[0])]
-        if len(self.scopes) == 1:
+        record = names._records[id(self.scopes[self.position])]
+        if self.position == len(self.scopes) - 1:
             return _ResolvedName(record, self.name in record.bound)
         if self.name in record.global_names:
-            return _NameLookup(self.name, self.scopes[-1:])
+            return _NameLookup(self.name, self.scopes, len(self.scopes) - 1)
         if self.name not in record.nonlocal_names and self.name in record.bound:
             return _ResolvedName(record, True)
-        return _NameLookup(self.name, self.scopes[1:])
+        return _NameLookup(self.name, self.scopes, self.position + 1)
 
 
 def _resolved_record(names: Names, name: str, scopes: list[ast.AST]) -> _ResolvedName:

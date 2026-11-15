@@ -280,12 +280,13 @@ class _CallableBinding:
 class _CallableLookup:
     name: str
     scopes: tuple[int, ...]
+    position: int = 0
 
     def advance(self, index: _CallableIndex) -> _CallableLookup | _CallableBinding | _LookupStop:
-        if not self.scopes:
+        if self.position == len(self.scopes):
             return _LookupStop.UNBOUND
-        scope_id = self.scopes[0]
-        following = _CallableLookup(self.name, self.scopes[1:])
+        scope_id = self.scopes[self.position]
+        following = _CallableLookup(self.name, self.scopes, self.position + 1)
         if scope_id in index.class_ids:
             return following
         if self.name in index.declarations.globals.get(scope_id, ()):
