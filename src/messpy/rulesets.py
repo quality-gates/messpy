@@ -287,16 +287,51 @@ def built_in_ruleset_names() -> tuple[str, ...]:
     return tuple(_BUILT_IN_RULESETS)
 
 
+@dataclass(frozen=True)
+class _RulesetContext:
+    directory: Path
+    ancestry: tuple[Path, ...] = ()
+
+    def enter(self, path: Path) -> _RulesetContext:
+        resolved = path.resolve()
+        if resolved in self.ancestry:
+            raise RulesetError(f"Ruleset reference cycle at '{resolved}'.")
+        return _RulesetContext(resolved.parent, (*self.ancestry, resolved))
+
+
+@dataclass(frozen=True)
+class _RuleConfiguration:
+    rules: dict[str, _ConfiguredRule] = field(default_factory=dict)
+
+    def include(self, referenced: Iterable[_ConfiguredRule]) -> _RuleConfiguration:
+        return _RuleConfiguration(_merge(self.rules, referenced))
+
+    def apply(
+        self, element: ElementTree.Element, path: Path, context: _RulesetContext
+    ) -> _RuleConfiguration:
+        if _tag(element) == "exclude":
+            return _RuleConfiguration(_exclude(self.rules, _required_name(element, path)))
+        if _tag(element) != "rule":
+            return self
+        reference = element.get("ref")
+        if not reference:
+            raise RulesetError(f"Rule reference in '{path}' is missing ref.")
+        referenced = _without_rule_exclusions(_load_reference(reference, context), element, path)
+        properties = _properties(element, path)
+        _validate_property_names(properties, referenced, reference)
+        return self.include(_overrides(referenced, element, path, properties))
+
+
 def load_rulesets(references: Iterable[str]) -> list[LoadedRule]:
-    loaded: dict[str, _ConfiguredRule] = {}
+    configuration = _RuleConfiguration()
     for reference in references:
         try:
-            loaded = _merge(loaded, _load_reference(reference, Path.cwd(), ()))
+            configuration = configuration.include(_load_reference(reference, _RulesetContext(Path.cwd())))
         except RulesetError as error:
             if str(error) == f"Unknown ruleset reference '{reference}'.":
                 raise RulesetError(f"Unknown ruleset '{reference}'.") from error
             raise
-    rules = [configured.rule for configured in loaded.values()]
+    rules = [configured.rule for configured in configuration.rules.values()]
     _validate_required_items(rules)
     return rules
 
@@ -350,7 +385,7 @@ def _rule_is_selected(
 
 
 def _load_reference(
-    reference: str, directory: Path, ancestry: tuple[Path, ...]
+    reference: str, context: _RulesetContext
 ) -> list[_ConfiguredRule]:
     identity = _built_in_identity(reference)
     if identity in _BUILT_IN_RULESETS:
@@ -360,16 +395,14 @@ def _load_reference(
 
     candidate = Path(reference)
     if not candidate.is_absolute():
-        candidate = directory / candidate
+        candidate = context.directory / candidate
     if not candidate.is_file():
         raise RulesetError(f"Unknown ruleset reference '{reference}'.")
-    resolved = candidate.resolve()
-    if resolved in ancestry:
-        raise RulesetError(f"Ruleset reference cycle at '{resolved}'.")
-    return _load_xml(resolved, (*ancestry, resolved))
+    entered = context.enter(candidate)
+    return _load_xml(entered.ancestry[-1], entered)
 
 
-def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[_ConfiguredRule]:
+def _load_xml(path: Path, context: _RulesetContext) -> list[_ConfiguredRule]:
     try:
         root = ElementTree.parse(path).getroot()
     except (ElementTree.ParseError, OSError) as error:
@@ -377,30 +410,10 @@ def _load_xml(path: Path, ancestry: tuple[Path, ...]) -> list[_ConfiguredRule]:
     if _tag(root) != "ruleset":
         raise RulesetError(f"Ruleset '{path}' must have a ruleset root element.")
 
-    loaded: dict[str, _ConfiguredRule] = {}
+    configuration = _RuleConfiguration()
     for element in root:
-        loaded = _merge_ruleset_element(loaded, element, path, ancestry)
-    return list(loaded.values())
-
-
-def _merge_ruleset_element(
-    loaded: dict[str, _ConfiguredRule],
-    element: ElementTree.Element,
-    path: Path,
-    ancestry: tuple[Path, ...],
-) -> dict[str, _ConfiguredRule]:
-    if _tag(element) == "exclude":
-        return _exclude(loaded, _required_name(element, path))
-    if _tag(element) != "rule":
-        return loaded
-    reference = element.get("ref")
-    if not reference:
-        raise RulesetError(f"Rule reference in '{path}' is missing ref.")
-    referenced = _load_reference(reference, path.parent, ancestry)
-    referenced = _without_rule_exclusions(referenced, element, path)
-    properties = _properties(element, path)
-    _validate_property_names(properties, referenced, reference)
-    return _merge(loaded, _overrides(referenced, element, path, properties))
+        configuration = configuration.apply(element, path, context)
+    return list(configuration.rules.values())
 
 
 def _without_rule_exclusions(
