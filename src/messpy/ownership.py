@@ -237,7 +237,7 @@ class _State(Mapping[str, Storage]):
     heap: _LayeredMap = field(default_factory=_LayeredMap)
     evaluated: _LayeredMap = field(default_factory=_LayeredMap)
     result: Storage = field(default_factory=lambda: Storage(kinds=frozenset()))
-    calls: Mapping[tuple, tuple[Storage, Mapping, Mapping]] = field(default_factory=dict, compare=False)
+    calls: Mapping[tuple, _CallMemo] = field(default_factory=dict, compare=False)
 
     def __getitem__(self, name: str) -> Storage:
         return self.cells[self.names[name]]
@@ -247,6 +247,42 @@ class _State(Mapping[str, Storage]):
 
     def __len__(self) -> int:
         return len(self.names)
+
+    def begin(self, node: ast.AST) -> _State:
+        if id(node) not in self.evaluated:
+            return self
+        return replace(self, evaluated=_without(self.evaluated, id(node)))
+
+    def remember(self, node: ast.AST, value: Storage) -> _State:
+        return replace(self, evaluated=_with_entry(self.evaluated, id(node), value))
+
+
+@dataclass(frozen=True)
+class _CallMemo:
+    result: Storage
+    cells: Mapping[_Cell, Storage]
+    heap: Mapping[tuple[int, ...], Storage]
+
+    @classmethod
+    def capture(cls, call: ast.Call, before: _State, after: _State) -> _CallMemo:
+        cells = {key: value for key, value in after.cells.items() if before.cells.get(key) is not value}
+        heap = {key: value for key, value in after.heap.items() if before.heap.get(key) is not value}
+        return cls(after.evaluated[id(call)], cells, heap)
+
+    def replay(self, call: ast.Call, state: _State) -> _State:
+        restored = replace(state, cells={**state.cells, **self.cells}, heap=_with_entries(state.heap, self.heap))
+        return restored.remember(call, self.result)
+
+
+@dataclass(frozen=True)
+class _HeapPath:
+    visited: frozenset[tuple[int, ...]] = frozenset()
+
+    def remaining(self, value: Storage) -> frozenset[tuple[int, ...]]:
+        return value.references - self.visited
+
+    def descend(self, value: Storage) -> _HeapPath:
+        return _HeapPath(self.visited | value.references)
 
 
 @dataclass(frozen=True)
@@ -330,13 +366,13 @@ def _value(expression: ast.AST, view: _View) -> Storage:
     return Storage(opaque=True)
 
 
-def _resolved(storage: Storage, heap: Mapping[tuple[int, ...], Storage], seen: frozenset[tuple[int, ...]] = frozenset()) -> Storage:
-    references = storage.references - seen
+def _resolved(storage: Storage, heap: Mapping[tuple[int, ...], Storage], path: _HeapPath = _HeapPath()) -> Storage:
+    references = path.remaining(storage)
     if references:
         values = [heap.get(reference, Storage(opaque=True)) for reference in references]
         storage = replace(_joined(values), references=storage.references)
-        seen |= references
-    children = tuple((key, _resolved(value, heap, seen)) for key, value in storage.slots)
+        path = path.descend(storage)
+    children = tuple((key, _resolved(value, heap, path)) for key, value in storage.slots)
     if not children:
         return storage
     reachable = frozenset(origin for _, child in children for origin in child.everything)
@@ -602,6 +638,52 @@ class _Flow:
 
 
 @dataclass(frozen=True)
+class _TraceFrame:
+    trace: tuple
+    position: int = 0
+
+
+@dataclass(frozen=True)
+class _ObservationReplay:
+    pending: tuple[_TraceFrame, ...] = ()
+
+    def descend(self, trace: tuple) -> _ObservationReplay:
+        return _ObservationReplay((*self.pending, _TraceFrame(trace))) if trace else self
+
+    def advance(self) -> tuple[_Seen | None, _ObservationReplay]:
+        frame = self.pending[-1]
+        item = frame.trace[frame.position]
+        pending = self.pending[:-1]
+        if frame.position + 1 < len(frame.trace):
+            pending = (*pending, replace(frame, position=frame.position + 1))
+        remaining = _ObservationReplay(pending)
+        if isinstance(item, _Seen):
+            return item, remaining
+        return None, remaining.descend(item)
+
+
+@dataclass(frozen=True)
+class _LoopRound:
+    head: _State
+    entered: _Flow
+    body: _Flow
+    joined: _State
+
+    @classmethod
+    def evaluate(cls, node: ast.For | ast.AsyncFor | ast.While, head: _State, context: _Context) -> _LoopRound:
+        entered = _loop_entry(node, head, context)
+        body = _block(node.body, entered.bindings, context)
+        return cls(head, entered, body, _join_bindings(head, body.bindings, context))
+
+    @property
+    def converged(self) -> bool:
+        return self.joined == self.head
+
+    def advance(self, node: ast.For | ast.AsyncFor | ast.While, context: _Context) -> _LoopRound:
+        return _LoopRound.evaluate(node, self.joined, context)
+
+
+@dataclass(frozen=True)
 class _Context:
     body: CallableBody
     program: OwnershipProgram
@@ -685,13 +767,11 @@ def _visit_body(callable_node, bindings: _State, context: _Context) -> _Flow:
 
 def _observations(trace) -> dict[int, _State]:
     observed: dict[int, _State] = {}
-    pending = [trace]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, _Seen):
-            observed[item.node] = item.bindings
-        else:
-            pending.extend(reversed(item))
+    replay = _ObservationReplay().descend(trace)
+    while replay.pending:
+        seen, replay = replay.advance()
+        if seen is not None:
+            observed[seen.node] = seen.bindings
     return observed
 
 
@@ -700,8 +780,7 @@ def _then(*traces) -> tuple:
 
 
 def _visit(node: ast.AST, bindings: _State, context: _Context) -> _Flow:
-    if id(node) in bindings.evaluated:
-        bindings = replace(bindings, evaluated=_without(bindings.evaluated, id(node)))
+    bindings = bindings.begin(node)
     seen = _Seen(id(node), bindings)
     handler = _STATEMENT_HANDLERS.get(type(node), _visit_children)
     flow = handler(node, bindings, context)
@@ -781,14 +860,11 @@ def _visit_loop(node: ast.For | ast.AsyncFor | ast.While, bindings, context) -> 
         orelse = _block(node.orelse, test.bindings, context)
         return _Flow(orelse.bindings, _then(test.trace, orelse.trace))
     head = _visit(node.iter, bindings, context) if not isinstance(node, ast.While) else _Flow(bindings)
-    current = head.bindings
-    while True:
-        entered = _loop_entry(node, current, context)
-        body = _block(node.body, entered.bindings, context)
-        updated = _join_bindings(current, body.bindings, context)
-        if updated == current:
-            break
-        current = updated
+    iteration = _LoopRound.evaluate(node, head.bindings, context)
+    while not iteration.converged:
+        iteration = iteration.advance(node, context)
+    current = iteration.head
+    entered, body = iteration.entered, iteration.body
     if truth:
         return _Flow(current, _then(head.trace, entered.trace, body.trace))
     orelse = _block(node.orelse, current, context)
@@ -976,12 +1052,12 @@ def _call_closures(node: ast.Call, state: _State, context: _Context) -> frozense
 def _execute(closure: _Closure, call: ast.Call, state: _State, context: _Context) -> _State:
     body = context.program.bodies.get(id(closure.node))
     if body is None or body.cold or body.transformed:
-        return _cached(call, Storage(opaque=True), state)
+        return state.remember(call, Storage(opaque=True))
     if id(body.node) in context.active or len(context.active) >= _MAX_CALL_DEPTH:
         return _uncertain_execution(closure, call, state, context)
     values = _bound_values(body, call, state, context)
     if values is None:
-        return _cached(call, Storage(opaque=True), _invalidate_passed_slots(call, state, context))
+        return _invalidate_passed_slots(call, state, context).remember(call, Storage(opaque=True))
     return _memo_execution(body, closure, call, values, state, context)
 
 
@@ -991,12 +1067,9 @@ def _memo_execution(body: CallableBody, closure: _Closure, call: ast.Call, value
     key = (id(body.node), tuple(sorted(values.items())), context.active)
     cached = state.calls.get(key)
     if cached is not None:
-        cached_result, cell_delta, heap_delta = cached
-        return _cached(call, cached_result, replace(state, cells={**state.cells, **cell_delta}, heap=_with_entries(state.heap, heap_delta)))
+        return cached.replay(call, state)
     result = _execute_body(body, closure, call, values, state, context)
-    cell_delta = {k: v for k, v in result.cells.items() if state.cells.get(k) is not v}
-    heap_delta = {k: v for k, v in result.heap.items() if state.heap.get(k) is not v}
-    return replace(result, calls={**result.calls, key: (result.evaluated[id(call)], cell_delta, heap_delta)})
+    return replace(result, calls={**result.calls, key: _CallMemo.capture(call, state, result)})
 
 
 def _escaping_cells(storage: Storage) -> set[_Cell]:
@@ -1019,7 +1092,7 @@ def _execute_body(body: CallableBody, closure: _Closure, call: ast.Call, values:
         if cell in escaping or cell.activation[:len(activation)] != activation
     }
     restored = replace(output, names=state.names, cells=retained_cells, evaluated=state.evaluated, result=state.result, calls=output.calls)
-    return _cached(call, output.result if output.result.kinds else Storage(kinds=frozenset({"NoneType"})), restored)
+    return restored.remember(call, output.result if output.result.kinds else Storage(kinds=frozenset({"NoneType"})))
 
 
 def _uncertain_execution(closure: _Closure, call: ast.Call, state: _State, context: _Context) -> _State:
@@ -1030,23 +1103,19 @@ def _uncertain_execution(closure: _Closure, call: ast.Call, state: _State, conte
     captures = {cell: state.cells[cell] for _, cell in closure.bindings if cell in state.cells}
     values.extend(_resolved(value, state.heap) for value in captures.values())
     for value in values:
-        state = _uncertain_storage(value, state, frozenset())
+        state = _uncertain_storage(value, state, _HeapPath())
     cells = {**state.cells, **{cell: value.join(Storage(opaque=True)) for cell, value in captures.items()}}
-    return _cached(call, Storage(opaque=True), replace(state, cells=cells))
+    return replace(state, cells=cells).remember(call, Storage(opaque=True))
 
 
-def _uncertain_storage(value: Storage, state: _State, seen: frozenset[tuple[int, ...]]) -> _State:
-    references = value.references - seen
+def _uncertain_storage(value: Storage, state: _State, path: _HeapPath) -> _State:
+    references = path.remaining(value)
     if value.references and not references:
         return state
     for _, child in value.slots:
-        state = _uncertain_storage(child, state, seen | references)
+        state = _uncertain_storage(child, state, path.descend(value))
     uncertain = replace(value, opaque=True, deep=True, slots=(), indexed=False)
     return _update_aliases(state, value, uncertain)
-
-
-def _cached(node: ast.AST, value: Storage, state: _State) -> _State:
-    return replace(state, evaluated=_with_entry(state.evaluated, id(node), value))
 
 
 def _bound_values(body: CallableBody, call: ast.Call, state: _State, context: _Context) -> dict[str, Storage] | None:
@@ -1150,27 +1219,44 @@ def _invalidated_slots(node: ast.Call, bindings: _State, context: _Context) -> _
     return _update_aliases(bindings, current, Storage(current.outer, current.reachable, current.kinds, opaque=True))
 
 
-def _visit_comprehension(node: ast.expr, bindings, context) -> _Flow:
-    # The targets of a comprehension belong to its own scope. A walrus target belongs to the enclosing callable.
-    inner = bindings
-    traces = []
-    for generator in node.generators:
-        iterated = _visit(generator.iter, inner, context)
+@dataclass(frozen=True)
+class _ComprehensionFrame:
+    outer: _State
+    inner: _State
+    traces: tuple = ()
+    active: bool = True
+
+    def advance(self, generator: ast.comprehension, context: _Context) -> _ComprehensionFrame:
+        iterated = _visit(generator.iter, self.inner, context)
         element = Storage(opaque=True) if generator.is_async else _elements(context.value(generator.iter, iterated.bindings))
         target = _visit(generator.target, iterated.bindings, context)
-        inner = _bind(generator.target, element, target.bindings, context)
-        tests = _sequence(generator.ifs, inner, context)
-        inner = tests.bindings
-        traces.extend([_Seen(id(generator), iterated.bindings), iterated.trace, target.trace, tests.trace])
-        if any(constant_truth(test) is False for test in generator.ifs):
+        entered = _bind(generator.target, element, target.bindings, context)
+        tests = _sequence(generator.ifs, entered, context)
+        traces = (*self.traces, _Seen(id(generator), iterated.bindings), iterated.trace, target.trace, tests.trace)
+        active = not any(constant_truth(test) is False for test in generator.ifs)
+        return replace(self, inner=tests.bindings, traces=traces, active=active)
+
+    def result(self, node: ast.expr, context: _Context) -> _ComprehensionFrame:
+        results = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
+        return replace(self, traces=(*self.traces, _sequence(results, self.inner, context).trace))
+
+    def leave(self, node: ast.expr, context: _Context) -> _Flow:
+        bindings = self.outer
+        walrus = {target.target.id for target in ast.walk(node) if isinstance(target, ast.NamedExpr)}
+        for name in walrus:
+            bindings = _bound(bindings, name, Storage(opaque=True), context)
+        return _Flow(bindings, _then(*self.traces))
+
+
+def _visit_comprehension(node: ast.expr, bindings, context) -> _Flow:
+    frame = _ComprehensionFrame(bindings, bindings)
+    for generator in node.generators:
+        frame = frame.advance(generator, context)
+        if not frame.active:
             break
     else:
-        results = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
-        traces.append(_sequence(results, inner, context).trace)
-    walrus = {target.target.id for target in ast.walk(node) if isinstance(target, ast.NamedExpr)}
-    for name in walrus:
-        bindings = _bound(bindings, name, Storage(opaque=True), context)
-    return _Flow(bindings, _then(*traces))
+        frame = frame.result(node, context)
+    return frame.leave(node, context)
 
 
 _STATEMENT_HANDLERS = MappingProxyType({

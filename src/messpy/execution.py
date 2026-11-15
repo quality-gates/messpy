@@ -4,6 +4,7 @@ import ast
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import Enum, auto
 
 from .regions import evaluated_nodes
 from .ownership import Ownership, Storage
@@ -14,6 +15,26 @@ class Execution:
     target: ast.AST
     creation: ast.Call
     site: ast.AST
+
+
+class _DeferredStatus(Enum):
+    ORDINARY = auto()
+    UNKNOWN = auto()
+
+
+@dataclass(frozen=True)
+class _DeferredCall:
+    target: ast.AST
+    creation: ast.Call
+
+
+_DeferredValue = _DeferredStatus | _DeferredCall
+
+
+def _deferred_assignment(previous: _DeferredValue, assigned: _DeferredValue, writes: int) -> _DeferredValue:
+    if writes == 1:
+        return assigned
+    return _DeferredStatus.UNKNOWN if assigned is not _DeferredStatus.ORDINARY else previous
 
 
 def effect_site(node: ast.AST) -> ast.AST:
@@ -44,9 +65,9 @@ def executions(
     for node in nodes:
         for value in _forced_values(node, qualified):
             deferred = _deferred_value(value, values, resolve)
-            if deferred:
-                found.extend(Execution(target, creation, effect_site(node)) for target, creation in deferred)
-            elif isinstance(node, ast.Await) or deferred is None and not _ordinary_iterable(ownership.value(value, node)):
+            if isinstance(deferred, _DeferredCall):
+                found.append(Execution(deferred.target, deferred.creation, effect_site(node)))
+            elif isinstance(node, ast.Await) or deferred is _DeferredStatus.UNKNOWN and not _ordinary_iterable(ownership.value(value, node)):
                 unknown.append(effect_site(node))
     return tuple(found), tuple(unknown)
 
@@ -65,18 +86,15 @@ def _forced_values(node: ast.AST, qualified) -> tuple[ast.expr, ...]:
     return ()
 
 
-def _deferred_bindings(nodes: Sequence[ast.AST], resolve) -> dict[str, tuple[tuple[ast.AST, ast.Call], ...] | None]:
+def _deferred_bindings(nodes: Sequence[ast.AST], resolve) -> dict[str, _DeferredValue]:
     writes = Counter(node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)))
-    values = {}
+    values: dict[str, _DeferredValue] = {}
     for node in nodes:
         pair = _assignment(node)
         if pair is not None:
             name, expression = pair
-            deferred = _deferred_value(expression, values, resolve)
-            if writes[name] == 1:
-                values[name] = deferred
-            elif deferred != ():
-                values[name] = None
+            previous = values.get(name, _DeferredStatus.ORDINARY)
+            values[name] = _deferred_assignment(previous, _deferred_value(expression, values, resolve), writes[name])
     return values
 
 
@@ -88,25 +106,25 @@ def _assignment(node: ast.AST) -> tuple[str, ast.expr] | None:
     return None
 
 
-def _deferred_value(expression: ast.expr, values, resolve) -> tuple[tuple[ast.AST, ast.Call], ...] | None:
+def _deferred_value(expression: ast.expr, values: dict[str, _DeferredValue], resolve) -> _DeferredValue:
     if isinstance(expression, ast.Name):
-        return values.get(expression.id, ())
+        return values.get(expression.id, _DeferredStatus.ORDINARY)
     if isinstance(expression, ast.GeneratorExp):
         call = ast.copy_location(ast.Call(func=expression, args=[], keywords=[]), expression)
-        return ((expression, call),)
+        return _DeferredCall(expression, call)
     if isinstance(expression, ast.Call):
         return _deferred_call(expression, resolve(expression))
-    return ()
+    return _DeferredStatus.ORDINARY
 
 
-def _deferred_call(expression: ast.Call, target: ast.AST | None) -> tuple[tuple[ast.AST, ast.Call], ...]:
+def _deferred_call(expression: ast.Call, target: ast.AST | None) -> _DeferredValue:
     if target is not None and cold_body(target):
-        return ((target, expression),)
+        return _DeferredCall(target, expression)
     if isinstance(target, (ast.FunctionDef, ast.Lambda)):
         returned = [target.body] if isinstance(target, ast.Lambda) else [node.value for node in evaluated_nodes(target) if isinstance(node, ast.Return)]
         if len(returned) == 1 and isinstance(returned[0], ast.GeneratorExp):
-            return ((returned[0], expression),)
-    return ()
+            return _DeferredCall(returned[0], expression)
+    return _DeferredStatus.ORDINARY
 
 
 def decorator_calls(nodes: Sequence[ast.AST], qualified) -> tuple[ast.Call, ...]:
