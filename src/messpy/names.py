@@ -81,11 +81,11 @@ def _qualified(names: Names, node: ast.expr, scope: ast.AST | None) -> str:
     if not dotted:
         return ""
     root, separator, member = dotted.partition(".")
-    record, bound = _resolved_record(names, root, _scopes_for(names, node, scope))
-    binding = record.imports.get(root) if bound else None
+    resolved = _resolved_record(names, root, _scopes_for(names, node, scope))
+    binding = resolved.record.imports.get(root) if resolved.bound else None
     if binding is not None:
         return f"{binding.canonical}{separator}{member}"
-    if bound:
+    if resolved.bound:
         return ""
     return f"builtins.{root}{separator}{member}"
 
@@ -96,8 +96,8 @@ def _imported(names: Names, node: ast.expr, scope: ast.AST | None) -> tuple[str,
     root = _root_node(node)
     if not isinstance(root, ast.Name):
         return None
-    record, bound = _resolved_record(names, root.id, _scopes_for(names, node, scope))
-    binding = record.imports.get(root.id) if bound else None
+    resolved = _resolved_record(names, root.id, _scopes_for(names, node, scope))
+    binding = resolved.record.imports.get(root.id) if resolved.bound else None
     if binding is None:
         return None
     return binding.canonical, binding.symbol
@@ -117,17 +117,33 @@ def _module_of(package: tuple[str, ...] | None, node: ast.ImportFrom) -> str:
     return ".".join(kept)
 
 
-def _resolved_record(names: Names, name: str, scopes: list[ast.AST]) -> tuple[_ScopeRecord, bool]:
-    for scope in scopes[:-1]:
-        record = names._records[id(scope)]
-        if name in record.global_names:
-            break
-        if name in record.nonlocal_names:
-            continue
-        if name in record.bound:
-            return record, True
-    module = names._records[id(scopes[-1])]
-    return module, name in module.bound
+@dataclass(frozen=True)
+class _ResolvedName:
+    record: _ScopeRecord
+    bound: bool
+
+
+@dataclass(frozen=True)
+class _NameLookup:
+    name: str
+    scopes: tuple[ast.AST, ...]
+
+    def advance(self, names: Names) -> _NameLookup | _ResolvedName:
+        record = names._records[id(self.scopes[0])]
+        if len(self.scopes) == 1:
+            return _ResolvedName(record, self.name in record.bound)
+        if self.name in record.global_names:
+            return _NameLookup(self.name, self.scopes[-1:])
+        if self.name not in record.nonlocal_names and self.name in record.bound:
+            return _ResolvedName(record, True)
+        return _NameLookup(self.name, self.scopes[1:])
+
+
+def _resolved_record(names: Names, name: str, scopes: list[ast.AST]) -> _ResolvedName:
+    lookup = _NameLookup(name, tuple(scopes))
+    while isinstance(lookup, _NameLookup):
+        lookup = lookup.advance(names)
+    return lookup
 
 
 def _scopes_for(names: Names, node: ast.AST, scope: ast.AST | None) -> list[ast.AST]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from types import NoneType, EllipsisType
 
 from .reachability import evaluated_children, live_statements
@@ -19,17 +20,30 @@ _IMMUTABLE_MODULES = frozenset({"abc", "ast", "collections.abc", "math", "number
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
+@dataclass
+class _ConstantKinds:
+    known: dict[str, str]
+    imports: dict[str, str]
+    writes: Counter[str]
+    candidates: frozenset[str]
+
+    @classmethod
+    def collect(cls, statements: Sequence[ast.AST], candidates: set[str]) -> _ConstantKinds:
+        live = list(_live_nodes(statements))
+        writes = Counter(name for node in live for name in _written_names(node))
+        state = cls(_fixed_definitions(statements, writes), _imports(live), writes, frozenset(candidates))
+        for target, value in _assignments(statements):
+            if target in state.candidates and state.writes[target] == 1:
+                state.known.update(_constant_assignment(target, value, state.known, state.imports, state.writes))
+        return state
+
+    def constants(self) -> dict[str, str]:
+        return {name: kind for name, kind in self.known.items() if name in self.candidates}
+
+
 def scope_constants(statements: Sequence[ast.AST], candidates: set[str]) -> dict[str, str]:
     """Map each candidate name that is a constant to the kind of its value."""
-    live = list(_live_nodes(statements))
-    writes = Counter(name for node in live for name in _written_names(node))
-    imports = _imports(live)
-    known = _fixed_definitions(statements, writes)
-    for target, value in _assignments(statements):
-        if target not in candidates or writes[target] != 1:
-            continue
-        known.update(_constant_assignment(target, value, known, imports, writes))
-    return {name: kind for name, kind in known.items() if name in candidates}
+    return _ConstantKinds.collect(statements, candidates).constants()
 
 
 def _fixed_definitions(statements, writes) -> dict[str, str]:

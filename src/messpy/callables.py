@@ -102,19 +102,28 @@ def method_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
     return positional[0].arg if positional else None
 
 
+@dataclass(frozen=True)
+class _CallableVisit:
+    node: ast.AST
+    scope: ast.AST | None
+    enclosing: tuple[ast.AST, ...]
+
+    def children(self) -> list[_CallableVisit]:
+        enclosing = (self.node, *self.enclosing) if isinstance(self.node, _CALLABLE_TYPES) else self.enclosing
+        scope = self.node if isinstance(self.node, (ast.ClassDef, *_CALLABLE_TYPES)) else self.scope
+        return [_CallableVisit(child, scope, enclosing) for child in reversed(list(ast.iter_child_nodes(self.node)))]
+
+
 @lru_cache(maxsize=1)
 def module_callables(tree: ast.Module) -> tuple[CallableNode, ...]:
     """Every callable in the module in pre-order, the order symtable lists their tables in."""
     found: list[CallableNode] = []
-    pending: list[tuple[ast.AST, ast.AST | None, tuple[ast.AST, ...]]] = [(tree, None, (tree,))]
+    pending = [_CallableVisit(tree, None, (tree,))]
     while pending:
-        node, scope, enclosing = pending.pop()
-        if isinstance(node, _CALLABLE_TYPES):
-            found.append(_callable_node(node, scope, enclosing))
-            enclosing = (node, *enclosing)
-        if isinstance(node, (ast.ClassDef, *_CALLABLE_TYPES)):
-            scope = node
-        pending.extend((child, scope, enclosing) for child in reversed(list(ast.iter_child_nodes(node))))
+        visit = pending.pop()
+        if isinstance(visit.node, _CALLABLE_TYPES):
+            found.append(_callable_node(visit.node, visit.scope, visit.enclosing))
+        pending.extend(visit.children())
     return tuple(found)
 
 

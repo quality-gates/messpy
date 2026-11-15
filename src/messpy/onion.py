@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 import fnmatch
 import importlib.util
 from collections.abc import Callable, Sequence
@@ -213,7 +214,7 @@ def _import_time_present(nodes: Sequence[ast.AST | None], deferred: bool) -> lis
 def _spread_findings(
     path: Path, tree: ast.Module, graph: CallGraph, rule: LoadedRule, phrases: dict[int, str]
 ) -> list:
-    actions = _action_ids(graph, phrases)
+    actions = _ActionPropagation.collect(graph, phrases).actions
     sites = [site for caller in graph.callables for site in graph.callees(caller)]
     sites.extend(_module_call_sites(tree, graph))
 
@@ -221,7 +222,7 @@ def _spread_findings(
     for site in sites:
         if id(site.callee) not in actions:
             continue
-        phrase = _chain_phrase(site.callee, phrases, graph, set())
+        phrase = _ActionPath().phrase(site.callee, phrases, graph)
         if not phrase:
             continue
         findings.append(_spread_finding(path, rule, graph, site, phrase))
@@ -229,42 +230,48 @@ def _spread_findings(
 
 
 def _module_call_sites(tree: ast.Module, graph: CallGraph) -> list[CallSite]:
-    sites = []
-    seen: set[int] = set()
+    sites: dict[int, CallSite] = {}
     for node in _import_time_nodes(tree):
         if not isinstance(node, ast.Call):
             continue
         site = graph.call_site(tree, node)
-        if site is None or id(site.callee) in seen:
-            continue
-        seen.add(id(site.callee))
-        sites.append(site)
-    return sites
+        if site is not None:
+            sites.setdefault(id(site.callee), site)
+    return list(sites.values())
 
 
-def _action_ids(graph: CallGraph, phrases: dict[int, str]) -> set[int]:
-    actions = set(phrases)
-    pending = [node for node in graph.callables if id(node) in phrases]
-    while pending:
-        for site in graph.callers(pending.pop()):
-            if id(site.caller) not in actions:
-                actions.add(id(site.caller))
-                pending.append(site.caller)
-    return actions
+@dataclass
+class _ActionPropagation:
+    actions: set[int]
+    pending: list[ast.AST]
+
+    @classmethod
+    def collect(cls, graph: CallGraph, phrases: dict[int, str]) -> _ActionPropagation:
+        propagation = cls(set(phrases), [node for node in graph.callables if id(node) in phrases])
+        while propagation.pending:
+            for site in graph.callers(propagation.pending.pop()):
+                if id(site.caller) not in propagation.actions:
+                    propagation.actions.add(id(site.caller))
+                    propagation.pending.append(site.caller)
+        return propagation
 
 
-def _chain_phrase(callee: ast.AST, phrases: dict[int, str], graph: CallGraph, seen: set[int]) -> str:
-    direct = phrases.get(id(callee), "")
-    if direct:
-        return direct
-    if id(callee) in seen:
+@dataclass(frozen=True)
+class _ActionPath:
+    active: frozenset[int] = frozenset()
+
+    def phrase(self, callee: ast.AST, phrases: dict[int, str], graph: CallGraph) -> str:
+        direct = phrases.get(id(callee), "")
+        if direct:
+            return direct
+        if id(callee) in self.active:
+            return ""
+        following = _ActionPath(self.active | {id(callee)})
+        for site in graph.callees(callee):
+            phrase = following.phrase(site.callee, phrases, graph)
+            if phrase:
+                return f"calls {site.name}(), which {phrase}"
         return ""
-    followed = {*seen, id(callee)}
-    for site in graph.callees(callee):
-        phrase = _chain_phrase(site.callee, phrases, graph, followed)
-        if phrase:
-            return f"calls {site.name}(), which {phrase}"
-    return ""
 
 
 def _spread_finding(path, rule, graph: CallGraph, site: CallSite, phrase: str):

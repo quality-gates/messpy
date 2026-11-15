@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from enum import Enum, auto
 from pathlib import Path
 
 from .callables import CallableNode, method_receiver, module_callables
@@ -30,6 +31,22 @@ class CallSite:
     line: int
 
 
+@dataclass
+class _CallReachability:
+    pending: list[ast.AST]
+    reached: set[ast.AST] = field(default_factory=set)
+
+    @classmethod
+    def collect(cls, graph: CallGraph, caller: ast.AST) -> _CallReachability:
+        traversal = cls([caller])
+        while traversal.pending:
+            for site in graph.callees(traversal.pending.pop()):
+                if site.callee not in traversal.reached:
+                    traversal.reached.add(site.callee)
+                    traversal.pending.append(site.callee)
+        return traversal
+
+
 @dataclass(frozen=True)
 class CallGraph:
     """The callables of one module and the resolved calls between them."""
@@ -45,14 +62,7 @@ class CallGraph:
 
     def reachable_from(self, caller: ast.AST) -> set[ast.AST]:
         """Every callable the caller reaches through one or more calls."""
-        reached: set[ast.AST] = set()
-        pending = [caller]
-        while pending:
-            for site in self.callees(pending.pop()):
-                if site.callee not in reached:
-                    reached.add(site.callee)
-                    pending.append(site.callee)
-        return reached
+        return _CallReachability.collect(self, caller).reached
 
     def resolve_target(self, call: ast.Call) -> ast.AST | None:
         """The callable in this module that the call calls, if any."""
@@ -97,7 +107,7 @@ def build_call_graph(tree: ast.Module, names: Names | None = None) -> CallGraph:
     index = _index_callables(tree)
     masks = comprehension_masks(tree)
     resolved = _resolved_calls(tree, index, masks)
-    callees = _call_edges(index, resolved)
+    callees = _FirstCallEdges.collect(index, resolved).edges
     resolved_names = names if names is not None else Names.build(tree, module=None, path=Path())
     return CallGraph(
         callables=tuple(index.nodes.values()),
@@ -130,23 +140,21 @@ def _resolved_calls(
     return resolved
 
 
-def _call_edges(
-    index: _CallableIndex, resolved: Sequence[tuple[int, ast.Call, int]]
-) -> dict[int, tuple[CallSite, ...]]:
-    edges: dict[int, tuple[CallSite, ...]] = {}
-    linked: set[tuple[int, int]] = set()
-    for caller_id, call, callee_id in resolved:
-        if caller_id not in index.nodes or (caller_id, callee_id) in linked:
-            continue
-        linked.add((caller_id, callee_id))
-        site = CallSite(
-            index.nodes[caller_id],
-            index.nodes[callee_id],
-            _called_name(call, index, callee_id),
-            call.lineno,
-        )
-        edges[caller_id] = (*edges.get(caller_id, ()), site)
-    return edges
+@dataclass
+class _FirstCallEdges:
+    edges: dict[int, tuple[CallSite, ...]] = field(default_factory=dict)
+    linked: set[tuple[int, int]] = field(default_factory=set)
+
+    @classmethod
+    def collect(cls, index: _CallableIndex, resolved: Sequence[tuple[int, ast.Call, int]]) -> _FirstCallEdges:
+        first = cls()
+        for caller_id, call, callee_id in resolved:
+            if caller_id not in index.nodes or (caller_id, callee_id) in first.linked:
+                continue
+            first.linked.add((caller_id, callee_id))
+            site = CallSite(index.nodes[caller_id], index.nodes[callee_id], _called_name(call, index, callee_id), call.lineno)
+            first.edges[caller_id] = (*first.edges.get(caller_id, ()), site)
+        return first
 
 
 def _reverse_edges(edges: dict[int, tuple[CallSite, ...]]) -> dict[int, tuple[CallSite, ...]]:
@@ -258,37 +266,55 @@ def _returned_callable(index: _CallableIndex, factory_id: int) -> int | None:
     return None
 
 
-def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
-    scopes = (caller_id, *index.enclosing.get(caller_id, ()))
-    for scope_id in scopes:
+class _LookupStop(Enum):
+    UNBOUND = auto()
+    SHADOWED = auto()
+
+
+@dataclass(frozen=True)
+class _CallableBinding:
+    target: int
+
+
+@dataclass(frozen=True)
+class _CallableLookup:
+    name: str
+    scopes: tuple[int, ...]
+
+    def advance(self, index: _CallableIndex) -> _CallableLookup | _CallableBinding | _LookupStop:
+        if not self.scopes:
+            return _LookupStop.UNBOUND
+        scope_id = self.scopes[0]
+        following = _CallableLookup(self.name, self.scopes[1:])
         if scope_id in index.class_ids:
-            continue
-        if name in index.declarations.globals.get(scope_id, ()):
-            return _bound_callable(index, index.module_id, name)
-        if name in index.declarations.nonlocals.get(scope_id, ()):
-            continue
-        resolved, callee_id = _lookup_scope(index, scope_id, name)
-        if resolved:
-            return callee_id
-    return None
+            return following
+        if self.name in index.declarations.globals.get(scope_id, ()):
+            return _lookup_scope(index, index.module_id, self.name)
+        if self.name in index.declarations.nonlocals.get(scope_id, ()):
+            return following
+        result = _lookup_scope(index, scope_id, self.name)
+        return following if result is _LookupStop.UNBOUND else result
 
 
-def _lookup_scope(index: _CallableIndex, scope_id: int, name: str) -> tuple[bool, int | None]:
+def _resolve_bare_name(index: _CallableIndex, caller_id: int, name: str) -> int | None:
+    lookup = _CallableLookup(name, (caller_id, *index.enclosing.get(caller_id, ())))
+    while isinstance(lookup, _CallableLookup):
+        lookup = lookup.advance(index)
+    return lookup.target if isinstance(lookup, _CallableBinding) else None
+
+
+def _lookup_scope(index: _CallableIndex, scope_id: int, name: str) -> _CallableBinding | _LookupStop:
     if name in index.shadows.get(scope_id, ()):
-        return True, None
+        return _LookupStop.SHADOWED
     if scope_id == index.module_id and name in index.rebound_globals:
-        return True, None
+        return _LookupStop.SHADOWED
     callee_id = index.bindings.get(scope_id, {}).get(name)
-    if callee_id is not None:
-        return True, callee_id
-    return False, None
+    return _CallableBinding(callee_id) if callee_id is not None else _LookupStop.UNBOUND
 
 
 def _bound_callable(index: _CallableIndex, scope_id: int, name: str) -> int | None:
-    resolved, callee_id = _lookup_scope(index, scope_id, name)
-    if resolved:
-        return callee_id
-    return None
+    resolved = _lookup_scope(index, scope_id, name)
+    return resolved.target if isinstance(resolved, _CallableBinding) else None
 
 
 def _resolve_receiver_call(index: _CallableIndex, caller_id: int, attribute: ast.Attribute) -> int | None:
@@ -314,7 +340,7 @@ def _resolve_class_method(index: _CallableIndex, caller_id: int, name: str, meth
             decorators = getattr(function, "decorator_list", ())
             trusted = any(dotted_name(decorator) in {"staticmethod", "classmethod", "builtins.staticmethod", "builtins.classmethod"} for decorator in decorators)
             return target if trusted else None
-        if _lookup_scope(index, scope_id, name)[0]:
+        if _lookup_scope(index, scope_id, name) is not _LookupStop.UNBOUND:
             return None
     return None
 
@@ -326,8 +352,7 @@ def _class_for_receiver(index: _CallableIndex, caller_id: int, receiver_name: st
             return index.callable_class.get(scope_id)
         if scope_id in index.class_ids:
             continue
-        resolved, _callee_id = _lookup_scope(index, scope_id, receiver_name)
-        if resolved:
+        if _lookup_scope(index, scope_id, receiver_name) is not _LookupStop.UNBOUND:
             return None
     return None
 
