@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
@@ -125,15 +125,23 @@ class _CallableAliases:
         return {snapshot.node: snapshot.aliases for snapshot in reversed(snapshots)}
 
 
-@dataclass(frozen=True)
+@dataclass
 class _EffectReports:
-    identities: frozenset[tuple[str, str]] = frozenset()
+    identities: set[tuple[str, str]] = field(default_factory=set)
+    findings: list[Finding] = field(default_factory=list)
 
-    def claim(self, effect: Effect) -> tuple[bool, _EffectReports]:
-        identity = (effect.rule, effect.name)
-        if identity in self.identities:
-            return False, self
-        return True, _EffectReports(self.identities | {identity})
+    @classmethod
+    def collect(
+        cls, path: Path, owner: CallableNode, located: dict[Effect, ast.AST], selected: dict[str, LoadedRule],
+    ) -> _EffectReports:
+        reports = cls()
+        for effect, node in located.items():
+            rule = selected.get(effect.rule)
+            identity = (effect.rule, effect.name)
+            if rule is not None and identity not in reports.identities:
+                reports.findings.append(_finding(path, owner, rule, effect, node))
+                reports.identities.add(identity)
+        return reports
 
 
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
@@ -174,14 +182,7 @@ def explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRu
     findings = []
     for owner in owners:
         located = _located_effects(owner, summaries, graph)
-        reported = _EffectReports()
-        for effect, node in located.items():
-            rule = selected.get(effect.rule)
-            if rule is None:
-                continue
-            claimed, reported = reported.claim(effect)
-            if claimed:
-                findings.append(_finding(path, owner.callable, rule, effect, node))
+        findings.extend(_EffectReports.collect(path, owner.callable, located, selected).findings)
         if "ImplicitInstanceOutput" not in selected or "ImplicitInstanceInput" not in selected:
             findings.extend(_receiver_uncertainty(path, owner, located, selected))
     return findings

@@ -56,7 +56,7 @@ class _CaptureQuery:
 
     def nodes(self) -> Iterator[ast.AST]:
         walk = _CaptureWalk(self).descend(evaluated_children(self.scope))
-        while walk.frames:
+        while walk.frame is not None:
             node, walk = walk.advance()
             yield node
 
@@ -70,28 +70,29 @@ class _CaptureQuery:
 class _CaptureFrame:
     nodes: list[ast.AST]
     position: int
+    previous: _CaptureFrame | None = None
 
 
 @dataclass(frozen=True)
 class _CaptureWalk:
     query: _CaptureQuery
-    frames: tuple[_CaptureFrame, ...] = ()
+    frame: _CaptureFrame | None = None
 
     def descend(self, nodes: list[ast.AST]) -> _CaptureWalk:
-        return replace(self, frames=(*self.frames, _CaptureFrame(nodes, len(nodes) - 1))) if nodes else self
+        return replace(self, frame=_CaptureFrame(nodes, len(nodes) - 1, self.frame)) if nodes else self
 
     def advance(self) -> tuple[ast.AST, _CaptureWalk]:
-        frame = self.frames[-1]
+        frame = self.frame
         node = frame.nodes[frame.position]
-        frames = self.frames[:-1]
+        remaining = frame.previous
         if frame.position:
-            frames = (*frames, replace(frame, position=frame.position - 1))
-        remaining = replace(self, frames=frames)
+            remaining = replace(frame, position=frame.position - 1)
+        walk = replace(self, frame=remaining)
         if isinstance(node, _NESTED_SCOPES) and _binds_locally(node, self.query.name, self.query.chain):
             children = _definition_time_nodes(node)
         else:
             children = evaluated_children(node)
-        return node, remaining.descend(children)
+        return node, walk.descend(children)
 
 
 def write_only_receiver(node: ast.Name, parents: dict[int, ast.AST]) -> bool:

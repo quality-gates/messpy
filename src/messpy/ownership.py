@@ -641,21 +641,22 @@ class _Flow:
 class _TraceFrame:
     trace: tuple
     position: int = 0
+    previous: _TraceFrame | None = None
 
 
 @dataclass(frozen=True)
 class _ObservationReplay:
-    pending: tuple[_TraceFrame, ...] = ()
+    pending: _TraceFrame | None = None
 
     def descend(self, trace: tuple) -> _ObservationReplay:
-        return _ObservationReplay((*self.pending, _TraceFrame(trace))) if trace else self
+        return _ObservationReplay(_TraceFrame(trace, previous=self.pending)) if trace else self
 
     def advance(self) -> tuple[_Seen | None, _ObservationReplay]:
-        frame = self.pending[-1]
+        frame = self.pending
         item = frame.trace[frame.position]
-        pending = self.pending[:-1]
+        pending = frame.previous
         if frame.position + 1 < len(frame.trace):
-            pending = (*pending, replace(frame, position=frame.position + 1))
+            pending = replace(frame, position=frame.position + 1)
         remaining = _ObservationReplay(pending)
         if isinstance(item, _Seen):
             return item, remaining
@@ -768,7 +769,7 @@ def _visit_body(callable_node, bindings: _State, context: _Context) -> _Flow:
 def _observations(trace) -> dict[int, _State]:
     observed: dict[int, _State] = {}
     replay = _ObservationReplay().descend(trace)
-    while replay.pending:
+    while replay.pending is not None:
         seen, replay = replay.advance()
         if seen is not None:
             observed[seen.node] = seen.bindings
@@ -1232,20 +1233,20 @@ class _ComprehensionFrame:
         target = _visit(generator.target, iterated.bindings, context)
         entered = _bind(generator.target, element, target.bindings, context)
         tests = _sequence(generator.ifs, entered, context)
-        traces = (*self.traces, _Seen(id(generator), iterated.bindings), iterated.trace, target.trace, tests.trace)
+        traces = _then(self.traces, _Seen(id(generator), iterated.bindings), iterated.trace, target.trace, tests.trace)
         active = not any(constant_truth(test) is False for test in generator.ifs)
         return replace(self, inner=tests.bindings, traces=traces, active=active)
 
     def result(self, node: ast.expr, context: _Context) -> _ComprehensionFrame:
         results = [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]
-        return replace(self, traces=(*self.traces, _sequence(results, self.inner, context).trace))
+        return replace(self, traces=_then(self.traces, _sequence(results, self.inner, context).trace))
 
     def leave(self, node: ast.expr, context: _Context) -> _Flow:
         bindings = self.outer
         walrus = {target.target.id for target in ast.walk(node) if isinstance(target, ast.NamedExpr)}
         for name in walrus:
             bindings = _bound(bindings, name, Storage(opaque=True), context)
-        return _Flow(bindings, _then(*self.traces))
+        return _Flow(bindings, self.traces)
 
 
 def _visit_comprehension(node: ast.expr, bindings, context) -> _Flow:

@@ -12,6 +12,9 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from messpy.cli import run
+from messpy.analyzer import _ScopeChain
+from messpy.captures import _CaptureQuery
+from messpy.ownership import Storage, _Seen, _State, _observations
 from messpy.reachability import evaluated_children, live_statements
 
 
@@ -149,3 +152,31 @@ class DataflowTransitionTests(unittest.TestCase):
         self.assertEqual([expression.elt, *expression.generators], actual)
         stopped = ast.parse("[emit(item) for item in values if False for other in values]", mode="eval").body
         self.assertEqual([stopped.generators[0]], evaluated_children(stopped))
+
+    def test_capture_walk_preserves_identity_and_order_through_deep_pending_siblings(self) -> None:
+        leaf = ast.Name(id="captured", ctx=ast.Load())
+        nested = leaf
+        siblings = []
+        for value in range(4000):
+            sibling = ast.Constant(value=value)
+            siblings.append(sibling)
+            nested = ast.BinOp(left=sibling, op=ast.Add(), right=nested)
+        scope = ast.Expr(value=nested)
+        query = _CaptureQuery("captured", scope, _ScopeChain((scope,), {}))
+        nodes = list(query.nodes())
+        self.assertEqual(12002, len(nodes))
+        self.assertIs(nested, nodes[0])
+        self.assertIs(leaf, nodes[4000])
+        self.assertEqual(siblings, [node for node in nodes if isinstance(node, ast.Constant)])
+
+    def test_observation_replay_preserves_chronological_last_write_in_deep_traces(self) -> None:
+        early = _State(result=Storage(kinds=frozenset({"int"})))
+        latest = _State(result=Storage(kinds=frozenset({"str"})))
+        trace = (_Seen(0, early),)
+        for node in range(1, 4001):
+            trace = (trace, _Seen(node, early))
+        trace = (trace, _Seen(0, latest))
+        observed = _observations(trace)
+        self.assertEqual(4001, len(observed))
+        self.assertIs(latest, observed[0])
+        self.assertIs(early, observed[4000])
