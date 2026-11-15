@@ -1310,6 +1310,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, counts["parent_maps"])
         self.assertEqual(1, counts["node_walks"])
         node_count = len(list(ast.walk(ast.parse(source))))
+        self.assertGreater(counts["masked_visits"], 0)
         self.assertLessEqual(counts["masked_visits"], node_count)
 
     def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
@@ -1556,10 +1557,11 @@ class CommandAcceptanceTests(unittest.TestCase):
                 )
                 mode = stat.S_IMODE(report_file.stat().st_mode)
             finally:
-                os.umask(original_umask)
+                restored_umask = os.umask(original_umask)
 
         self.assertEqual(2, status)
         self.assertEqual(0o640, mode)
+        self.assertEqual(0o027, restored_umask)
 
     def test_command_errors_have_deterministic_diagnostics(self) -> None:
         cases = [
