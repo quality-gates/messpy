@@ -6,7 +6,7 @@ Finding order, syntax errors, suppression, strict mode, suffix selection.
 
 ## How to get to it (user POV)
 
-Run `messpy <directory> json codesize,design,naming,unusedcode,explicitness`.
+Run `messpy <directory> json codesize,design,naming,unusedcode,explicitness,cleancode`.
 
 ## Driving it with the parity helper
 

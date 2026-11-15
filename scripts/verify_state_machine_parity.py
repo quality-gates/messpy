@@ -50,9 +50,11 @@ def corpus() -> list[str]:
 
 
 def requests(directory: Path) -> list[list[str]]:
-    scan = [str(directory), "json", "codesize,design,naming,unusedcode,explicitness"]
+    scan = [str(directory), "json", "codesize,design,naming,unusedcode,explicitness,cleancode"]
     cases = [
         scan, [*scan, "--strict"], [*scan, "--ignore-violations-on-exit"],
+        [*scan, "--ignore-errors-on-exit"],
+        [*scan, "--ignore-errors-on-exit", "--ignore-violations-on-exit"],
         ["--help"], ["--version"], [], ["--unknown"],
         ["--ignore-errors-on-exit", "--unknown"], ["--unknown", "--ignore-errors-on-exit"],
         [*scan, "--suffixes", ".pyi"], [*scan, "--suffixes", ".pyi", "--suffixes", ".py"],
@@ -90,6 +92,9 @@ def verify(revision: str, candidate: Path) -> None:
         (fixtures / "broken.py").write_text("def broken(:\n", encoding="utf-8")
         cases = requests(fixtures)
         expected = observe(baseline, cases)
+        for index, status in ((0, 1), (3, 2), (4, 0)):
+            if expected[index][0] != status:
+                raise AssertionError(f"Baseline case {index} must exercise exit {status}")
         actual = observe(candidate, cases)
         mismatches = [index for index, pair in enumerate(zip(expected, actual)) if pair[0] != pair[1]]
         if mismatches:

@@ -10,7 +10,7 @@ Run `messpy --help`, or append options to a normal analysis command.
 
 ## Driving it with the parity helper
 
-Run `python scripts/verify_state_machine_parity.py`. It compares successful scans and invalid invocations, including an ignore-errors flag before and after an unknown option. Then run the negative control to show that stopping the cursor after its first token is detected.
+Run `python scripts/verify_state_machine_parity.py`. It compares scans and invalid invocations, including an ignore-errors flag before and after an unknown option. Scan cases exercise all three exit codes: processing errors win by default, ignoring errors exposes findings, and ignoring both errors and violations produces zero. The helper asserts that the baseline reaches each expected code before comparing the candidate. Then run the negative control to show that stopping the cursor after its first token is detected.
 
 ## Gotchas
 
