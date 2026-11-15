@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
+import gc
 from pathlib import Path
 import symtable
 import sys
 import tempfile
 import unittest
+import weakref
 from unittest import mock
 
 ROOT = Path(__file__).parent.parent
@@ -44,6 +46,26 @@ class AnalyzerTransitionTests(unittest.TestCase):
             files, errors = analyzer._source_files([Path("a"), Path("b")], {".py"}, [], False)
         self.assertEqual([path], files)
         self.assertEqual([first], errors)
+
+    def test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots(self) -> None:
+        path = Path("same.py")
+        root_results: list[weakref.ReferenceType[set[Path]]] = []
+        peak_live_results = 0
+
+        def discover(*args, **kwargs):
+            nonlocal peak_live_results
+            gc.collect()
+            found = {path}
+            root_results.append(weakref.ref(found))
+            peak_live_results = max(peak_live_results, sum(result() is not None for result in root_results))
+            return found, []
+
+        roots = [Path("root")] * 8
+        with mock.patch.object(analyzer, "_source_files_under", side_effect=discover):
+            files, errors = analyzer._source_files(roots, {".py"}, [], False)
+        self.assertEqual([path], files)
+        self.assertEqual([], errors)
+        self.assertLessEqual(peak_live_results, 2)
 
     def test_comprehension_iterable_reads_precede_rebinding_and_stop_at_shadow(self) -> None:
         source = "[item for item in values for item in item]"
@@ -188,6 +210,20 @@ class AnalyzerTransitionTests(unittest.TestCase):
         self.assertEqual([2], [finding.line for finding in locals_found])
         exits = _findings("def compute():\n    exit()\n    exit()\ndef other():\n    exit()\n", "design", "ExitExpression")
         self.assertEqual([2, 5], [finding.line for finding in exits])
+
+    def test_repeated_bindings_and_exits_construct_only_emitted_findings(self) -> None:
+        cases = (
+            ("def compute():\n" + "    unused = 1\n" * 1000, "unusedcode", "UnusedLocalVariable"),
+            ("def compute():\n" + "    exit()\n" * 1000, "design", "ExitExpression"),
+            ("[0 for unused in values for unused in values]\n", "unusedcode", "UnusedLocalVariable"),
+        )
+        for source, ruleset, rule_name in cases:
+            with self.subTest(rule=rule_name, source=source[:40]):
+                with mock.patch.object(analyzer, "Finding", wraps=Finding) as construct:
+                    findings = _findings(source, ruleset, rule_name)
+                self.assertEqual(1, len(findings))
+                self.assertEqual(1 if source.startswith("[") else 2, findings[0].line)
+                self.assertEqual(1, construct.call_count)
 
     def test_class_graph_cycles_and_diamonds_finish_without_losing_reachable_classes(self) -> None:
         nodes = [ast.ClassDef(name=name, bases=[], keywords=[], body=[], decorator_list=[]) for name in ("A", "B", "C", "D")]

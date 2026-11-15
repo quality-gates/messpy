@@ -4,7 +4,7 @@ import ast
 from bisect import bisect_right
 import builtins
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence, Set as AbstractSet
+from collections.abc import Callable, Iterable, Iterator, Sequence, Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from functools import cache, partial
 import keyword
@@ -802,18 +802,31 @@ def _development_call_name(node: ast.Call, graph: CallGraph, unwanted: set[str])
 
 
 @dataclass(frozen=True)
+class _FindingObservation:
+    identity: str | int
+    line: int
+    message: str
+    context: str
+
+    def finding(self, path: Path, rule: LoadedRule) -> Finding:
+        return Finding(path, self.line, rule.name, rule.priority, self.message, context=self.context)
+
+
+@dataclass(frozen=True)
 class _FindingEmissions:
     identities: set[str | int] = field(default_factory=set)
     findings: list[Finding] = field(default_factory=list)
 
     @classmethod
-    def collect(cls, candidates: Sequence[tuple[str | int, Finding]]) -> _FindingEmissions:
+    def collect(
+        cls, path: Path, rule: LoadedRule, observations: Iterable[_FindingObservation]
+    ) -> _FindingEmissions:
         emissions = cls()
-        for identity, finding in candidates:
-            if identity in emissions.identities:
+        for observation in observations:
+            if observation.identity in emissions.identities:
                 continue
-            emissions.identities.add(identity)
-            emissions.findings.append(finding)
+            emissions.identities.add(observation.identity)
+            emissions.findings.append(observation.finding(path, rule))
         return emissions
 
 
@@ -828,19 +841,23 @@ def _exit_expression_findings(
     rule = _rule(rules, EXIT_EXPRESSION_RULE_NAME)
     if rule is None:
         return []
-    candidates: list[tuple[str | int, Finding]] = []
+    observations = _exit_expression_observations(tree, parents, contexts, graph)
+    return _FindingEmissions.collect(path, rule, observations).findings
+
+
+def _exit_expression_observations(
+    tree: ast.Module,
+    parents: dict[int, ast.AST],
+    contexts: dict[int, str],
+    graph: CallGraph,
+) -> Iterator[_FindingObservation]:
     for node in module_nodes(tree):
         if not isinstance(node, ast.Call) or not _is_exit_call(node, graph):
             continue
         scope, context = _design_scope(node, parents, contexts)
-        candidates.append((
-            id(scope),
-            Finding(
-                path, node.lineno, rule.name, rule.priority,
-                f"The {context} contains an exit expression.", context=context,
-            ),
-        ))
-    return _FindingEmissions.collect(candidates).findings
+        yield _FindingObservation(
+            id(scope), node.lineno, f"The {context} contains an exit expression.", context
+        )
 
 
 def _count_in_loop_findings(
@@ -1397,7 +1414,7 @@ class _FirstAccesses:
     nodes: dict[str, ast.AST] = field(default_factory=dict)
 
     @classmethod
-    def collect(cls, observations: Sequence[tuple[str, ast.AST]]) -> _FirstAccesses:
+    def collect(cls, observations: Iterable[tuple[str, ast.AST]]) -> _FirstAccesses:
         first = cls()
         for name, node in observations:
             first.nodes.setdefault(name, node)
@@ -1405,13 +1422,15 @@ class _FirstAccesses:
 
 
 def _input_nodes(callable_info: CallableNode, chain: _ScopeChain) -> dict[str, ast.AST]:
-    observations: list[tuple[str, ast.AST]] = []
+    return _FirstAccesses.collect(_input_observations(callable_info, chain)).nodes
+
+
+def _input_observations(callable_info: CallableNode, chain: _ScopeChain) -> Iterator[tuple[str, ast.AST]]:
     for node in _read_nodes(callable_info):
         node_chain = chain.for_node(node)
         name = _free_variable_read(node, node_chain) or _ambient_read(node, node_chain)
         if name:
-            observations.append((name, node))
-    return _FirstAccesses.collect(observations).nodes
+            yield name, node
 
 
 def _implicit_output_findings(
@@ -1427,13 +1446,17 @@ def _implicit_output_findings(
 
 
 def _output_nodes(nodes: Sequence[ast.AST], chain: _ScopeChain, ownership: Ownership) -> dict[str, ast.AST]:
-    observations: list[tuple[str, ast.AST]] = []
+    return _FirstAccesses.collect(_output_observations(nodes, chain, ownership)).nodes
+
+
+def _output_observations(
+    nodes: Sequence[ast.AST], chain: _ScopeChain, ownership: Ownership
+) -> Iterator[tuple[str, ast.AST]]:
     for node in nodes:
         node_chain = chain.for_node(node)
         name = _storage_write(node, node_chain, ownership) or _ambient_write(node, node_chain)
         if name:
-            observations.append((name, node))
-    return _FirstAccesses.collect(observations).nodes
+            yield name, node
 
 
 def _implicit_instance_input_findings(
@@ -1442,17 +1465,20 @@ def _implicit_instance_input_findings(
     receiver = callable_info.receiver
     if receiver is None:
         return []
-    nodes = _read_nodes(callable_info)
+    observations = _instance_input_observations(_read_nodes(callable_info), receiver)
+    return _explicitness_report(
+        path, callable_info, rule, _FirstAccesses.collect(observations).nodes,
+        "reads the implicit input", "Pass it as an argument instead.",
+    )
+
+
+def _instance_input_observations(nodes: Sequence[ast.AST], receiver: str) -> Iterator[tuple[str, ast.AST]]:
     called = {id(node.func) for node in nodes if isinstance(node, ast.Call)}
-    observations: list[tuple[str, ast.AST]] = []
     for node in nodes:
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load) and id(node) not in called:
             name = _receiver_attribute(node, receiver)
             if name:
-                observations.append((name, node))
-    return _explicitness_report(
-        path, callable_info, rule, _FirstAccesses.collect(observations).nodes, "reads the implicit input", "Pass it as an argument instead."
-    )
+                yield name, node
 
 
 def _implicit_instance_output_findings(
@@ -1461,15 +1487,21 @@ def _implicit_instance_output_findings(
     receiver = callable_info.receiver
     if receiver is None or callable_info.name in CONSTRUCTOR_METHOD_NAMES:
         return []
-    observations: list[tuple[str, ast.AST]] = []
-    for node in callable_info.evaluated_nodes():
+    observations = _instance_output_observations(callable_info.evaluated_nodes(), receiver, chain)
+    return _explicitness_report(
+        path, callable_info, rule, _FirstAccesses.collect(observations).nodes,
+        "writes the implicit output", "Return it instead.",
+    )
+
+
+def _instance_output_observations(
+    nodes: Sequence[ast.AST], receiver: str, chain: _ScopeChain
+) -> Iterator[tuple[str, ast.AST]]:
+    for node in nodes:
         expression = _mutated_expression(node, chain.parents, chain.for_node(node))
         name = _receiver_attribute(expression, receiver) if expression is not None else ""
         if name:
-            observations.append((name, node))
-    return _explicitness_report(
-        path, callable_info, rule, _FirstAccesses.collect(observations).nodes, "writes the implicit output", "Return it instead."
-    )
+            yield name, node
 
 
 def _receiver_attribute(expression: ast.expr, receiver: str) -> str:
@@ -2465,20 +2497,21 @@ def _unused_function_local_findings(
             targets = _function_local_targets(node.body)
         else:
             targets = [target for statement in node.body for target in _function_local_targets(statement)]
-        candidates: list[tuple[str | int, Finding]] = []
-        for target in targets:
-            symbol = _lookup_symbol(table, target.id)
-            if symbol is None or _ignore_function_local(target.id, symbol, used_names):
-                continue
-            candidates.append((
-                target.id,
-                Finding(
-                    path, target.lineno, rule.name, rule.priority,
-                    f"Avoid unused local variables such as '{target.id}'.", context=target.id,
-                ),
-            ))
-        findings.extend(_FindingEmissions.collect(candidates).findings)
+        observations = _function_local_observations(targets, table, used_names)
+        findings.extend(_FindingEmissions.collect(path, rule, observations).findings)
     return findings
+
+
+def _function_local_observations(
+    targets: Sequence[ast.Name], table: symtable.SymbolTable, used_names: frozenset[str]
+) -> Iterator[_FindingObservation]:
+    for target in targets:
+        symbol = _lookup_symbol(table, target.id)
+        if symbol is None or _ignore_function_local(target.id, symbol, used_names):
+            continue
+        yield _FindingObservation(
+            target.id, target.lineno, f"Avoid unused local variables such as '{target.id}'.", target.id
+        )
 
 
 def _ignore_function_local(
@@ -2516,7 +2549,14 @@ def _scope_comprehension_findings(
     table: symtable.SymbolTable | None,
     rule: LoadedRule,
 ) -> list[Finding]:
-    candidates: list[tuple[str | int, Finding]] = []
+    observations = _comprehension_local_observations(node, table)
+    return _FindingEmissions.collect(path, rule, observations).findings
+
+
+def _comprehension_local_observations(
+    node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+    table: symtable.SymbolTable | None,
+) -> Iterator[_FindingObservation]:
     used_names = _comprehension_used_names(node) if table is None else frozenset()
     for generator in node.generators:
         for target in _target_names(generator.target):
@@ -2525,14 +2565,9 @@ def _scope_comprehension_findings(
                 used_names = _comprehension_used_names(node)
             if _ignore_comprehension_local(target.id, symbol, used_names):
                 continue
-            candidates.append((
-                target.id,
-                Finding(
-                    path, target.lineno, rule.name, rule.priority,
-                    f"Avoid unused local variables such as '{target.id}'.", context=target.id,
-                ),
-            ))
-    return _FindingEmissions.collect(candidates).findings
+            yield _FindingObservation(
+                target.id, target.lineno, f"Avoid unused local variables such as '{target.id}'.", target.id
+            )
 
 
 def _ignore_comprehension_local(
@@ -5087,7 +5122,7 @@ class _SourceDiscovery:
     error_paths: set[Path] = field(default_factory=set)
 
     @classmethod
-    def collect(cls, results: Sequence[tuple[set[Path], list[ProcessingError]]]) -> _SourceDiscovery:
+    def collect(cls, results: Iterable[tuple[set[Path], list[ProcessingError]]]) -> _SourceDiscovery:
         discovery = cls()
         for found, errors in results:
             discovery.files.update(found)
@@ -5102,10 +5137,10 @@ class _SourceDiscovery:
 def _source_files(
     paths: Sequence[Path], suffixes: AbstractSet[str], exclusions: Sequence[str], ignore_tests: bool
 ) -> tuple[list[Path], list[ProcessingError]]:
-    results = [
+    results = (
         _source_files_under(path, suffixes, exclusions, ignore_tests, root=path)
         for path in paths
-    ]
+    )
     discovery = _SourceDiscovery.collect(results)
     return sorted(discovery.files, key=lambda candidate: candidate.as_posix()), discovery.errors
 
