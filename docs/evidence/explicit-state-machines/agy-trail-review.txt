@@ -1,0 +1,162 @@
+# Independent Decision-Trail & Follow-Up Code Review
+
+- **Reviewer Model Identity:** Gemini 4 (Gemini 4 Argon, High thinking effort)
+- **Audit Root:** `<local-path>
+- **Reviewed Follow-Up Delta:** `git diff 933a1bc..69575e8` (`20952f9`, `a5b7ca4`, `69575e8`), plus the post-review parity harness commit `fc350bf` (`69575e8..fc350bf`) in `./work`.
+
+---
+
+## 1. Actionable Decision-Trail Flags (Severity-Ranked)
+
+No high- or medium-severity defects, unverified scope creep, or missing pivots were found in the trail or the follow-up code. Three **Low**-severity audit-trail / pointer hygiene findings are actionable:
+
+### [Low 1] Row 17 (`2026-11-15T22:59:17Z`) & Row 33 (`2026-11-15T23:15:56Z`) — Extracted Gemini retry evidence file captured the startup warning (`source_line=428`) instead of the actual `read_file` permission denial (`source_line=458`)
+- **Trail Rows:**
+  - [decisions.tsv](./decisions.tsv#L17) (`2026-11-15T22:59:17Z`, `audit`): *"Supersede the initial Gemini retry evidence pointer with its preserved denial output"* → cites [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)) with result `"initial read permission denial preserved; later design review completed"`.
+  - [decisions.tsv](./decisions.tsv#L33) (`2026-11-15T23:15:56Z`, `audit`): Re-cites [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)).
+- **Evidence:**
+  - Inspecting [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)#L1-L6) shows it extracted `ordinal: 427` (`source_line=428`, `2026-11-15T22:41:33.390Z`), whose output is only the initial CLI flag warning while `agy` was still running (`warning: --mode plan has no effect while slash command expansion is disabled.`). It does **not** contain the `read_file` permission denial.
+  - At `source_line=1093` (`2026-11-15T22:59:03.316Z` in [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)#L317)), the extraction command filtered `if 'auto-denied' in line or 'has no effect' in line:` and executed `break` on the first match (`ordinal=427` / `source_line=428`).
+  - The actual permission denial output is at `source_line=458` (`2026-11-15T22:42:48.892Z` in [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)#L139)), where `cat ../agy-design-review.txt` printed:
+    `jetski: no output produced — a tool required the "read_file" permission that headless mode cannot prompt for, so it was auto-denied`.
+- **Actionable Fix:** Re-extract `source_line=458` (`ordinal=457`)—or both `source_line=428` and `source_line=458`—from [LOCAL_ONLY(transcript-source.txt)](./LOCAL_ONLY(transcript-source.txt)) into [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)) so the preserved artifact actually contains the `"read_file"` auto-denial claimed by Row 17.
+
+### [Low 2] Rows 11–13 (`2026-11-15T22:57:33Z`), Row 21 (`2026-11-15T23:02:22Z`), & Row 26 (`2026-11-15T23:10:11Z`) — Specific intermediate per-slice test counts and the `a5b7ca4` negative-control run against `933a1bc` rely on subagent executions without unencrypted root log files
+- **Trail Rows:**
+  - [decisions.tsv](./decisions.tsv#L11-L13) (`2026-11-15T22:57:33Z`, `bindings`, `dataflow`, `analyzer`): Cite commit SHAs `c43cbe7`, `1bb6fad`, and `f64f12f` with intermediate slice counts (`179 tests and self-analysis`, `85 explicitness tests and 12 analyzer tests pass`, `Receiver mutations failed DomainAction`).
+  - [decisions.tsv](./decisions.tsv#L21) (`2026-11-15T23:02:22Z`, `bindings/dataflow`): Cites `3a03151` and `8efd1da` (`179 binding and 87 explicitness tests pass; self-analysis passes on both followups`).
+  - [decisions.tsv](./decisions.tsv#L26) (`2026-11-15T23:10:11Z`, `analyzer`): Cites `a5b7ca4` and [test_state_analyzer.py](../../../tests/test_state_analyzer.py) with result `"29 analyzer tests and self-analysis pass; both resource regressions reject the buffered version"`.
+- **Evidence:**
+  - In [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)), the subagent turns for `bindings_implementation`, `dataflow_implementation`, and `analyzer_implementation` (e.g., `source_line=831..998`, `1115..1156`, `1363..1422`) record `agent_message` entries whose bodies are encrypted (`encrypted_content`).
+  - Row 33 ([decisions.tsv](./decisions.tsv#L33), `2026-11-15T23:15:56Z`) explicitly notes that intermediate slice rows are corroborated by root-run integrated/final logs ([integrated-tests.log](./integrated-tests.log), [final-tests.log](./final-tests.log), [final-self-analysis.log](./final-self-analysis.log), [dataflow-scaling.py](./dataflow-scaling.py)). However, for Row 26 specifically, the negative-control claim (*"both resource regressions reject the buffered version"*) was executed inside the `analyzer_implementation` subagent (`source_line=1363..1422`) rather than logged to a root `.log` file like [ruleset-formal-negative.log](./ruleset-formal-negative.log) or [final-parity-negative.log](./final-parity-negative.log).
+  - *Code verification:* Inspecting the diff between `933a1bc` and `a5b7ca4` confirms both tests in [test_state_analyzer.py](../../../tests/test_state_analyzer.py#L469-L553) deterministically fail against `933a1bc` (`_source_files` materialized a list of all root `DiscoveryResult`s, so `peak_live_results` would be `8 > 2`; `_function_local_findings` and `_exit_expression_findings` constructed `Finding(...)` for every duplicate site prior to deduplication, so `construct.call_count` would be `1000 != 1`).
+- **Actionable Fix:** If strict root-log parity is desired for every negative control in `decisions.tsv`, either capture a root negative-control log for the two `test_state_analyzer.py` resource tests or explicitly include Row 26 in Row 33's provenance note.
+
+### [Low 3] Row 14 (`2026-11-15T22:57:33Z`) & Commit `69575e8` — Minor sync-hash lag in `.agents/skills/verify-ruleset-precedence/SKILL.md`
+- **Trail Row & Commit:**
+  - [decisions.tsv](./decisions.tsv#L14) (`2026-11-15T22:57:33Z`, `formal`) records `"updated verify-ruleset-precedence skill in sync with 81ee470"`.
+  - Later, commit `69575e8` (`Maintain ruleset verification at the integrated state owners`, `source_line=1552` in [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)#L421)) updated [SKILL.md](../../../.agents/skills/verify-ruleset-precedence/SKILL.md#L112-L120) to state `The verification describes commit a5b7ca4` (`git diff a5b7ca4 -- src/messpy/rulesets.py src/messpy/cli.py src/messpy/analyzer.py docs/usage.md tests/test_cli.py tests/test_rulesets.py`), without a corresponding trail row noting the `81ee470 -> a5b7ca4` pointer advance.
+- **Impact:** Harmless—none of the watched files in that `git diff` command changed in `69575e8` or `fc350bf`.
+
+---
+
+## 2. Independent Code Review of Follow-Up Delta (`933a1bc..69575e8` and `fc350bf`)
+
+### Code Bugs Found
+**None.** No functional bugs, state leaks, deduplication regressions, or resource leaks were found in `20952f9`, `a5b7ca4`, `69575e8`, or `fc350bf`.
+
+### Commit-by-Commit Technical Assessment
+
+1. **`20952f9` — Document explicit state ownership and verification**
+   - [docs/state-machines.md](../../../docs/state-machines.md#L1-L148): Replaces the pre-refactor migration plan with an accurate map of the implemented explicit state owners (`_ReportChannel`, `_RulesetContext`, `_DiscoveryWalk`, `_EmissionOrder`, `_BindingState`, `_NameLookup`, `_CallableLookup`, `_ClassProgress`, `_TypeParameterProgress`, `_ComprehensionProgress`, `_CaptureFrame`, `_TraceFrame`, `_CallableAnalysis`, `_EffectTracker`, `_KnownCallableInputs`).
+   - [scripts/verify_self_analysis.py](../../../scripts/verify_self_analysis.py#L46-L246): Adds `_production_expectations()` and asserts exact `UnknownEffect` correspondence on `src/messpy/cli.py` (`_destination_file_mode` and `_restored_umask`, with `_open_report_stream` verified clean).
+   - [scripts/verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L1-L407): Differential harness comparing `analyze_source`, `discover_python_files`, `load_rulesets`, and CLI exit/stdout/stderr across `text`, `json`, `xml`, `html`, `gitlab`, `github`, `sarif`, and `--report-file` against a baseline checkout, with `--inject-mismatch` negative control.
+   - [.agents/skills/verify-state-machines/SKILL.md](../../../.agents/skills/verify-state-machines/SKILL.md#L1-L97) and [run_verification.sh](../../../.agents/skills/verify-state-machines/scripts/run_verification.sh#L1-L34): Doctor check (`PYTHONPATH=src python -c 'from messpy.cli import main; main()' --version`), unit tests, and self-analysis gate.
+
+2. **`a5b7ca4` — Stream analyzer observations before deduplication**
+   - **Pre-deduplication observation streaming ([src/messpy/analyzer.py](../../../src/messpy/analyzer.py#L72-L81)):**
+     - Introduces frozen `@dataclass(frozen=True) class _FindingObservation` (`identity: tuple[object, ...]`, `line: int`, `message: str`, `context: RuleContext`) and replaces `emit(identity, factory)` on `_EmissionOrder` with `emit(observation: _FindingObservation)` ([analyzer.py](../../../src/messpy/analyzer.py#L101-L115)).
+     - Deduplication (`if observation.identity in self.identities: return`) executes **before** `_build_finding(rule, observation.line, observation.message, observation.context)` is called, so duplicate identities never allocate `Finding` instances.
+   - **Generator conversion ([src/messpy/analyzer.py](../../../src/messpy/analyzer.py#L228-L558)):**
+     - `_exit_expression_observations`, `_input_observations`, `_output_observations`, `_instance_input_observations`, `_instance_output_observations`, `_function_local_observations`, and `_comprehension_local_observations` all `yield _FindingObservation(...)` lazily into `_emit_observations`, eliminating intermediate `list[tuple[...]]` buffers while preserving exact traversal and deduplication order.
+     - Note: `sorted(scope.bindings, key=lambda item: (item.line, item.column, item.name))` in `_function_local_observations` ([analyzer.py](../../../src/messpy/analyzer.py#L516)) still sorts the existing `scope.bindings` tuple to maintain deterministic line/column emission order, which is required for parity and does not allocate `Finding` objects before deduplication.
+   - **Discovery result streaming ([src/messpy/analyzer.py](../../../src/messpy/analyzer.py#L649-L667)):**
+     - `_source_files` now passes a generator expression `(discover_python_files(path, exclude_patterns=exclude_patterns, respect_gitignore=respect_gitignore) for path in paths)` to `_merge_discovery_results`, allowing each root's `DiscoveryResult` to be garbage-collected as soon as its files/errors are merged into `_DiscoveryAccumulator`.
+   - **Resource Regression Tests ([tests/test_state_analyzer.py](../../../tests/test_state_analyzer.py#L469-L553)):**
+     - `test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots`: Wraps `analyzer.discover_python_files`, tracks weakrefs (`weakref.ref(result)`), runs `gc.collect()` at the start of each subsequent root scan, and asserts `len(weak_results) == 8` and `peak_live_results <= 2`. (In Python, the generator frame holds at most the previous yielded `result` until the next `yield` completes, so `<= 2` is the exact tight bound.)
+     - `test_repeated_bindings_and_exits_construct_only_emitted_findings`: Generates a function with 1,000 duplicate `value = index` bindings, 1,000 duplicate `return index + 1` exits in a loop, and a comprehension `[target for target in items for target in items]`, wraps `analyzer.Finding`, and asserts `construct.call_count == 1` for each rule (`UnusedLocalVariable`, `ExitExpression`).
+
+3. **`69575e8` — Maintain ruleset verification at the integrated state owners**
+   - Updates [SKILL.md](../../../.agents/skills/verify-ruleset-precedence/SKILL.md#L10-L120) line-number references (`src/messpy/rulesets.py:217` for `_RulesetContext`, `src/messpy/cli.py:217` for `_ReportChannel`, `src/messpy/analyzer.py:92` for `_EmissionOrder`) to match the `a5b7ca4` line offsets.
+
+4. **`fc350bf` — Expand CLI parity exit-policy coverage** (committed after `69575e8` in response to [agy-code-review.txt](./agy-code-review.txt))
+   - Updates [scripts/verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L220-L314) to test `cleancode` in addition to `clean,design,unusedcode`, test `--ignore-errors-on-exit` (exit code `2`) and `--ignore-errors-on-exit --ignore-violations-on-exit` (exit code `0`) on the error-containing corpus, and verify expected baseline exit codes (`expected_returncode`) alongside candidate parity.
+
+---
+
+## 3. Resolved Issues Across the Run
+
+All transient failures, retries, performance issues, and harness bugs encountered during the run were properly resolved and verified:
+
+1. **Initial Gemini 4 Headless `read_file` Permission Denial (Rows 4 & 8):**
+   - First `agy` design review invocation (`source_line=417` in [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)#L118)) omitted `--dangerously-skip-permissions` and failed with `"read_file" permission ... auto-denied` (`source_line=458`). Retried with `--dangerously-skip-permissions` at `source_line=462` and produced [agy-design-review.txt](./agy-design-review.txt) (26,654 bytes).
+2. **Baseline Timing Test Contention Failure (Rows 7 & 27):**
+   - In [baseline-tests.log](./baseline-tests.log#L26-L36), `test_recursive_call_ring_and_repeated_helpers_scale_without_superlinear_overhead` failed (`2.821s not less than 2.0s`) because `baseline-tests`, `baseline-parity`, and `agy` ran concurrently (`source_line=417`).
+   - Rerun isolated on baseline `3448957` in [baseline-timing-rerun.log](./baseline-timing-rerun.log) (`source_line=1443`) and passed in `0.996s`. The `2.0s` threshold was not weakened and passed in [integrated-tests.log](./integrated-tests.log) and [final-tests.log](./final-tests.log).
+3. **Ruleset Cycle Error Regex Mismatch in New Test (Row 9):**
+   - `test_shared_nested_policy_is_not_a_cycle_but_active_ancestry_is` initially matched `[Cc]ircular` (`source_line=752`), whereas `_RulesetContext.enter` raises `Ruleset reference cycle at ...`. Fixed regex in `tests/test_rulesets.py` at `source_line=760` ([ruleset-tests.log](./ruleset-tests.log): 11 tests pass).
+4. **Self-Analysis Expectation Update After `_restored_umask` Refactoring (Rows 10 & 19):**
+   - Moving `os.umask` out of `_destination_file_mode` into `@contextmanager def _restored_umask` caused `scripts/verify_self_analysis.py` to fail with `ValueError: max() iterable argument is empty` ([cli-self-analysis.log](./cli-self-analysis.log), `source_line=600`). Updated `scripts/verify_self_analysis.py` (`source_line=653`) to assert exact `UnknownEffect` correspondence on `_destination_file_mode` and `_restored_umask`; verified in [root-self-analysis.log](./root-self-analysis.log) and [final-self-analysis.log](./final-self-analysis.log).
+5. **Quadratic Cursor/Frame Copying in Initial `bindings` and `dataflow` Slices (Rows 18 & 21):**
+   - Post-slice review identified per-step tuple copying in `_NameLookup` / `_CallableLookup` and `_CaptureFrame` / `_TraceFrame`. Fixed in `3a03151` (indexed lookup cursors) and `8efd1da` (linked frames); verified via [dataflow-scaling.py](./dataflow-scaling.py) (`source_line=1165`: `capture_chain_sec=0.0029`, `trace_chain_sec=0.0030`, `deep_effects_sec=0.0253`).
+6. **`verify-state-machines` Skill Doctor Command Fix (Row 20):**
+   - `python -m messpy --version` failed (`No module named messpy.__main__`, `source_line=1190`); fixed to `PYTHONPATH=src python -c 'from messpy.cli import main; main()' --version` (`source_line=1202`).
+7. **Test Skip Classification Correction (Rows 22 & 25):**
+   - Row 22 initially called the 2 skipped tests in `integrated-tests.log` `"two platform skips"`. Row 25 inspected `tests/test_fuzz_target.py:134` (`source_line=1370`/`1382`) and corrected the trail to state they are optional Atheris fuzz target skips.
+8. **Analyzer Candidate & Discovery Buffering (Rows 23 & 26):**
+   - Fixed in `a5b7ca4` with generator streaming and `_FindingObservation`, plus two regression tests in `tests/test_state_analyzer.py`.
+9. **Final-Check Controller Venv Symlink Resolution Bug (Rows 29 & 30):**
+   - First final-check script (`source_line=1484`) called `Path('../artifact-venv/bin/python').resolve()`, which resolves the venv symlink to the base Homebrew interpreter. Killed mid-run (`source_line=1498`, preserved in [interrupted-final-checks.tsv](./interrupted-final-checks.tsv)), fixed to `.absolute()` with an explicit `sys.prefix != sys.base_prefix` check ([final-wheel-isolation.log](./final-wheel-isolation.log)), and all 9 gates passed in [final-checks.tsv](./final-checks.tsv).
+10. **CLI Parity Harness Exit-Policy Coverage (Rows 31, 32, & 34):**
+    - Addressed Gemini 4 code review note ([agy-code-review.txt](./agy-code-review.txt)) in `fc350bf`; verified in [review-parity.log](./review-parity.log) (`samples=519 cli_cases=19`) and [review-parity-negative.log](./review-parity-negative.log) (`expected mismatch detected`).
+
+---
+
+## 4. Row-by-Row Decision Trail Verification (`decisions.tsv`)
+
+| Row | Timestamp (UTC) | Area | Verification Status & Evidence |
+| :--- | :--- | :--- | :--- |
+| 2 | `22:40:09Z` | `inventory` | **Verified.** [inventory.tsv](./inventory.tsv) maps all 14 state owners across `cli.py`, `rulesets.py`, `discovery.py`, `analyzer.py`, `bindings.py`, and `dataflow.py` (`source_line=356`). |
+| 3 | `22:41:21Z` | `design` | **Verified.** [design-a.md](./design-a.md), [design-b.md](./design-b.md), and [design.md](./design.md) written (`source_line=390..414`). |
+| 4 | `22:43:03Z` | `review` | **Verified (superseded by Row 17).** First `agy` run denied `read_file` (`source_line=458`); retried with `--dangerously-skip-permissions` (`source_line=462`). |
+| 5 | `22:43:03Z` | `harness` | **Verified.** [verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py) and [baseline-parity.log](./baseline-parity.log) (`parity ok: samples=519 cli_cases=10`). |
+| 6 | `22:43:03Z` | `baseline` | **Verified.** [baseline-self-analysis.log](./baseline-self-analysis.log) (`Self-analysis verification passed.`). |
+| 7 | `22:44:03Z` | `baseline` | **Verified.** [baseline-tests.log](./baseline-tests.log) (`Ran 480 tests in 52.893s`, `FAILED (failures=1, skipped=2)` on `test_recursive_call_ring_and_repeated_helpers_scale_without_superlinear_overhead` at `2.821s > 2.0s`). |
+| 8 | `22:51:17Z` | `review` | **Verified.** [agy-design-review.txt](./agy-design-review.txt) (`source_line=485`) and updated [design.md](./design.md) (`source_line=607`). |
+| 9 | `22:52:08Z` | `rulesets/discovery` | **Verified.** `_RulesetContext` and `_DiscoveryWalk` in `81ee470`; [ruleset-tests.log](./ruleset-tests.log) (11 tests pass), [ruleset-formal-before.log](./ruleset-formal-before.log), [ruleset-formal-after.log](./ruleset-formal-after.log) (19 formal checks pass). |
+| 10 | `22:52:08Z` | `cli` | **Verified.** `_ReportChannel` and `_restored_umask` in `81ee470`; [cli-tests.log](./cli-tests.log) (83 tests pass) and [cli-self-analysis.log](./cli-self-analysis.log) (initial correspondence failure). |
+| 11 | `22:57:33Z` | `bindings` | **Verified (see Low 2).** Commit `c43cbe7` (`_BindingState`, `_NameLookup`, `_CallableLookup`, `_ClassProgress`, `_TypeParameterProgress`, `_ComprehensionProgress`). |
+| 12 | `22:57:33Z` | `dataflow` | **Verified (see Low 2).** Commit `1bb6fad` (`_CaptureFrame`, `_TraceFrame`, `_CallableAnalysis`, `_EffectTracker`, `_KnownCallableInputs`). |
+| 13 | `22:57:33Z` | `analyzer` | **Verified (see Low 2).** Commit `f64f12f` (`_EmissionOrder` and `_DiscoveryAccumulator`). |
+| 14 | `22:57:33Z` | `formal` | **Verified (see Low 3).** [ruleset-formal-after.log](./ruleset-formal-after.log) (`Ran 19 tests in 0.145s OK`) and [ruleset-formal-negative.log](./ruleset-formal-negative.log) (`expected negative control failure observed`, exit `1`). |
+| 15 | `22:57:33Z` | `harness` | **Verified.** [parity-negative.log](./parity-negative.log) (`expected mismatch detected`, exit `1`). |
+| 16 | `22:57:33Z` | `self-analysis` | **Verified.** [root-self-analysis.log](./root-self-analysis.log) (`Self-analysis verification passed.`). |
+| 17 | `22:59:17Z` | `audit` | **Flagged (Low 1).** [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)) captured `source_line=428` (`--mode plan` warning) instead of `source_line=458` (`read_file` denial). |
+| 18 | `22:59:17Z` | `performance` | **Verified.** Identified quadratic tuple-copy risk in `c43cbe7` and `1bb6fad` and dispatched follow-ups (`source_line=1100..1111`). |
+| 19 | `22:59:58Z` | `self-analysis` | **Verified.** Hardened [verify_self_analysis.py](../../../scripts/verify_self_analysis.py) (`source_line=1122`, [root-self-analysis.log](./root-self-analysis.log)). |
+| 20 | `23:02:22Z` | `docs/skill` | **Verified.** Added [docs/state-machines.md](../../../docs/state-machines.md) and `.agents/skills/verify-state-machines/` (`source_line=1178..1208`). |
+| 21 | `23:02:22Z` | `bindings/dataflow` | **Verified (see Low 2).** Commits `3a03151` and `8efd1da`; [dataflow-scaling.py](./dataflow-scaling.py) (`source_line=1165`). |
+| 22 | `23:06:22Z` | `integration` | **Verified (superseded by Row 25).** Merged `3a03151`, `8efd1da`, `f64f12f` into `933a1bc`; [integrated-tests.log](./integrated-tests.log) (501 tests, 2 skips), [integrated-parity.log](./integrated-parity.log), [root-self-analysis.log](./root-self-analysis.log). |
+| 23 | `23:06:22Z` | `review/perf` | **Verified.** Identified pre-dedup candidate list materialization and multi-root `DiscoveryResult` retention in `src/messpy/analyzer.py`. |
+| 24 | `23:07:38Z` | `docs/verification` | **Verified.** Commit `20952f9` (`source_line=1358`). |
+| 25 | `23:08:30Z` | `audit` | **Verified.** Inspected `tests/test_fuzz_target.py:134` (`source_line=1370`) and corrected skip description to optional Atheris fuzz skips. |
+| 26 | `23:10:11Z` | `analyzer` | **Verified (see Low 2).** Commit `a5b7ca4` streams analyzer observations and discovery results; [test_state_analyzer.py](../../../tests/test_state_analyzer.py#L469-L553) adds both resource regression tests. |
+| 27 | `23:10:11Z` | `baseline` | **Verified.** [baseline-timing-rerun.log](./baseline-timing-rerun.log) (`Ran 1 test in 0.996s OK` on baseline `3448957`, `source_line=1443`). |
+| 28 | `23:10:57Z` | `skill` | **Verified.** Commit `69575e8` updates [SKILL.md](../../../.agents/skills/verify-ruleset-precedence/SKILL.md) line numbers (`source_line=1552`). |
+| 29 | `23:11:55Z` | `verification` | **Verified.** Killed first final-check script (`source_line=1498`, [interrupted-final-checks.tsv](./interrupted-final-checks.tsv)) after spotting `.resolve()` on the venv python symlink. |
+| 30 | `23:14:46Z` | `verification` | **Verified.** All 9 gates in [final-checks.tsv](./final-checks.tsv) exited `0` ([final-tests.log](./final-tests.log): 503 tests, 2 Atheris skips; [final-parity.log](./final-parity.log); [final-parity-negative.log](./final-parity-negative.log); [final-formal.log](./final-formal.log); [final-docs.log](./final-docs.log); [final-self-analysis.log](./final-self-analysis.log); [final-wheel-build.log](./final-wheel-build.log); [final-wheel-install.log](./final-wheel-install.log); [final-wheel-isolation.log](./final-wheel-isolation.log)). |
+| 31 | `23:14:46Z` | `review` | **Verified.** [agy-code-review.txt](./agy-code-review.txt) completed on `3448957..933a1bc` (`No functional bugs or behavioral regressions found`, noting only the parity-harness exit-code coverage gap). |
+| 32 | `23:15:56Z` | `harness` | **Verified.** Updated [verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py); [review-parity.log](./review-parity.log) (`samples=519 cli_cases=19`) and [review-parity-negative.log](./review-parity-negative.log) pass. |
+| 33 | `23:15:56Z` | `audit` | **Verified (subject to Low 1 & Low 2).** Clarifies root-log corroboration for subagent slice rows. |
+| 34 | `23:17:15Z` | `harness` | **Verified.** Commit `fc350bf` (`Expand CLI parity exit-policy coverage`). |
+
+---
+
+## 5. Exact Review Coverage and Limitations
+
+### Covered Evidence
+- **Decision Trail & Transcripts:**
+  - [decisions.tsv](./decisions.tsv) (lines 1–34, all 33 decision rows).
+  - [LOCAL_ONLY(transcript-index.tsv)](./LOCAL_ONLY(transcript-index.tsv)) (all 175 rows) and [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)) (all 421 visible records, `source_line` 8..1552).
+  - Active-run raw transcript tail in [rollout-2026-11-15T22-25-14-01a1e150-8cc4-7561-bcee-e4c2bd0bd9b3.jsonl](LOCAL_ONLY(active transcript)) (lines 1480..1689, covering the final checks and post-`69575e8` parity update `fc350bf` referenced in [LOCAL_ONLY(transcript-source.txt)](./LOCAL_ONLY(transcript-source.txt))).
+- **Plans, Designs, Inventory & Reviews:**
+  - [plan.md](./plan.md), [design.md](./design.md), [design-a.md](./design-a.md), [design-b.md](./design-b.md), [inventory.tsv](./inventory.tsv), [docs/state-machines.md](../../../docs/state-machines.md), [agy-design-review.txt](./agy-design-review.txt), [LOCAL_ONLY(agy-design-first-attempt-tool-output.json)](./LOCAL_ONLY(agy-design-first-attempt-tool-output.json)), [agy-code-review.txt](./agy-code-review.txt), and [dataflow-scaling.py](./dataflow-scaling.py).
+- **Verification Logs & Tables:**
+  - [final-checks.tsv](./final-checks.tsv), [interrupted-final-checks.tsv](./interrupted-final-checks.tsv), and all 25 `.log` files in `./`.
+- **Git Diffs Inspected in `work/`:**
+  - `git diff 933a1bc..69575e8` (`20952f9`, `a5b7ca4`, `69575e8`) and `git diff 69575e8..fc350bf`.
+
+### Explicit Limitations
+1. **Encrypted Native Agent Payloads Not Reviewed:** Several `agent_message` records in [LOCAL_ONLY(transcript-review.jsonl)](./LOCAL_ONLY(transcript-review.jsonl)) (and the raw rollout JSONL) contain opaque `encrypted_content` payloads from native subagents (`explorer`, `bindings_implementation`, `dataflow_implementation`, `analyzer_implementation`). Those encrypted payloads could not be decoded or inspected; only visible tool calls, git commits, workspace files, and root logs were used as evidence.
+2. **No Heavy Test Execution by Reviewer:** Per instructions, verification relied on inspecting the existing logs, transcripts, and source diffs without re-running heavy test suites.
+3. **Broad Production Refactor (`3448957..933a1bc`) & Future Landing Operations Out of Scope:** The broad production diff `3448957..933a1bc` was covered by the separate Gemini 4 code review ([agy-code-review.txt](./agy-code-review.txt)), and any future landing, branch-merging, or PR operations after commit `fc350bf` / Row 34 were not reviewed.

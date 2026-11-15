@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-labelledby="title desc">
+<title id="title">messpy recorded verification results</title>
+<desc id="desc">Acceptance suite: 503 tests OK; 2 optional Atheris skips; Public CLI preservation: 519 source samples, 19 cases match baseline; Exit-policy coverage: Baseline reaches exit codes 0, 1 and 2; Ruleset verification: 240 XML cases; 4 symbolic contracts pass; Installed package: Fresh wheel self-analysis passes; Negative controls: Broken cursor and precedence detected; Independent review: agy Gemini 4 Argon High: no runtime bugs found</desc>
+<rect width="1000" height="440" rx="16" fill="#101827"/>
+<g font-family="monospace" fill="#e5e7eb">
+<text x="32" y="48" font-size="25">messpy — explicit state machines</text>
+<text x="32" y="78" font-size="15" fill="#9ca3af">Production a5b7ca4 · baseline 3448957 · recorded command output</text>
+<text x="32" y="125" font-size="16" fill="#86efac">Acceptance suite</text>
+<text x="310" y="125" font-size="16">503 tests OK; 2 optional Atheris skips</text>
+<text x="32" y="166" font-size="16" fill="#86efac">Public CLI preservation</text>
+<text x="310" y="166" font-size="16">519 source samples, 19 cases match baseline</text>
+<text x="32" y="207" font-size="16" fill="#86efac">Exit-policy coverage</text>
+<text x="310" y="207" font-size="16">Baseline reaches exit codes 0, 1 and 2</text>
+<text x="32" y="248" font-size="16" fill="#86efac">Ruleset verification</text>
+<text x="310" y="248" font-size="16">240 XML cases; 4 symbolic contracts pass</text>
+<text x="32" y="289" font-size="16" fill="#86efac">Installed package</text>
+<text x="310" y="289" font-size="16">Fresh wheel self-analysis passes</text>
+<text x="32" y="330" font-size="16" fill="#86efac">Negative controls</text>
+<text x="310" y="330" font-size="16">Broken cursor and precedence detected</text>
+<text x="32" y="371" font-size="16" fill="#86efac">Independent review</text>
+<text x="310" y="371" font-size="16">agy Gemini 4 Argon High: no runtime bugs found</text>
+</g>
+<text x="32" y="420" font-family="monospace" font-size="13" fill="#9ca3af">Finite preservation corpus; symbolic contracts cover ruleset merging.</text>
+</svg>

@@ -1,0 +1,21 @@
+WARN `--no-project` was provided, but no project was found
+XML cases: 15 single policies and 225 ordered pairs
+  PASS: 1-policy priority and minimum match the last explicit policy
+  FAIL: 2-policy priority: 180 case(s); policies=(Policy(priority=1, minimum=3), Policy(priority=2, minimum=3)), expected=Policy(priority=2, minimum=3), actual=Policy(priority=1, minimum=3)
+CLI case: PASS: expected exit 2 and a threshold 3 finding; exit=2, report='<temporary>/messpy-ruleset-verification-itu_9d1c/sample.py:1: ExcessiveMethodLength [priority 3] The function sample() has 4 lines of code. Current threshold is set to 3. Avoid really long methods.\n', stderr=''
+Partial direct override: FAIL: expected=[('ExcessiveMethodLength', 2, 3)], actual=[('ExcessiveMethodLength', 3, 3)]
+Partial policy priority only, top level: FAIL: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=4, minimum=3)]
+Partial policy priority only, nested: FAIL: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=4, minimum=3)]
+Partial policy priority only, twice nested: FAIL: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=4, minimum=3)]
+Partial policy minimum only, top level: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy minimum only, nested: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy minimum only, twice nested: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy explicit defaults, top level: FAIL: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=4, minimum=100)]
+Partial policy explicit defaults, nested: FAIL: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=4, minimum=100)]
+Partial policy explicit defaults, twice nested: FAIL: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=4, minimum=100)]
+CrossHair nested_priority: FAIL: <temporary>/messpy-ruleset-negative-ub_dlfm2/.agents/skills/verify-ruleset-precedence/scripts/contracts.py:11: error: AssertionError:  when calling nested_priority(1, 2)
+CrossHair nested_minimum: PASS: <temporary>/messpy-ruleset-negative-ub_dlfm2/.agents/skills/verify-ruleset-precedence/scripts/contracts.py:14: info: Confirmed over all paths.
+CrossHair omitted_priority: PASS: <temporary>/messpy-ruleset-negative-ub_dlfm2/.agents/skills/verify-ruleset-precedence/scripts/contracts.py:24: info: Confirmed over all paths.
+CrossHair omitted_minimum: PASS: <temporary>/messpy-ruleset-negative-ub_dlfm2/.agents/skills/verify-ruleset-precedence/scripts/contracts.py:34: info: Confirmed over all paths.
+
+Deliberately retained earlier priority. Verification exit: 1

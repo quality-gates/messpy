@@ -1,0 +1,130 @@
+### Model Identity
+
+- **Model:** Gemini 4 (Gemini 4 Argon, High thinking effort)
+- **Role:** Independent code reviewer of the GPT explicit state-machine refactoring in [work](../../../) across `3448957..933a1bc` and follow-up commits `20952f9..a5b7ca4` (`HEAD`), plus uncommitted working-tree changes.
+
+---
+
+### Executive Summary
+
+**No functional bugs or behavioral regressions were found in the production runtime code (`src/messpy/`).** Across all 39 state machines (`M01`–`M39`), the refactored state owners and reducers preserve traversal order, AST/witness identity, exception handling, lexical resolver distinctions, cache publication, suppression ordering, and asymptotic time/space complexity.
+
+Below are the actionable findings (ranked by severity, covering verification harness coverage, working-tree sync, and the `933a1bc` $\to$ `a5b7ca4` collection-streaming transition), followed by optional design preferences, the audit of the six focus areas, and the verification of all 39 mappings.
+
+---
+
+### Actionable Findings (Ranked by Severity)
+
+#### 1. [Low — Verification Harness Gap] `verify_state_machine_parity.py` places `broken.py` in the shared corpus directory without `--ignore-errors-on-exit` scan cases, preventing any differential scan from exercising exit code `2` or `--ignore-violations-on-exit`
+- **Location:** [verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L51-L63) and [verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L86-L92); cf. `_exit_status` in [cli.py](../../../src/messpy/cli.py#L823-L833) and [parity-negative.log](./parity-negative.log#L1-L12).
+- **Evidence:**
+  - In `verify()` ([verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L90)), `(fixtures / "broken.py").write_text("def broken(:\n", encoding="utf-8")` is written directly into the same `fixtures` directory as all 518 valid `.py` corpus files.
+  - In `_exit_status` ([cli.py](../../../src/messpy/cli.py#L829-L830)), `if processing_errors and not ignore_errors_on_exit: return 1` runs *before* `if findings and not ignore_violations_on_exit: return 2`.
+  - Because none of the directory scan invocations in `requests()` ([verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py#L51-L63)) pass `--ignore-errors-on-exit`, every `.py` directory scan in the parity harness returns exit status `1` (as confirmed by [parity-negative.log](./parity-negative.log#L1-L12), where Cases 0, 1, 2, 10, and 13–16 all have `expected status 1`).
+  - Consequently, `[*scan, "--ignore-violations-on-exit"]` (Case 2) exits `1` rather than `0`, exit status `2` is never observed by the parity script, and `cleancode` is omitted from `scan` at line 52 (only exercised via `"python"` in the `--reportfile` cases).
+- **Actionable fix:** Either place `broken.py` in a separate subdirectory / add `[*scan, "--ignore-errors-on-exit"]` and `[*scan, "--ignore-errors-on-exit", "--ignore-violations-on-exit"]` to `requests()`, and include `cleancode` in `scan`.
+
+#### 2. [Low — Working-Tree Hygiene] Uncommitted sync-commit update in `.agents/skills/verify-ruleset-precedence/SKILL.md`
+- **Location:** [SKILL.md](../../../.agents/skills/verify-ruleset-precedence/SKILL.md#L14-L30).
+- **Evidence:** `git status --short` shows `M .agents/skills/verify-ruleset-precedence/SKILL.md` with uncommitted updates advancing the documented sync commit from `9e3eff3aa622d6ad9ca472c29269f7feaaf9f30a` to `a5b7ca4` and listing `_RulesetContext.enter`, `_RuleConfiguration.apply`, and `_RuleConfiguration.include`.
+- **Actionable fix:** Commit the updated skill file (and update its sync hash once that commit lands, or reference the final code commit `a5b7ca4`).
+
+#### 3. [Audit Note on `933a1bc` $\to$ `a5b7ca4`] Pre-deduplication materialization in `analyzer.py` at `933a1bc` (resolved for `Finding` and `_source_files` in `a5b7ca4`, with minor `_FindingObservation` allocation remaining)
+- **Location:** [analyzer.py](../../../src/messpy/analyzer.py#L804-L855), [analyzer.py](../../../src/messpy/analyzer.py#L1413-L1505), [analyzer.py](../../../src/messpy/analyzer.py#L2480-L2570), and [analyzer.py](../../../src/messpy/analyzer.py#L5118-L5154).
+- **Evidence:**
+  - At `933a1bc`, `_exit_expression_findings`, `_unused_function_local_findings`, and `_scope_comprehension_findings` materialized `candidates: list[tuple[str | int, Finding]]`—eagerly constructing `Finding` objects for every duplicate before `_FindingEmissions.collect` deduplicated them—while `_input_nodes`, `_output_nodes`, `_implicit_instance_input_findings`, `_implicit_instance_output_findings` materialized `observations: list[tuple[str, ast.AST]]`, and `_source_files` materialized a list of per-root `(set[Path], list[ProcessingError])` results.
+  - Commit `a5b7ca4` fixed the list materializations by streaming generators into `_FindingEmissions.collect`, `_FirstAccesses.collect`, and `_SourceDiscovery.collect`, and deferring `Finding(...)` construction until after `observation.identity in emissions.identities` is checked ([analyzer.py](../../../src/messpy/analyzer.py#L815-L822)).
+  - Remaining minor detail in `a5b7ca4`: `_function_local_observations` ([analyzer.py](../../../src/messpy/analyzer.py#L2484-L2494)) and `_comprehension_local_observations` ([analyzer.py](../../../src/messpy/analyzer.py#L2508-L2530)) still run `_lookup_symbol`, format the message string, and allocate a `_FindingObservation` for every duplicate assignment target in the same scope before `_FindingEmissions.collect` discards seen identities (whereas baseline `3448957` short-circuited on `name in reported`). Time complexity remains $O(N)$ and peak extra space is $O(1)$ per yielded observation.
+  - Similarly, `docs/state-machines.md` at `933a1bc` (uncommitted at the start of review) listed `_ClosureUses.include_child/finish` for `M36`; commit `20952f9` corrected [state-machines.md](../../../docs/state-machines.md#L44) to `_ClosureUses.collect/finish` matching [analyzer.py](../../../src/messpy/analyzer.py#L3041-L3055).
+
+---
+
+### Optional Design Preferences (Non-Bugs)
+
+1. **`@dataclass(frozen=True)` on in-place mutating collector classes in `analyzer.py`:**
+   - `_FindingEmissions` ([analyzer.py](../../../src/messpy/analyzer.py#L802)), `_GlobalBindings` ([analyzer.py](../../../src/messpy/analyzer.py#L1066)), `_FirstAccesses` ([analyzer.py](../../../src/messpy/analyzer.py#L1413)), `_DictionaryKeys` ([analyzer.py](../../../src/messpy/analyzer.py#L2367)), `_SymbolTablePool` ([analyzer.py](../../../src/messpy/analyzer.py#L2666)), `_ClosureUses` ([analyzer.py](../../../src/messpy/analyzer.py#L3067)), `_ClassTraversal` ([analyzer.py](../../../src/messpy/analyzer.py#L3445)), and `_SourceDiscovery` ([analyzer.py](../../../src/messpy/analyzer.py#L5118)) are decorated with `@dataclass(frozen=True)` even though their `collect` classmethods mutate their `set`, `list`, or `dict` attributes in place.
+   - Using plain `@dataclass` (as already done for `_CallReachability` and `_FirstCallEdges` in [callgraph.py](../../../src/messpy/callgraph.py#L34-L144), `_ConstantKinds` in [constants.py](../../../src/messpy/constants.py#L23), `_EffectReports` in [effects.py](../../../src/messpy/effects.py#L128), `_ActionPropagation` in [onion.py](../../../src/messpy/onion.py#L243), and `_AttributeEvidence` / `_VisitorInheritance` in [analyzer.py](../../../src/messpy/analyzer.py#L3243)) would more accurately distinguish mutable collectors from immutable value states.
+2. **Scope of `_SourceDiscovery` in `M06`:**
+   - `_SourceDiscovery.collect` ([analyzer.py](../../../src/messpy/analyzer.py#L5118-L5154)) owns file and error deduplication across top-level CLI roots in `_source_files`, while recursive directory descent in `_collect_directory_source_files` ([analyzer.py](../../../src/messpy/analyzer.py#L5165-L5185)) still accumulates raw `set[Path]` and `list[ProcessingError]` locals and passes `root: Path` as a parameter.
+3. **Caller-enforced terminal guards on `_ComprehensionFrame.advance`:**
+   - `_EvaluationPrefix._include` ([reachability.py](../../../src/messpy/reachability.py#L38-L39)) and `_ComprehensionBindingUse.following_clause` ([analyzer.py](../../../src/messpy/analyzer.py#L2907-L2908)) self-guard their terminal state (`STOPPED` / `shadowed`), whereas `_ComprehensionFrame.advance` ([ownership.py](../../../src/messpy/ownership.py#L1230-L1239)) relies on the caller loop ([ownership.py](../../../src/messpy/ownership.py#L1257-L1260)) to break when `not frame.active`.
+
+---
+
+### Focused Audit of Requested Risk Areas
+
+1. **Analyzer collection owners & pre-dedup materialization (`M38`):**
+   - Verified in `_FindingEmissions` ([analyzer.py](../../../src/messpy/analyzer.py#L802-L823)) and `_FirstAccesses` ([analyzer.py](../../../src/messpy/analyzer.py#L1413-L1422)). First-witness semantics (`setdefault` on access name, first `id(scope)` for `ExitExpression`, first binding line per unused variable name) are preserved and covered by `test_emission_deduplication_keeps_first_binding_and_first_exit_per_scope` and `test_repeated_bindings_and_exits_construct_only_emitted_findings` ([test_state_analyzer.py](../../../tests/test_state_analyzer.py#L206-L227)).
+2. **Source discovery accumulation (`M06`):**
+   - Verified in `_SourceDiscovery.collect` and `_source_files` ([analyzer.py](../../../src/messpy/analyzer.py#L5118-L5154)). Streaming the generator `( _source_files_under(...) for path in paths )` into `_SourceDiscovery.collect` avoids holding all per-root file sets simultaneously, preserves first-error-per-path deduplication (`error.path in discovery.error_paths`), and sorts discovered files deterministically by `candidate.as_posix()`.
+3. **Linked traversal performance (`M09`, `M22`, `M24`, `M32`, `M33`, `M37`):**
+   - Verified that commits `3a03151` and `8efd1da` eliminated tuple-slicing and tuple-stack copying in favor of $O(1)$ indexed cursors and singly linked frames:
+     - `_CallableLookup` ([callgraph.py](../../../src/messpy/callgraph.py#L279-L298)) and `_NameLookup` ([names.py](../../../src/messpy/names.py#L126-L141)) advance an integer `position` over a shared `scopes` tuple in $O(1)$ per step.
+     - `_CaptureFrame` / `_CaptureWalk` ([captures.py](../../../src/messpy/captures.py#L69-L96)) chains frames via `previous: _CaptureFrame | None` and decrements `position` from `len(nodes) - 1` down to `0`, matching the exact preorder `pending.pop()` sequence of the baseline in $O(N)$ total time and $O(D)$ stack depth.
+     - `_TraceFrame` / `_ObservationReplay` ([ownership.py](../../../src/messpy/ownership.py#L640-L664)) chains nested trace tuples via `previous: _TraceFrame | None` and increments `position` from `0` to `len(trace) - 1`, replaying `_Seen` observations in exact chronological order in $O(N)$ time without allocating `reversed(item)` copies.
+     - `_AliasSnapshot` / `_CallableAliases` ([effects.py](../../../src/messpy/effects.py#L86-L126)) and `_EvaluatedNode` / `_EvaluationPrefix` ([reachability.py](../../../src/messpy/reachability.py#L15-L50)) prepend linked nodes in $O(1)$ and reverse once at materialization in $O(N)$.
+4. **Lexical resolver differences (`M09`):**
+   - Verified that the four resolvers remain intentionally distinct where their domain semantics differ:
+     - `_NameLookup` ([names.py](../../../src/messpy/names.py#L126-L177)) includes `ClassDef` only for expressions directly in the class body (`_with_parent_scope`) and hides module imports when the module assigns to the same name.
+     - `_CallableLookup` ([callgraph.py](../../../src/messpy/callgraph.py#L279-L314)) always skips `index.class_ids` and invalidates module-level callable bindings when any function in the module mutates the name via `global` (`index.rebound_globals`).
+     - `_ShadowLookup` ([analyzer.py](../../../src/messpy/analyzer.py#L1328-L1353)) starts with `allow_class=True` for direct class-body expressions and transitions `allow_class=False` upon crossing any function, class, or comprehension boundary, and stops with `verdict=False` if an enclosing function declares `global name`.
+     - `_ScopeChain.binding` ([analyzer.py](../../../src/messpy/analyzer.py#L1898-L1910)) prepends `class_scope` only via `for_node` ([analyzer.py](../../../src/messpy/analyzer.py#L1882-L1896)) when the node is directly inside a class body.
+5. **Cache publication (`M36`, `M39`):**
+   - `_ScopeUsageMemo.resolve` ([analyzer.py](../../../src/messpy/analyzer.py#L3091-L3100)) returns `(self.entries[id(table)], self)` without copying on a cache hit, and on a miss folds child memos iteratively through `_ClosureUses.collect` before publishing `id(table): usage`.
+   - `_State.begin` and `_State.remember` ([ownership.py](../../../src/messpy/ownership.py#L251-L258)) invalidate stale per-node `evaluated` entries before re-evaluating a node (critical in loop rounds) and record new evaluations.
+   - `_CallMemo.capture` and `_CallMemo.replay` ([ownership.py](../../../src/messpy/ownership.py#L260-L275)) capture cell and heap deltas by identity (`before.cells.get(key) is not value`) after `_execute_body` completes and replay them onto caller state while keeping `calls` excluded from `_State` equality (`compare=False` at [ownership.py](../../../src/messpy/ownership.py#L240)).
+6. **Suppression ordering (`M25`, `M26`):**
+   - Verified in `_SuppressionSchedule` and `_SuppressionScan` ([analyzer.py](../../../src/messpy/analyzer.py#L4949-L5011)). `state.before(finding.line, schedule)` consumes only directives with `directive_line < finding.line` (so same-line `# messpy-disable` does not suppress a finding on its own line, while `disable` followed by same-line `enable` or nested `disable` depth $\ge 2$ behaves identically to baseline). `_next_line_suppression` ([analyzer.py](../../../src/messpy/analyzer.py#L5038-L5054)) skips comment lines with unrelated comment findings and expands across multi-line definition headers (`header_lines`).
+
+---
+
+### Verification of All 39 State-Machine Mappings (`docs/state-machines.md`)
+
+| ID | Machine | Runtime Owner(s) & Exact Lines | Status |
+| :--- | :--- | :--- | :--- |
+| **M01** | Argument consumption | [cli.py:181-235](../../../src/messpy/cli.py#L181-L235): `_ArgumentParseState`, `_ArgumentCursor.consume/finish` | Verified |
+| **M02** | Recursive ruleset expansion | [rulesets.py:290-300, 387-403](../../../src/messpy/rulesets.py#L290-L300): `_RulesetContext.enter` | Verified |
+| **M03** | Ordered rule configuration | [rulesets.py:50-55, 302-323, 520-544](../../../src/messpy/rulesets.py#L302-L323): `_RuleConfiguration.apply/include`, `_ConfiguredRule`, `_merge` | Verified |
+| **M04** | Report publication | [cli.py:784-820](../../../src/messpy/cli.py#L784-L820): `_ReportPublication.stage/publish/discard` | Verified |
+| **M05** | Temporary umask change | [cli.py:767-782](../../../src/messpy/cli.py#L767-L782): `_restored_umask`, `_destination_file_mode` | Verified |
+| **M06** | Discovery & per-file processing | [analyzer.py:537-569, 5118-5154](../../../src/messpy/analyzer.py#L537-L569): `_DecodedSource.analyze`, `_read_source`, `_SourceDiscovery.collect` | Verified |
+| **M07** | Callable discovery | [callables.py:105-127](../../../src/messpy/callables.py#L105-L127): `_CallableVisit.children`, `module_callables` | Verified |
+| **M08** | Callable binding & shadowing | [callgraph.py:168-223, 361-520](../../../src/messpy/callgraph.py#L168-L223): `_BindState`, `_CallableIndex`, `_bind_name`, `_shadow`, `_Declarations` | Verified |
+| **M09** | Lexical lookup | [names.py:120-148](../../../src/messpy/names.py#L120-L148): `_NameLookup.advance`, `_ResolvedName`; [callgraph.py:269-319](../../../src/messpy/callgraph.py#L269-L319): `_CallableLookup.advance`, `_CallableBinding`, `_LookupStop`; [analyzer.py:1328-1353, 1864-1910](../../../src/messpy/analyzer.py#L1328-L1353): `_ShadowLookup.advance`, `_ScopeChain.binding` | Verified |
+| **M10** | Comprehension name masking | [syntax.py:58-83](../../../src/messpy/syntax.py#L58-L83): `_MaskedVisit.children`, `comprehension_masks` | Verified |
+| **M11** | Comprehension binding lifetime | [analyzer.py:2901-2945](../../../src/messpy/analyzer.py#L2901-L2945): `_ComprehensionBindingUse.following_clause` | Verified |
+| **M12** | Constant-kind propagation | [constants.py:23-48](../../../src/messpy/constants.py#L23-L48): `_ConstantKinds.collect/constants` | Verified |
+| **M13** | Naming context | [analyzer.py:4091-4329](../../../src/messpy/analyzer.py#L4091-L4329): `_NamingState`, `_Cons`, `_naming_visit` reducers | Verified |
+| **M14** | AST-to-symbol-table matching | [analyzer.py:2666-2741, 2877-2888](../../../src/messpy/analyzer.py#L2666-L2741): `_SymbolTablePool.functions/comprehensions` | Verified |
+| **M15** | Ownership & alias execution | [ownership.py:81-258, 1264-1397](../../../src/messpy/ownership.py#L233-L258): `_State.begin/remember`, `_Cell`, `Storage`, `_bound`, `_linked`, `_update_aliases` | Verified |
+| **M16** | Control-flow fork & join | [ownership.py:633-638, 833-933, 1340-1397](../../../src/messpy/ownership.py#L833-L933): `_Flow`, branch visitors, `_join_bindings`, `Storage.join` | Verified |
+| **M17** | Loop convergence | [ownership.py:666-685, 857-873](../../../src/messpy/ownership.py#L666-L685): `_LoopRound.evaluate/advance/converged` | Verified |
+| **M18** | Closure activation & call/return | [ownership.py:687-758, 1052-1107](../../../src/messpy/ownership.py#L1052-L1107): `_Context.activation/active`, `_Closure`, `_frame_state`, `_execute_body`, `_uncertain_execution` | Verified |
+| **M19** | Heap precision & invalidation | [ownership.py:277-286, 369-380, 1109-1220](../../../src/messpy/ownership.py#L277-L286): `_HeapPath.remaining/descend`, `Storage` slot reducers | Verified |
+| **M20** | Comprehension binding isolation | [ownership.py:1223-1261](../../../src/messpy/ownership.py#L1223-L1261): `_ComprehensionFrame.advance/result/leave` | Verified |
+| **M21** | Deferred provenance & forcing | [execution.py:20-39, 64-131](../../../src/messpy/execution.py#L20-L39): `_DeferredStatus`, `_DeferredCall`, `_deferred_assignment` | Verified |
+| **M22** | Callable-alias tracking | [effects.py:86-126, 269-274](../../../src/messpy/effects.py#L86-L126): `_CallableAliases.observe/bind/observations`, `_AliasSnapshot` | Verified |
+| **M23** | Interprocedural effect convergence | [effects.py:73-84, 501-505](../../../src/messpy/effects.py#L73-L84): `_SummaryIteration.advance`, `_fixed_point` | Verified |
+| **M24** | Reachability & short-circuit scanning | [reachability.py:13-51, 88-149](../../../src/messpy/reachability.py#L13-L51): `_ScanPhase`, `_EvaluatedNode`, `_EvaluationPrefix` | Verified |
+| **M25** | Nested suppression regions | [analyzer.py:4957-5011](../../../src/messpy/analyzer.py#L4957-L5011): `_SuppressionScan.before/consume/suppresses` | Verified |
+| **M26** | Scheduled next-line suppression | [analyzer.py:4949-5058](../../../src/messpy/analyzer.py#L4949-L5058): `_SuppressionSchedule`, `_SuppressionScan`, `_next_line_suppression` | Verified |
+| **M27** | Global initialization vs. mutation | [analyzer.py:1066-1142](../../../src/messpy/analyzer.py#L1066-L1142): `_GlobalBindings.collect/is_reassignment` | Verified |
+| **M28** | Private-member proof degradation | [analyzer.py:3243-3393](../../../src/messpy/analyzer.py#L3243-L3393): `_AttributeEvidence.exports/dynamic/merge`, `_PrivateFieldEvidence.declare/access/unused`, `PrivateMemberUsage` | Verified |
+| **M29** | Boolean-return backward proof | [analyzer.py:3805-3829](../../../src/messpy/analyzer.py#L3805-L3829): `_BooleanReturnSuffix.prepend` | Verified |
+| **M30** | Visitor-inheritance convergence | [analyzer.py:4660-4692](../../../src/messpy/analyzer.py#L4660-L4692): `_VisitorInheritance.collect` | Verified |
+| **M31** | Domain-action propagation | [onion.py:214-275](../../../src/messpy/onion.py#L214-L275): `_ActionPropagation.collect`, `_ActionPath.phrase` | Verified |
+| **M32** | Capture-proof traversal | [captures.py:36-96, 150-153, 283-287](../../../src/messpy/captures.py#L36-L96): `_CaptureQuery.helper/nodes/reads`, `_CaptureWalk`, `_CaptureFrame` | Verified |
+| **M33** | Graph traversal | [callgraph.py:34-48](../../../src/messpy/callgraph.py#L34-L48): `_CallReachability.collect`; [protocols.py:36-44](../../../src/messpy/protocols.py#L36-L44): `_AncestorPath.ancestors`; [analyzer.py:3445-3463](../../../src/messpy/analyzer.py#L3445-L3463): `_ClassTraversal.collect`; `_HeapPath`, `_CaptureWalk`, `_ObservationReplay` | Verified |
+| **M34** | Cohesion component merging | [cohesion.py:83-123](../../../src/messpy/cohesion.py#L83-L123): `_MethodComponents.find/union/count` | Verified |
+| **M35** | Duplicate-key detection | [analyzer.py:2367-2408](../../../src/messpy/analyzer.py#L2367-L2408): `_DictionaryKeys.collect` | Verified |
+| **M36** | Closure-use propagation | [analyzer.py:3067-3107](../../../src/messpy/analyzer.py#L3067-L3107): `_ClosureUses.collect/finish`, `_ScopeUsageMemo.resolve`, `ScopeUsage` | Verified |
+| **M37** | Observation history | [ownership.py:627-664, 769-776](../../../src/messpy/ownership.py#L627-L664): `_Seen`, `_TraceFrame`, `_ObservationReplay`, `_observations` | Verified |
+| **M38** | First-witness & emission dedup | [callgraph.py:143-157](../../../src/messpy/callgraph.py#L143-L157): `_FirstCallEdges.collect`; [effects.py:128-145](../../../src/messpy/effects.py#L128-L145): `_EffectReports.collect`; [analyzer.py:791-823, 1413-1422, 2367-2383](../../../src/messpy/analyzer.py#L791-L823): `_FindingObservation`, `_FindingEmissions.collect`, `_FirstAccesses.collect`, `_DictionaryKeys.collect`; [onion.py:232-240](../../../src/messpy/onion.py#L232-L240): `_module_call_sites` | Verified |
+| **M39** | Memoization & invalidation | [ownership.py:251-275, 1066-1074](../../../src/messpy/ownership.py#L251-L275): `_State.begin/remember`, `_CallMemo.capture/replay`; [analyzer.py:3091-3100](../../../src/messpy/analyzer.py#L3091-L3100): `_ScopeUsageMemo`; `lru_cache` indexes in `callables.py` and `syntax.py` | Verified |
+
+---
+
+### Limitations
+
+- Per instructions, no heavy test suites, fuzzing runs, or CrossHair symbolic executions were re-executed during this review; verification relies on static inspection of the git diffs (`3448957..933a1bc` and `933a1bc..a5b7ca4`), uncommitted working-tree changes, unit tests, and the captured audit logs ([integrated-tests.log](./integrated-tests.log), [integrated-parity.log](./integrated-parity.log), [parity-negative.log](./parity-negative.log), [ruleset-formal-before.log](./ruleset-formal-before.log), [ruleset-formal-after.log](./ruleset-formal-after.log), and [ruleset-formal-negative.log](./ruleset-formal-negative.log)).
+- Differential parity ([verify_state_machine_parity.py](../../../scripts/verify_state_machine_parity.py)) and bounded CrossHair contracts cover a finite corpus of 518 source samples and 4 symbolic `_merge` properties, not unbounded equivalence over all Python programs.

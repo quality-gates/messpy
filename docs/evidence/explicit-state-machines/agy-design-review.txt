@@ -1,0 +1,131 @@
+### 1. Assessment of the Refactoring Plan ([plan.md](./plan.md))
+
+1. **Architecture Choice (Unit 1):** Preferring local domain state types over a universal state-machine framework is essential. `messpy` enforces strict self-analysis gates ([verify_self_analysis.py](../../../scripts/verify_self_analysis.py#L109-L134) and [messpy-onion.xml](../../../rulesets/messpy-onion.xml#L6-L13)), including `LackOfCohesionOfMethods` ($\text{LCOM4} \le 1$), `CouplingBetweenObjects` ($< 13$), `CyclomaticComplexity` ($< 10$), `NPathComplexity` ($< 200$), `DomainAction`, and `explicitness`. A generic transition engine or mutable state classes will immediately fail self-analysis (`ImplicitInstanceOutput`, `UnknownEffect`, or `CouplingBetweenObjects`).
+2. **Existing Explicit Machines vs. True Gaps (Unit 2):** Since the 16-module inventory was taken, `main` (`3448957`) has already extracted 4 modules (`callables.py`, `parameters.py`, `regions.py`, `syntax.py`) and partially or fully reified several machines (e.g., `_ArgumentParseState` in `cli.py`, `_ConfiguredRule` in `rulesets.py`, `_BindState`/`_CallableIndex` in `callgraph.py`, `_State`/`_Flow`/`_Context` in `ownership.py`, `_NamingState` in `analyzer.py`). Unit 2 should classify each of `M01`–`M39` into:
+   - **Verify & Tighten:** State carrier already exists; make transitions named functions/methods and eliminate remaining ad-hoc tuple/flag threading.
+   - **Consolidate & Reify:** State is currently split across parallel dicts, multi-return tuples, or duplicated across modules (`M09` lexical lookup, `M25`–`M26` suppressions, `M27` globals, `M28` private members, `M31` onion propagation, `M38` first-witness deduplication).
+3. **Worktree Partitioning Risk (Units 3–5):** [analyzer.py](../../../src/messpy/analyzer.py) is a 5,116-line hub touched by Units 3, 4, and 5 (`_ScopeChain` and `_ownership_program` for Unit 3; `_source_files` and `_apply_suppressions` for Unit 4; `_naming_roles`, `_function_scopes`, `_private_member_usage`, `_global_variable_findings`, `_has_boolean_result`, `_ast_visitor_class_ids` for Unit 5). Parallel workers editing `analyzer.py` across Units 3–5 will cause severe merge conflicts unless either `analyzer.py` edits are serialized in Unit 6 or the newly reified state machines are extracted into dedicated domain helpers imported by `analyzer.py` (warning: any new `.py` file under `src/messpy/` must also be added to the `domain` glob list in [messpy-onion.xml](../../../rulesets/messpy-onion.xml#L9)).
+
+---
+
+### 2. Concrete Authoritative State Representations (`M01`–`M39`)
+
+All state carriers in domain modules **must** be `@dataclass(frozen=True)` with pure transition functions (`(State, Event) -> State`)—never in-place mutations (`self.x = ...`), which violate `ImplicitInstanceOutput` / `DomainAction`, and never methods on dataclasses that are instantiated inside analyzed functions (see Pitfall 1 below).
+
+#### Unit 3: Ownership, Deferred Execution, Effects, Captures, Reachability (`M15`–`M24`, `M32`, `M37`, `M39`)
+- **`M15` (Ownership/alias execution), `M16` (Fork/join), `M17` (Loop convergence), `M18` (Closure activation), `M19` (Heap precision/invalidation), `M20` (Comprehension isolation) — [ownership.py](../../../src/messpy/ownership.py#L81-L250):**
+  - `_State`, `_Flow`, `_Context`, `Storage`, `_Cell`, `_Closure`, and `Origin` are already explicit.
+  - **Refinement:** Replace stringly-typed path markers (`("uncertain", "*")`, `("element", "*")`, `("item", k)`, `("attribute", a)`) and `augmented_mutation` return strings (`"write"`, `"unknown"`, `""`) with named constants/literals, and make loop convergence (`_visit_loop` at [ownership.py](../../../src/messpy/ownership.py#L777-L796)) and heap slot transitions (`_append_slot`, `_invalidated_slots`, `_invalidate_passed_slots` at [ownership.py](../../../src/messpy/ownership.py#L1100-L1151)) explicit transition helpers on `_State`.
+- **`M21` (Deferred provenance & forcing) — [execution.py](../../../src/messpy/execution.py#L68-L110):**
+  - Currently uses `dict[str, tuple[tuple[ast.AST, ast.Call], ...] | None]` where `()` means eager, non-empty tuple means deferred targets, and `None` means a rebound (`writes[name] > 1`) deferred variable.
+  - **Authoritative state:** `@dataclass(frozen=True) class DeferredBinding: status: str; targets: tuple[tuple[ast.AST, ast.Call], ...] = ()` (with states `"eager"`, `"deferred"`, `"ambiguous_rebound"`) inside `@dataclass(frozen=True) class DeferredEnv: bindings: Mapping[str, DeferredBinding]; writes: Mapping[str, int]`.
+- **`M22` (Callable-alias tracking) — [effects.py](../../../src/messpy/effects.py#L204-L250):**
+  - **Authoritative state:** `@dataclass(frozen=True) class CallableAliasState: active: Mapping[str, ast.AST]; unstable: frozenset[str]; snapshots: Mapping[int, Mapping[str, ast.AST]]`, stepped per evaluated node (recording `snapshots[id(node)]` *before* applying `node`'s binding/killing update).
+- **`M23` (Interprocedural effect convergence) — [effects.py](../../../src/messpy/effects.py#L42-L71), [effects.py](../../../src/messpy/effects.py#L455-L664):**
+  - `Effect`, `EffectSummary`, and `CallableEffects` exist. Make the fixed-point state explicit as `@dataclass(frozen=True) class EffectPropagationState: summaries: Mapping[int, EffectSummary]; converged: bool = False`.
+- **`M24` (Reachability & short-circuit scanning) — [reachability.py](../../../src/messpy/reachability.py#L18-L105) & [analyzer.py](../../../src/messpy/analyzer.py#L2114-L2205):**
+  - Reify statement completion status (`"completes"`, `"abrupt_return_or_raise"`, `"abrupt_loop_jump"`) so `reachability._never_completes` and `analyzer._statement_always_exits` share a clear vocabulary while preserving their distinct AST coverage (`live_statements` is conservative for evaluation pruning; `_statement_always_exits` handles `Match`/`Try`/`With` for `ElseExpression`).
+- **`M32` (Capture-proof traversal) — [captures.py](../../../src/messpy/captures.py#L26-L103):**
+  - `_Capture(name, scope, value)` exists with four value classes (`_IMMUTABLE`, `_FRESH_IMMUTABLE`, `_FRESH_SHARED`, `_SHARED`) and three use modes (`"identity"`, `"arithmetic"`, `"contents"`). Add explicit `@dataclass(frozen=True) class CaptureProofState: capture: _Capture; visited_scopes: frozenset[int]` to make interprocedural helper cycle prevention (`site.callee in chain.scopes` at [captures.py](../../../src/messpy/captures.py#L236)) explicit.
+- **`M37` (Observation history) — [ownership.py](../../../src/messpy/ownership.py#L591-L602), [ownership.py](../../../src/messpy/ownership.py#L686-L709):**
+  - `_Seen(node, bindings)` and `_Flow(bindings, trace)` are explicit; document and preserve the last-write-wins reduction in `_observations(trace)`.
+- **`M39` (Memoization & invalidation) — [ownership.py](../../../src/messpy/ownership.py#L988-L1000), [ownership.py](../../../src/messpy/ownership.py#L702-L704):**
+  - Reify the call-memo entry in `_State.calls` (currently an anonymous 3-tuple `tuple[Storage, Mapping, Mapping]`) as `@dataclass(frozen=True) class CallMemoEntry: result: Storage; cell_delta: Mapping[_Cell, Storage]; heap_delta: Mapping[tuple[int, ...], Storage]` keyed by `@dataclass(frozen=True) class CallMemoKey: target_id: int; arguments: tuple[tuple[str, Storage], ...]; active: frozenset[int]`.
+
+#### Unit 4: CLI, Rulesets, File Discovery, Suppression (`M01`–`M06`, `M25`–`M26`)
+- **`M01` (Argument consumption) — [cli.py](../../../src/messpy/cli.py#L174-L210):**
+  - Fold `index: int = 0` into `_ArgumentParseState` so `_consume_argument(state, arguments) -> _ArgumentParseState` is a self-contained state transition.
+- **`M02` (Recursive ruleset expansion) & `M03` (Ordered rule configuration) — [rulesets.py](../../../src/messpy/rulesets.py#L50-L56), [rulesets.py](../../../src/messpy/rulesets.py#L290-L516):**
+  - Introduce `@dataclass(frozen=True) class _ExpansionContext: directory: Path; ancestry: tuple[Path, ...] = ()` for `M02`.
+  - Keep `_ConfiguredRule` and `_merge(current: dict[str, _ConfiguredRule], rules: Iterable[_ConfiguredRule]) -> dict[str, _ConfiguredRule]` intact at the module boundary for `M03` (required by CrossHair contracts in [contracts.py](../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py#L1-L41)).
+- **`M04` (Report publication) & `M05` (Temporary umask change) — [cli.py](../../../src/messpy/cli.py#L750-L780):**
+  - Keep `os.umask`, `report_file.stat`, and `stat.S_IMODE` directly inside `_destination_file_mode` (required by [verify_self_analysis.py](../../../scripts/verify_self_analysis.py#L101-L106); see Pitfall 2). Model the atomic temp-file lifecycle in `_write_report` with an explicit `@dataclass(frozen=True) class _StagedReport: destination: Path; temporary: Path | None; mode: int`.
+- **`M06` (Discovery & per-file processing) — [analyzer.py](../../../src/messpy/analyzer.py#L4989-L5116):**
+  - **Authoritative state:** `@dataclass(frozen=True) class _DiscoveryState: files: frozenset[Path] = frozenset(); errors: tuple[ProcessingError, ...] = (); seen_errors: frozenset[Path] = frozenset()` paired with `@dataclass(frozen=True) class _ScanCursor: path: Path; root: Path; is_root: bool = True` to make the root-symlink-allowed vs. nested-symlink-ignored transition explicit.
+- **`M25` (Nested suppression regions) & `M26` (Scheduled next-line suppression) — [analyzer.py](../../../src/messpy/analyzer.py#L4833-L4965):**
+  - **Authoritative state:** Replace the loose locals `(directive_index, active_counts, next_line_rules)` with:
+    ```python
+    @dataclass(frozen=True)
+    class _SuppressionDirective:
+        line: int
+        action: str  # "disable" | "enable" | "disable-next-line"
+        rules: frozenset[str]
+
+    @dataclass(frozen=True)
+    class _SuppressionState:
+        directive_index: int = 0
+        active_counts: Mapping[str, int] = field(default_factory=dict)
+        next_line_rules: Mapping[int, frozenset[str]] = field(default_factory=dict)
+    ```
+
+#### Unit 5: Binding, Naming, Rule Proofs, Graph Algorithms, Caches (`M07`–`M14`, `M27`–`M31`, `M33`–`M36`, `M38`)
+- **`M07` (Callable discovery) — [callables.py](../../../src/messpy/callables.py#L105-L131):**
+  - Reify the worklist item `(node, scope, enclosing)` as `@dataclass(frozen=True) class _CallableFrame: node: ast.AST; scope: ast.AST | None; enclosing: tuple[ast.AST, ...]`.
+- **`M08` (Callable binding & shadowing) — [callgraph.py](../../../src/messpy/callgraph.py#L335-L352):**
+  - `_BindState` and `_CallableIndex` are already explicit; ensure transitions (`_bind_name`, `_shadow`, `_record_method`, `_declare_names`) are documented as the authoritative state transitions for scope binding vs. shadowing.
+- **`M09` (Lexical lookup) — [callgraph.py](../../../src/messpy/callgraph.py#L261-L292), [names.py](../../../src/messpy/names.py#L120-L131), [analyzer.py](../../../src/messpy/analyzer.py#L1809-L1822), [analyzer.py](../../../src/messpy/analyzer.py#L1271-L1338):**
+  - Make per-scope resolution step return an explicit `@dataclass(frozen=True) class _ScopeStep: action: str; kind: str = ""; target: object = None` where `action` is `"resolved"`, `"jump_module"` (`global`), or `"continue_outer"` (`nonlocal` / unbound in current scope / skipped `ClassDef`). Do **not** blindly merge the four callers without preserving their class-scope and rebinding differences (see Pitfall 4).
+- **`M10` (Comprehension name masking) — [syntax.py](../../../src/messpy/syntax.py#L52-L86):**
+  - Reify worklist elements in `comprehension_masks` as `@dataclass(frozen=True) class _MaskFrame: node: ast.AST; masked: frozenset[str]`.
+- **`M11` (Comprehension binding lifetime) — [analyzer.py](../../../src/messpy/analyzer.py#L2801-L2845):**
+  - Replace `tuple[bool, bool]` (`used, shadowed`) with `@dataclass(frozen=True) class _ComprehensionTargetState: used: bool = False; shadowed: bool = False`.
+- **`M12` (Constant-kind propagation) — [constants.py](../../../src/messpy/constants.py#L22-L43):**
+  - Wrap `(writes: Counter[str], imports: Mapping[str, str], known: Mapping[str, str])` into `@dataclass(frozen=True) class _ConstantState`.
+- **`M13` (Naming context) — [analyzer.py](../../../src/messpy/analyzer.py#L3986-L4003):**
+  - `_NamingState` is already explicit. Keep `_Cons` for O(1) persistent target accumulation.
+- **`M14` (AST-to-symbol-table matching) — [analyzer.py](../../../src/messpy/analyzer.py#L2588-L2626), [analyzer.py](../../../src/messpy/analyzer.py#L2734-L2788):**
+  - **Authoritative state:** `@dataclass(frozen=True) class _SymtablePool: candidates: Mapping[tuple[str, int], tuple[symtable.SymbolTable, ...]]` with pure transition `_take_table(pool, key, predicate) -> tuple[symtable.SymbolTable | None, _SymtablePool]`.
+- **`M27` (Global initialization vs. mutation) — [analyzer.py](../../../src/messpy/analyzer.py#L1008-L1107):**
+  - **Authoritative state:** `@dataclass(frozen=True) class _GlobalVariableState: candidates: Mapping[str, ast.Name]; immutable: frozenset[str]; initial_target_ids: frozenset[int]; mutated: frozenset[str] = frozenset()`.
+- **`M28` (Private-member proof degradation) — [analyzer.py](../../../src/messpy/analyzer.py#L488-L495), [analyzer.py](../../../src/messpy/analyzer.py#L3118-L3244):**
+  - `PrivateMemberUsage` is already explicit at module level. Reify the per-class tuple `(fields: dict[str, int], loads: set[str], unknown: bool)` in `_private_fields` as `@dataclass(frozen=True) class _PrivateFieldScanState: fields: Mapping[str, int]; loads: frozenset[str]; unknown: bool = False`.
+- **`M29` (Boolean-return backward proof) — [analyzer.py](../../../src/messpy/analyzer.py#L3697-L3725):**
+  - Make `fallthrough: bool` explicit as `@dataclass(frozen=True) class _BooleanReturnProof: proven_on_fallthrough: bool = False` stepped backward over `reversed(statements)`.
+- **`M30` (Visitor-inheritance convergence) — [analyzer.py](../../../src/messpy/analyzer.py#L4555-L4577):**
+  - Reify `(qualified_names, classes_by_qualified_name, visitor_ids)` as `@dataclass(frozen=True) class _VisitorHierarchyState`.
+- **`M31` (Domain-action propagation) — [onion.py](../../../src/messpy/onion.py#L55-L96), [onion.py](../../../src/messpy/onion.py#L213-L268):**
+  - **Authoritative state:** `@dataclass(frozen=True) class _DomainActionState: direct_phrases: Mapping[int, str]; action_ids: frozenset[int]` with explicit cycle-guard state `seen: frozenset[int]` in `_chain_phrase`.
+- **`M33` (Graph traversal) & `M34` (Cohesion component merging) — [cohesion.py](../../../src/messpy/cohesion.py#L83-L117):**
+  - Wrap `connected: dict[str, str]` in `@dataclass(frozen=True) class _DisjointComponents: parents: Mapping[str, str]` with pure `_find` and `_union` transitions.
+- **`M35` (Duplicate-key detection) — [analyzer.py](../../../src/messpy/analyzer.py#L2290-L2360):**
+  - **Authoritative state:** `@dataclass(frozen=True) class _StaticKeyEval: known: bool; value: object = None` and `@dataclass(frozen=True) class _DictKeyState: first_seen: Mapping[object, ast.expr]; findings: tuple[Finding, ...] = ()`.
+- **`M36` (Closure-use propagation) — [analyzer.py](../../../src/messpy/analyzer.py#L481-L485), [analyzer.py](../../../src/messpy/analyzer.py#L2960-L2983):**
+  - `ScopeUsage(used_names, free_names)` is already explicit; pair it with `usage_cache: Mapping[int, ScopeUsage]` in `@dataclass(frozen=True) class _ScopeUsageState`.
+- **`M38` (First-witness & emission deduplication):**
+  - Keep a consistent immutable witness-table pattern (`setdefault`-equivalent `@dataclass(frozen=True) class _FirstWitnesses: by_key: Mapping[K, V]`) across `effects.py`, `analyzer.py`, `callgraph.py`, and `onion.py`.
+
+---
+
+### 3. Semantic & Verification Pitfalls to Warn Against
+
+1. **PITFALL (Self-Analysis Breaker): Adding methods or `default_factory` fields to `@dataclass(frozen=True)` records in domain modules.**
+   - Look at `_frozen_record` and `_record_field` in [effects.py](../../../src/messpy/effects.py#L436-L453):
+     ```python
+     def _record_field(statement: ast.stmt) -> bool:
+         if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+             return statement.value is None or isinstance(statement.value, ast.Constant)
+         return isinstance(statement, ast.Pass) or isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant)
+     ```
+   - `messpy`'s own analyzer only recognizes a `@dataclass(frozen=True)` class as a pure constructor (`_empty_constructor` $\to$ `"record"` in [analyzer.py](../../../src/messpy/analyzer.py#L1560) and `_established_call` in [effects.py](../../../src/messpy/effects.py#L375)) if its body contains **only** `AnnAssign` statements with `None` or `ast.Constant` defaults (`Pass` and docstrings allowed), **no base classes** (so `Enum` subclasses are *not* recognized as pure constructors!), and **no methods**.
+   - If you add methods, `field(default_factory=...)`, or tuple/frozenset non-Constant default expressions to a `@dataclass(frozen=True)` state type (or subclass `Enum`), any function in `src/messpy/` that constructs `MyState(...)` will treat that constructor call as an `UnknownEffect` (`unresolved call`) and `Storage(opaque=True)` during self-analysis, and classes with methods will also be subject to `LackOfCohesionOfMethods` ($\text{LCOM4} \le 1$)!
+   - **Rule:** Keep state dataclasses pure data records (`AnnAssign` with `None` or literal `Constant` defaults; use `()` or `None` instead of `field(default_factory=...)` or `frozenset()`), and write state transitions as module-level functions `_step_*(state: _State, ...) -> _State`.
+
+2. **PITFALL (Self-Analysis Breaker): Refactoring `_destination_file_mode` or `main` in [cli.py](../../../src/messpy/cli.py#L153-L158) and [cli.py](../../../src/messpy/cli.py#L750-L759).**
+   - [verify_self_analysis.py](../../../scripts/verify_self_analysis.py#L93-L106) hardcodes AST inspection of `main` (requiring 3 literal defaults `sys.argv`, `sys.stdout`, `sys.stderr`) and `_destination_file_mode` (requiring direct `ast.Call` nodes to `report_file.stat`, `stat.S_IMODE`, and `os.umask` inside `_destination_file_mode`'s AST subtree, and asserting exact `UnknownEffect` findings on their max line numbers).
+   - **Rule:** Do not extract `os.umask` out of `_destination_file_mode` into an external helper or context manager when addressing `M05`.
+
+3. **PITFALL (Formal Verifier Breaker): Changing `_ConfiguredRule` or `_merge` signatures in [rulesets.py](../../../src/messpy/rulesets.py#L50-L56) and [rulesets.py](../../../src/messpy/rulesets.py#L485-L510).**
+   - [.agents/skills/verify-ruleset-precedence/scripts/contracts.py](../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py#L1-L41) directly imports `LoadedRule, _ConfiguredRule, _merge` and symbolically executes them under CrossHair (`0.0.110`).
+   - **Rule:** Preserve `_ConfiguredRule(rule, explicit_priority, explicit_properties)` and `_merge` or update `contracts.py` in lockstep and re-verify all 4 CrossHair contracts confirm over all paths.
+
+4. **PITFALL (`M09` Lexical Lookup): False unification across the 4 scope resolvers.**
+   - `callgraph.py` (`_resolve_bare_name`), `names.py` (`_resolved_record`), `analyzer.py` (`_ScopeChain.binding`), and `analyzer.py` (`_is_function_shadowed` / `_is_shadowed`) have subtle, intentional differences:
+     - `callgraph.py` invalidates module-level callable bindings if *any* function in the module has a `global x` declaration that stores/deletes `x` (`index.rebound_globals` at [callgraph.py](../../../src/messpy/callgraph.py#L204-L215)), whereas `names.py` only checks module-scope assignments (`_scope_assigned`).
+     - `_ScopeChain` classifies a module-level name that is both imported and assigned (e.g., `try: import x except ImportError: x = None`) as `"definition"` ([analyzer.py](../../../src/messpy/analyzer.py#L1962-L1968)), whereas `names.py` hides an import if the same scope assigns to that name ([names.py](../../../src/messpy/names.py#L212-L216)).
+     - Class scopes are skipped when resolving free variables inside methods, *except* when evaluating expressions directly inside the class body (`_ScopeChain.for_node` at [analyzer.py](../../../src/messpy/analyzer.py#L1793-L1807), `_with_parent_scope` at [names.py](../../../src/messpy/names.py#L150-L159), and `allow_class` in `_scope_shadows_candidate` at [analyzer.py](../../../src/messpy/analyzer.py#L1281-L1284)).
+
+5. **PITFALL (`M11` & `M26` & `M35` & `M37`): Subtle ordering and equality invariants.**
+   - **`M11` (Comprehension lifetime):** In `[x for x in xs for x in f(x)]`, the second generator's `iter` (`f(x)`) is evaluated *before* the second `target` (`x`) shadows the first `x` ([analyzer.py](../../../src/messpy/analyzer.py#L2836-L2845)). Transitioning to `shadowed=True` before scanning `later_generator.iter` will cause false positives in `UnusedLocalVariable`.
+   - **`M26` (Next-line suppression):** `# messpy-disable-next-line RuleA` skips over subsequent comment lines that have `DevelopmentCodeFragment` findings (`comment_finding_rules`) *unless* `RuleA` is in `comment_finding_rules[target_line]` ([analyzer.py](../../../src/messpy/analyzer.py#L4920-L4926)), and when targeting a decorator or `def` line, expands suppression across the entire multi-line signature (`header_lines`).
+   - **`M35` (Duplicate dict keys):** `_duplicated_array_key_findings` ([analyzer.py](../../../src/messpy/analyzer.py#L2300-L2319)) relies on native Python `dict` key equality where `1 == True == 1.0` and `0 == False == -0.0`, and retains the *first* key's line number (`keys[value] = key` only on miss) even when a key appears 3+ times.
+   - **`M37` (Observation history):** `_visit_call` ([ownership.py](../../../src/messpy/ownership.py#L940-L941)) emits a second `_Seen(id(node), flow.bindings)` *after* argument evaluation so that `ownership.value(arg, call)` observes side effects (such as `:=` or mutations) inside call arguments; `_observations(trace)` must remain last-seen-wins.

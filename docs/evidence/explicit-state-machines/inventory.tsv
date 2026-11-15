@@ -1,0 +1,40 @@
+id	machine
+M01	Argument consumption
+M02	Recursive ruleset expansion
+M03	Ordered rule configuration
+M04	Report publication
+M05	Temporary umask change
+M06	Discovery and per-file processing
+M07	Callable discovery
+M08	Callable binding and shadowing
+M09	Lexical lookup
+M10	Comprehension name masking
+M11	Comprehension binding lifetime
+M12	Constant-kind propagation
+M13	Naming context
+M14	AST-to-symbol-table matching
+M15	Ownership and alias execution
+M16	Control-flow fork and join
+M17	Loop convergence
+M18	Closure activation and call/return
+M19	Heap precision and invalidation
+M20	Comprehension binding isolation
+M21	Deferred provenance and forcing
+M22	Callable-alias tracking
+M23	Interprocedural effect convergence
+M24	Reachability and short-circuit scanning
+M25	Nested suppression regions
+M26	Scheduled next-line suppression
+M27	Global initialization versus mutation
+M28	Private-member proof degradation
+M29	Boolean-return backward proof
+M30	Visitor-inheritance convergence
+M31	Domain-action propagation
+M32	Capture-proof traversal
+M33	Graph traversal
+M34	Cohesion component merging
+M35	Duplicate-key detection
+M36	Closure-use propagation
+M37	Observation history
+M38	First-witness and emission deduplication
+M39	Memoization and invalidation
