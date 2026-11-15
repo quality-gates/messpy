@@ -100,9 +100,15 @@ def _production_expectations(source: str) -> tuple[Counter, Counter]:
         raise AssertionError("main must retain three literal ambient defaults for artifact verification")
     destination = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_destination_file_mode")
     calls = [node for node in ast.walk(destination) if isinstance(node, ast.Call)]
-    operations = {"report_file.stat", "stat.S_IMODE", "os.umask"}
+    operations = {"report_file.stat", "stat.S_IMODE", "_restored_umask"}
     unknown = Counter(("_destination_file_mode", "UnknownEffect", max(call.lineno for call in calls if _dotted(call.func) == operation))
                       for operation in operations)
+    manager = next(node for node in ast.walk(destination) if isinstance(node, ast.With))
+    unknown[("_destination_file_mode", "UnknownEffect", manager.lineno)] += 1
+    restoration = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_restored_umask")
+    restore_line = max(node.lineno for node in ast.walk(restoration)
+                       if isinstance(node, ast.Call) and _dotted(node.func) == "os.umask")
+    unknown[("_restored_umask", "UnknownEffect", restore_line)] += 1
     return inputs, unknown
 
 
@@ -119,7 +125,7 @@ def verify(executable: Path) -> None:
     checks = [
         (_records([finding for finding in findings if finding["context"] == "_help_text"]), Counter()),
         (_records([finding for finding in findings if finding["context"] == "<module>" and finding["ruleName"] == "ImplicitInput"]), inputs),
-        (_records([finding for finding in findings if finding["context"] == "_destination_file_mode"]), unknown),
+        (_records([finding for finding in findings if finding["context"] in {"_destination_file_mode", "_restored_umask"}]), unknown),
     ]
     for actual, expected in checks:
         if actual != expected:

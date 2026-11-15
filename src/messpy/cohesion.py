@@ -83,7 +83,7 @@ def _active_methods(methods: dict[str, _MethodRelationships]) -> set[str]:
 def _relationship_component_count(
     methods: dict[str, _MethodRelationships], active: set[str]
 ) -> int:
-    connected = {name: name for name in active}
+    components = _MethodComponents({name: name for name in active})
     methods_by_field: dict[str, tuple[str, ...]] = {}
     for name in active:
         for field in methods[name].fields:
@@ -91,29 +91,35 @@ def _relationship_component_count(
     for names in methods_by_field.values():
         first, *connected_names = names
         for name in connected_names:
-            connected = _union_components(connected, first, name)
+            components = components.union(first, name)
     names = sorted(active)
     for name in names:
         for called in methods[name].calls & active:
-            connected = _union_components(connected, name, called)
-    return len({_find_component(connected, name)[1] for name in active})
+            components = components.union(name, called)
+    return components.count()
 
 
-def _find_component(connected: dict[str, str], name: str) -> tuple[dict[str, str], str]:
-    if connected[name] == name:
-        return connected, name
-    updated, root = _find_component(connected, connected[name])
-    if updated[name] == root:
-        return updated, root
-    return {**updated, name: root}, root
+@dataclass(frozen=True)
+class _MethodComponents:
+    parents: dict[str, str]
 
+    def find(self, name: str) -> tuple[_MethodComponents, str]:
+        if self.parents[name] == name:
+            return self, name
+        updated, root = self.find(self.parents[name])
+        if updated.parents[name] == root:
+            return updated, root
+        return _MethodComponents({**updated.parents, name: root}), root
 
-def _union_components(connected: dict[str, str], left: str, right: str) -> dict[str, str]:
-    connected, left_root = _find_component(connected, left)
-    connected, right_root = _find_component(connected, right)
-    if left_root == right_root:
-        return connected
-    return {**connected, left_root: right_root}
+    def union(self, left: str, right: str) -> _MethodComponents:
+        components, left_root = self.find(left)
+        components, right_root = components.find(right)
+        if left_root == right_root:
+            return components
+        return _MethodComponents({**components.parents, left_root: right_root})
+
+    def count(self) -> int:
+        return len({self.find(name)[1] for name in self.parents})
 
 
 @dataclass(frozen=True)

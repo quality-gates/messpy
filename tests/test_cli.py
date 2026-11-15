@@ -1258,7 +1258,7 @@ class CommandAcceptanceTests(unittest.TestCase):
             module = frame.f_globals.get("__name__", "")
             name = frame.f_code.co_name
             if module in {"messpy.syntax", "messpy.names", "messpy.callgraph"}:
-                if name == "_masked_children":
+                if module == "messpy.syntax" and frame.f_code.co_qualname == "_MaskedVisit.children":
                     counts["masked_visits"] += 1
                 if name in {"comprehension_masks", "_comprehension_masks", "_expression_masks"}:
                     counts["mask_maps"] += 1
@@ -1310,6 +1310,7 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual(1, counts["parent_maps"])
         self.assertEqual(1, counts["node_walks"])
         node_count = len(list(ast.walk(ast.parse(source))))
+        self.assertGreater(counts["masked_visits"], 0)
         self.assertLessEqual(counts["masked_visits"], node_count)
 
     def test_if_statement_assignment_splits_source_once_per_file(self) -> None:
@@ -1471,6 +1472,25 @@ class CommandAcceptanceTests(unittest.TestCase):
         self.assertEqual("", stdout.getvalue())
         self.assertIn("Unable to write report", stderr.getvalue())
 
+    def test_reportfile_publication_failure_preserves_destination_and_removes_staging(self) -> None:
+        for operation in ("chmod", "replace"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                source = directory / "source.py"
+                source.write_text("value = 1\n", encoding="utf-8")
+                destination = directory / "report.json"
+                destination.write_text("previous report", encoding="utf-8")
+                stdout, stderr = StringIO(), StringIO()
+                with mock.patch.object(Path, operation, side_effect=OSError("publication failed")):
+                    status = run(
+                        [str(source), "json", "python", "--reportfile", str(destination)], stdout, stderr
+                    )
+                self.assertEqual(1, status)
+                self.assertEqual("", stdout.getvalue())
+                self.assertIn("Unable to write report", stderr.getvalue())
+                self.assertEqual("previous report", destination.read_text(encoding="utf-8"))
+                self.assertEqual({source, destination}, set(directory.iterdir()))
+
     @unittest.skipIf(sys.platform == "win32", "Closing fd 1 before exec needs POSIX preexec_fn.")
     def test_closed_stdout_is_an_operational_error_without_a_traceback(self) -> None:
         bad_file_descriptor = f"Error: [Errno {errno.EBADF}] {os.strerror(errno.EBADF)}\n"
@@ -1537,10 +1557,11 @@ class CommandAcceptanceTests(unittest.TestCase):
                 )
                 mode = stat.S_IMODE(report_file.stat().st_mode)
             finally:
-                os.umask(original_umask)
+                restored_umask = os.umask(original_umask)
 
         self.assertEqual(2, status)
         self.assertEqual(0o640, mode)
+        self.assertEqual(0o027, restored_umask)
 
     def test_command_errors_have_deterministic_diagnostics(self) -> None:
         cases = [

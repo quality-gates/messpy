@@ -33,6 +33,68 @@ class _Capture:
     value: str
 
 
+@dataclass(frozen=True)
+class _CaptureQuery:
+    name: str
+    scope: ast.AST
+    chain: _ScopeChain
+
+    @classmethod
+    def helper(cls, node: ast.Name, chain: _ScopeChain) -> _CaptureQuery | None:
+        call = _argument_call(node, chain.parents or {})
+        if call is None or chain.graph is None or chain.callable_node is None:
+            return None
+        site = chain.graph.call_site(chain.callable_node, call)
+        if site is None or site.callee in chain.scopes or not isinstance(site.callee, _FUNCTION_SCOPES):
+            return None
+        parameter = _parameter_for_value(node, call, site.callee)
+        if parameter is None:
+            return None
+        name, scope = parameter
+        local = replace(chain, scopes=(scope, *chain.scopes), callable_node=scope)
+        return cls(name, scope, local)
+
+    def nodes(self) -> Iterator[ast.AST]:
+        walk = _CaptureWalk(self).descend(evaluated_children(self.scope))
+        while walk.frame is not None:
+            node, walk = walk.advance()
+            yield node
+
+    def reads(self) -> Iterator[ast.Name]:
+        for node in self.nodes():
+            if isinstance(node, ast.Name) and node.id == self.name and isinstance(node.ctx, ast.Load):
+                yield node
+
+
+@dataclass(frozen=True)
+class _CaptureFrame:
+    nodes: list[ast.AST]
+    position: int
+    previous: _CaptureFrame | None = None
+
+
+@dataclass(frozen=True)
+class _CaptureWalk:
+    query: _CaptureQuery
+    frame: _CaptureFrame | None = None
+
+    def descend(self, nodes: list[ast.AST]) -> _CaptureWalk:
+        return replace(self, frame=_CaptureFrame(nodes, len(nodes) - 1, self.frame)) if nodes else self
+
+    def advance(self) -> tuple[ast.AST, _CaptureWalk]:
+        frame = self.frame
+        node = frame.nodes[frame.position]
+        remaining = frame.previous
+        if frame.position:
+            remaining = replace(frame, position=frame.position - 1)
+        walk = replace(self, frame=remaining)
+        if isinstance(node, _NESTED_SCOPES) and _binds_locally(node, self.query.name, self.query.chain):
+            children = _definition_time_nodes(node)
+        else:
+            children = evaluated_children(node)
+        return node, walk.descend(children)
+
+
 def write_only_receiver(node: ast.Name, parents: dict[int, ast.AST]) -> bool:
     """True when the name only receives a write, for example CACHE.append(value) or CACHE[key] = value."""
     parent = parents.get(id(node))
@@ -85,12 +147,10 @@ def _container_transfer(node: ast.Name, parent: ast.AST | None, chain: _ScopeCha
         return False
     if chain.qualified_name(call.func) in _CONTAINER_READERS:
         return True
-    helper = _helper_parameter(node, chain)
+    helper = _CaptureQuery.helper(node, chain)
     if helper is None:
         return False
-    parameter, scope = helper
-    local = replace(chain, scopes=(scope, *chain.scopes), callable_node=scope)
-    return any(_container_use(read, local) for read in _occurrences(parameter, scope, local))
+    return any(_container_use(read, helper.chain) for read in helper.reads())
 
 
 def _mutating_use(node: ast.Name, parents) -> bool:
@@ -220,22 +280,10 @@ def _private_call_read(node: ast.Name, capture: _Capture, chain: _ScopeChain) ->
     if call.args == [node] and not call.keywords:
         if qualified == "builtins.len" or capture.value == _FRESH_IMMUTABLE and qualified in _ELEMENT_READERS:
             return True
-    helper = _helper_parameter(node, chain)
+    helper = _CaptureQuery.helper(node, chain)
     if helper is None:
         return False
-    parameter, scope = helper
-    local = replace(chain, scopes=(scope, *chain.scopes), callable_node=scope)
-    return all(_safe_read(read, capture, local) for read in _occurrences(parameter, scope, local))
-
-
-def _helper_parameter(node: ast.Name, chain: _ScopeChain) -> tuple[str, ast.AST] | None:
-    call = _argument_call(node, chain.parents or {})
-    if call is None or chain.graph is None or chain.callable_node is None:
-        return None
-    site = chain.graph.call_site(chain.callable_node, call)
-    if site is None or site.callee in chain.scopes or not isinstance(site.callee, _FUNCTION_SCOPES):
-        return None
-    return _parameter_for_value(node, call, site.callee)
+    return all(_safe_read(read, capture, helper.chain) for read in helper.reads())
 
 
 def _parameter_for_value(node: ast.Name, call: ast.Call, target) -> tuple[str, ast.AST] | None:
@@ -255,15 +303,13 @@ def _argument_call(node: ast.Name, parents) -> ast.Call | None:
 
 
 def _binders(name: str, scope: ast.AST, chain: _ScopeChain) -> Iterator[ast.AST]:
-    for node in _scope_nodes(name, scope, chain):
+    for node in _CaptureQuery(name, scope, chain).nodes():
         if _binds(node, name):
             yield node
 
 
 def _occurrences(name: str, scope: ast.AST, chain: _ScopeChain) -> Iterator[ast.Name]:
-    for node in _scope_nodes(name, scope, chain):
-        if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load):
-            yield node
+    yield from _CaptureQuery(name, scope, chain).reads()
 
 
 def _binds(node: ast.AST, name: str) -> bool:
@@ -278,17 +324,6 @@ def _binds(node: ast.AST, name: str) -> bool:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return node.name == name
     return False
-
-
-def _scope_nodes(name: str, scope: ast.AST, chain: _ScopeChain) -> Iterator[ast.AST]:
-    pending = list(evaluated_children(scope))
-    while pending:
-        node = pending.pop()
-        yield node
-        if isinstance(node, _NESTED_SCOPES) and _binds_locally(node, name, chain):
-            pending.extend(_definition_time_nodes(node))
-            continue
-        pending.extend(evaluated_children(node))
 
 
 def _binds_locally(node: ast.AST, name: str, chain: _ScopeChain) -> bool:

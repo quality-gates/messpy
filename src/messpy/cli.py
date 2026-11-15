@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field as dataclass_field, replace
 from html import escape as html_escape
 import errno
@@ -198,15 +199,31 @@ class _ArgumentParseState:
     show_version: bool = False
 
 
+@dataclass(frozen=True)
+class _ArgumentCursor:
+    arguments: Sequence[str]
+    index: int = 0
+    parsed: _ArgumentParseState = dataclass_field(default_factory=_ArgumentParseState)
+
+    @property
+    def finished(self) -> bool:
+        return self.index >= len(self.arguments)
+
+    def consume(self) -> _ArgumentCursor:
+        parsed, index = _consume_argument(self.parsed, self.arguments, self.index)
+        return replace(self, parsed=parsed, index=index)
+
+    def finish(self) -> ParsedArguments:
+        if self.parsed.show_help or self.parsed.show_version:
+            return _finish_help_or_version_parsing(self.parsed)
+        return _finish_analysis_parsing(self.parsed)
+
+
 def _parse_arguments(arguments: Sequence[str]) -> ParsedArguments:
-    state = _ArgumentParseState()
-    index = 0
-    argument_count = len(arguments)
-    while index < argument_count:
-        state, index = _consume_argument(state, arguments, index)
-    if state.show_help or state.show_version:
-        return _finish_help_or_version_parsing(state)
-    return _finish_analysis_parsing(state)
+    cursor = _ArgumentCursor(arguments)
+    while not cursor.finished:
+        cursor = cursor.consume()
+    return cursor.finish()
 
 
 def _consume_argument(
@@ -751,31 +768,55 @@ def _destination_file_mode(report_file: Path) -> int:
     try:
         return stat.S_IMODE(report_file.stat().st_mode)
     except OSError:
-        current_umask = os.umask(0)
-        try:
+        with _restored_umask() as current_umask:
             return 0o666 & ~current_umask
-        finally:
-            os.umask(current_umask)
+
+
+@contextmanager
+def _restored_umask():
+    previous = os.umask(0)
+    try:
+        yield previous
+    finally:
+        os.umask(previous)
+
+
+@dataclass
+class _ReportPublication:
+    destination: Path
+    pending: Path | None = None
+
+    def stage(self, report: str) -> None:
+        if self.pending is not None:
+            raise RuntimeError("A staged report must be published or discarded")
+        with NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=self.destination.parent,
+            prefix=f".{self.destination.name}.", delete=False,
+        ) as output:
+            self.pending = Path(output.name)
+            output.write(report)
+
+    def publish(self, mode: int) -> None:
+        if self.pending is None:
+            raise RuntimeError("A report must be staged before publication")
+        self.pending.chmod(mode)
+        self.pending.replace(self.destination)
+        self.pending = None
+
+    def discard(self) -> None:
+        if self.pending is not None:
+            self.pending.unlink(missing_ok=True)
+            self.pending = None
 
 
 def _write_report(report_file: Path, report: str) -> None:
-    temporary_file: Path | None = None
+    publication = _ReportPublication(report_file)
     try:
         target_mode = _destination_file_mode(report_file)
-        with NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=report_file.parent,
-            prefix=f".{report_file.name}.",
-            delete=False,
-        ) as output:
-            temporary_file = Path(output.name)
-            output.write(report)
-        temporary_file.chmod(target_mode)
-        temporary_file.replace(report_file)
+        publication.stage(report)
+        publication.publish(target_mode)
     except OSError as error:
-        if temporary_file is not None:
-            temporary_file.unlink(missing_ok=True)
+        publication.discard()
         raise CliError(f"Unable to write report {report_file}: {error}") from error
 
 

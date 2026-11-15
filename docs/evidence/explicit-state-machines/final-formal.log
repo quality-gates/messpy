@@ -1,0 +1,18 @@
+XML cases: 15 single policies and 225 ordered pairs
+  PASS: 1-policy priority and minimum match the last explicit policy
+  PASS: 2-policy priority and minimum match the last explicit policy
+CLI case: PASS: expected exit 2 and a threshold 3 finding; exit=2, report='<temporary>/messpy-ruleset-verification-e2khb88q/sample.py:1: ExcessiveMethodLength [priority 3] The function sample() has 4 lines of code. Current threshold is set to 3. Avoid really long methods.\n', stderr=''
+Partial direct override: PASS: expected=[('ExcessiveMethodLength', 2, 3)], actual=[('ExcessiveMethodLength', 2, 3)]
+Partial policy priority only, top level: PASS: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=2, minimum=3)]
+Partial policy priority only, nested: PASS: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=2, minimum=3)]
+Partial policy priority only, twice nested: PASS: expected=[Policy(priority=2, minimum=3)], actual=[Policy(priority=2, minimum=3)]
+Partial policy minimum only, top level: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy minimum only, nested: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy minimum only, twice nested: PASS: expected=[Policy(priority=4, minimum=5)], actual=[Policy(priority=4, minimum=5)]
+Partial policy explicit defaults, top level: PASS: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=3, minimum=100)]
+Partial policy explicit defaults, nested: PASS: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=3, minimum=100)]
+Partial policy explicit defaults, twice nested: PASS: expected=[Policy(priority=3, minimum=100)], actual=[Policy(priority=3, minimum=100)]
+CrossHair nested_priority: PASS: ../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py:4: info: Confirmed over all paths.
+CrossHair nested_minimum: PASS: ../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py:14: info: Confirmed over all paths.
+CrossHair omitted_priority: PASS: ../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py:24: info: Confirmed over all paths.
+CrossHair omitted_minimum: PASS: ../../../.agents/skills/verify-ruleset-precedence/scripts/contracts.py:34: info: Confirmed over all paths.

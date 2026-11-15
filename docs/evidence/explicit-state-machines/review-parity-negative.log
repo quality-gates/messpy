@@ -1,0 +1,15 @@
+Case 0 differs: expected status 1, observed 1; stdout lengths 423820/0, report lengths 0/0
+Case 1 differs: expected status 1, observed 1; stdout lengths 425453/0, report lengths 0/0
+Case 2 differs: expected status 1, observed 1; stdout lengths 423820/0, report lengths 0/0
+Case 3 differs: expected status 2, observed 1; stdout lengths 423820/0, report lengths 0/0
+Case 4 differs: expected status 0, observed 1; stdout lengths 423820/0, report lengths 0/0
+Case 9 differs: expected status 0, observed 0; stdout lengths 0/0, report lengths 0/0
+Case 11 differs: expected status 0, observed 1; stdout lengths 100/0, report lengths 0/0
+Case 12 differs: expected status 1, observed 1; stdout lengths 423820/0, report lengths 0/0
+Case 13 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 0/0
+Case 14 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 0/0
+Case 15 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 52867/0
+Case 16 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 96454/0
+Case 17 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 79921/0
+Case 18 differs: expected status 1, observed 1; stdout lengths 0/0, report lengths 70855/0
+Negative control detected: an argument cursor that stops after its first token.

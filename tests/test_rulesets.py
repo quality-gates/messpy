@@ -75,6 +75,23 @@ class RuleSelectionTests(unittest.TestCase):
 
 
 class RulesetPrecedenceTests(unittest.TestCase):
+    def test_shared_nested_policy_is_not_a_cycle_but_active_ancestry_is(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            shared = directory / "shared.xml"
+            left = directory / "left.xml"
+            right = directory / "right.xml"
+            root = directory / "root.xml"
+            shared.write_text('<ruleset><rule ref="LongVariable"/></ruleset>', encoding="utf-8")
+            for wrapper in (left, right):
+                wrapper.write_text('<ruleset><rule ref="shared.xml"/></ruleset>', encoding="utf-8")
+            root.write_text('<ruleset><rule ref="left.xml"/><rule ref="right.xml"/></ruleset>', encoding="utf-8")
+            self.assertEqual(["LongVariable"], [rule.name for rule in load_rulesets([str(root)])])
+
+            shared.write_text('<ruleset><rule ref="root.xml"/></ruleset>', encoding="utf-8")
+            with self.assertRaisesRegex(RulesetError, "Ruleset reference cycle"):
+                load_rulesets([str(root)])
+
     def test_later_explicit_values_override_at_each_nesting_depth(self) -> None:
         cases = (
             ("priority only", "<priority>2</priority>", 2, 3),

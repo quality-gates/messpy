@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 from functools import lru_cache
 
 __all__ = ["module_nodes", "parent_map", "dotted_name", "root_name", "stored_names", "comprehension_masks"]
@@ -57,23 +58,28 @@ def comprehension_masks(tree: ast.Module) -> dict[int, frozenset[str]]:
     outermost iterable, which is evaluated in the enclosing scope.
     """
     masks: dict[int, frozenset[str]] = {}
-    pending: list[tuple[ast.AST, frozenset[str]]] = [(tree, frozenset())]
+    pending = [_MaskedVisit(tree, frozenset())]
     while pending:
-        node, masked = pending.pop()
-        if masked and isinstance(node, (ast.Name, ast.Attribute, ast.Call)):
-            masks[id(node)] = masked
-        pending.extend(_masked_children(node, masked))
+        visit = pending.pop()
+        if visit.masked and isinstance(visit.node, (ast.Name, ast.Attribute, ast.Call)):
+            masks[id(visit.node)] = visit.masked
+        pending.extend(visit.children())
     return masks
 
 
-def _masked_children(node: ast.AST, masked: frozenset[str]) -> list[tuple[ast.AST, frozenset[str]]]:
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-        return [(child, frozenset()) for child in ast.iter_child_nodes(node)]
-    if not isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-        return [(child, masked) for child in ast.iter_child_nodes(node)]
-    outer_iter = node.generators[0].iter
-    targets = masked.union(*(stored_names(generator.target) for generator in node.generators))
-    return [(child, masked if child is outer_iter else targets) for child in _comprehension_children(node)]
+@dataclass(frozen=True)
+class _MaskedVisit:
+    node: ast.AST
+    masked: frozenset[str]
+
+    def children(self) -> list[_MaskedVisit]:
+        if isinstance(self.node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return [_MaskedVisit(child, frozenset()) for child in ast.iter_child_nodes(self.node)]
+        if not isinstance(self.node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            return [_MaskedVisit(child, self.masked) for child in ast.iter_child_nodes(self.node)]
+        outer_iter = self.node.generators[0].iter
+        targets = self.masked.union(*(stored_names(generator.target) for generator in self.node.generators))
+        return [_MaskedVisit(child, self.masked if child is outer_iter else targets) for child in _comprehension_children(self.node)]
 
 
 def _comprehension_children(node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> list[ast.AST]:

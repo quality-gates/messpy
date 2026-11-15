@@ -1,0 +1,10 @@
+check	exit	command
+final-parity	0	['python', 'scripts/verify_state_machine_parity.py']
+final-parity-negative	0	['python', 'scripts/verify_state_machine_parity.py', '--negative-control']
+final-formal	0	['uv', 'run', '--no-project', '--python', '3.12.12', '--with', 'crosshair-tool==0.0.110', 'python', '.agents/skills/verify-ruleset-precedence/scripts/verify.py']
+final-docs	0	['python', 'scripts/generate_rule_docs.py', '--check']
+final-wheel-build	0	['python', '-m', 'pip', 'wheel', '.', '--no-deps', '--wheel-dir', '../artifacts']
+final-wheel-environment	0	['python', '-m', 'venv', '../artifact-venv']
+final-wheel-install	0	['../../../../artifact-venv/bin/python', '-m', 'pip', 'install', '--no-index', '--no-deps', '../../../../artifacts/messpy-0.1.24-py3-none-any.whl']
+final-wheel-isolation	0	['../../../../artifact-venv/bin/python', '-c', 'import sys, messpy; assert sys.prefix != sys.base_prefix; print(sys.prefix); print(messpy.__file__)']
+final-self-analysis	0	['python', 'scripts/verify_self_analysis.py', '../../../../artifact-venv/bin/messpy']

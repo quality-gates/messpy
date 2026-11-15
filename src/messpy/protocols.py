@@ -21,7 +21,7 @@ class Protocols:
         classes = [node for node in module_nodes(tree) if isinstance(node, ast.ClassDef)]
         methods = _class_methods(classes)
         properties = frozenset(node.name for _, node in methods if _property(node))
-        overrides = frozenset((ancestor, node.name) for owner, node in methods for ancestor in _ancestors(owner, classes, frozenset()))
+        overrides = frozenset((ancestor, node.name) for owner, node in methods for ancestor in _AncestorPath().ancestors(owner, classes))
         return cls(frozenset(node.name for _, node in methods), properties, overrides)
 
 
@@ -33,10 +33,15 @@ def _property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(dotted_name(decorator).split(".")[-1] == "property" for decorator in node.decorator_list)
 
 
-def _ancestors(owner: ast.ClassDef, classes: Sequence[ast.ClassDef], visited: frozenset[str]) -> frozenset[str]:
-    direct = frozenset(dotted_name(base) for base in owner.bases) - visited
-    parents = [node for node in classes if node.name in direct]
-    return direct | frozenset(ancestor for parent in parents for ancestor in _ancestors(parent, classes, visited | direct))
+@dataclass(frozen=True)
+class _AncestorPath:
+    visited: frozenset[str] = frozenset()
+
+    def ancestors(self, owner: ast.ClassDef, classes: Sequence[ast.ClassDef]) -> frozenset[str]:
+        direct = frozenset(dotted_name(base) for base in owner.bases) - self.visited
+        parents = [node for node in classes if node.name in direct]
+        following = _AncestorPath(self.visited | direct)
+        return direct | frozenset(ancestor for parent in parents for ancestor in following.ancestors(parent, classes))
 
 
 def uncertainties(nodes: Sequence[ast.AST], ownership: Ownership, qualified, graph: CallGraph, protocols: Protocols) -> tuple[tuple[str, ast.AST], ...]:

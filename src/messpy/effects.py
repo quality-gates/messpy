@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
@@ -70,6 +70,80 @@ class CallableEffects:
     executions: tuple[Execution, ...] = ()
 
 
+@dataclass(frozen=True)
+class _SummaryIteration:
+    summaries: dict[int, EffectSummary]
+    converged: bool = False
+
+    def advance(self, owners: Sequence[CallableEffects], graph: CallGraph) -> _SummaryIteration:
+        updated = {
+            id(owner.callable.node): EffectSummary.collect(tuple(_located_effects(owner, self.summaries, graph)))
+            for owner in owners
+        }
+        return _SummaryIteration(updated, updated == self.summaries)
+
+
+@dataclass(frozen=True)
+class _AliasSnapshot:
+    node: int
+    aliases: dict[str, ast.AST]
+    previous: _AliasSnapshot | None
+
+
+@dataclass(frozen=True)
+class _CallableAliases:
+    unstable: frozenset[str]
+    aliases: dict[str, ast.AST]
+    history: _AliasSnapshot | None = None
+
+    def observe(self, node: ast.AST, callable_info: CallableNode, graph: CallGraph) -> _CallableAliases:
+        snapshot = {name: value for name, value in self.aliases.items() if name not in self.unstable}
+        updated = replace(self, history=_AliasSnapshot(id(node), snapshot, self.history))
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            return updated.bind(node.targets[0], node.value, callable_info, graph)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            return updated.bind(node.target, node.value, callable_info, graph)
+        return updated
+
+    def bind(self, target: ast.AST, value: ast.AST, callable_info: CallableNode, graph: CallGraph) -> _CallableAliases:
+        if not isinstance(target, ast.Name):
+            return self
+        resolved = _callable_value(value, callable_info, graph)
+        aliases = dict(self.aliases)
+        if resolved is None:
+            aliases.pop(target.id, None)
+        else:
+            aliases[target.id] = resolved
+        return replace(self, aliases=aliases)
+
+    def observations(self) -> dict[int, dict[str, ast.AST]]:
+        snapshots = []
+        current = self.history
+        while current is not None:
+            snapshots.append(current)
+            current = current.previous
+        return {snapshot.node: snapshot.aliases for snapshot in reversed(snapshots)}
+
+
+@dataclass
+class _EffectReports:
+    identities: set[tuple[str, str]] = field(default_factory=set)
+    findings: list[Finding] = field(default_factory=list)
+
+    @classmethod
+    def collect(
+        cls, path: Path, owner: CallableNode, located: dict[Effect, ast.AST], selected: dict[str, LoadedRule],
+    ) -> _EffectReports:
+        reports = cls()
+        for effect, node in located.items():
+            rule = selected.get(effect.rule)
+            identity = (effect.rule, effect.name)
+            if rule is not None and identity not in reports.identities:
+                reports.findings.append(_finding(path, owner, rule, effect, node))
+                reports.identities.add(identity)
+        return reports
+
+
 _FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _PURE_CALLS = frozenset({
     "builtins.abs", "builtins.all", "builtins.any", "builtins.bin", "builtins.bool", "builtins.chr",
@@ -108,13 +182,7 @@ def explicitness_findings(path: Path, tree: ast.Module, rules: Sequence[LoadedRu
     findings = []
     for owner in owners:
         located = _located_effects(owner, summaries, graph)
-        reported = set()
-        for effect, node in located.items():
-            rule = selected.get(effect.rule)
-            identity = (effect.rule, effect.name)
-            if rule is not None and identity not in reported:
-                findings.append(_finding(path, owner.callable, rule, effect, node))
-                reported.add(identity)
+        findings.extend(_EffectReports.collect(path, owner.callable, located, selected).findings)
         if "ImplicitInstanceOutput" not in selected or "ImplicitInstanceInput" not in selected:
             findings.extend(_receiver_uncertainty(path, owner, located, selected))
     return findings
@@ -202,16 +270,10 @@ def _call_arguments(call: ast.Call, ownership: Ownership) -> tuple[tuple[Storage
 
 
 def _callable_aliases(callable_info: CallableNode, nodes: Sequence[ast.AST], graph: CallGraph) -> dict[int, dict[str, ast.AST]]:
-    aliases: dict[str, ast.AST] = {}
-    observations: dict[int, dict[str, ast.AST]] = {}
-    unstable = _rebound_names(callable_info.node, nodes)
+    state = _CallableAliases(_rebound_names(callable_info.node, nodes), {})
     for node in nodes:
-        observations[id(node)] = {name: value for name, value in aliases.items() if name not in unstable}
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            aliases = _updated_callable_aliases(aliases, node.targets[0], node.value, callable_info, graph)
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            aliases = _updated_callable_aliases(aliases, node.target, node.value, callable_info, graph)
-    return observations
+        state = state.observe(node, callable_info, graph)
+    return state.observations()
 
 
 def _rebound_names(callable_node: ast.AST, nodes: Sequence[ast.AST]) -> frozenset[str]:
@@ -221,20 +283,6 @@ def _rebound_names(callable_node: ast.AST, nodes: Sequence[ast.AST]) -> frozense
         if isinstance(node, (ast.Global, ast.Nonlocal)) for name in node.names
     }
     return frozenset(name for name, count in stores.items() if count > 1) | frozenset(shared)
-
-
-def _updated_callable_aliases(
-    aliases: dict[str, ast.AST], target: ast.AST, value: ast.AST, callable_info: CallableNode, graph: CallGraph
-) -> dict[str, ast.AST]:
-    if not isinstance(target, ast.Name):
-        return aliases
-    updated = dict(aliases)
-    resolved = _callable_value(value, callable_info, graph)
-    if resolved is None:
-        updated.pop(target.id, None)
-    else:
-        updated[target.id] = resolved
-    return updated
 
 
 def _callable_value(value: ast.AST, callable_info: CallableNode, graph: CallGraph) -> ast.AST | None:
@@ -453,15 +501,10 @@ def _record_field(statement: ast.stmt) -> bool:
 
 
 def _fixed_point(owners: Sequence[CallableEffects], graph: CallGraph) -> dict[int, EffectSummary]:
-    summaries = {id(owner.callable.node): EffectSummary.collect(tuple(owner.direct)) for owner in owners}
-    while True:
-        updated = {
-            id(owner.callable.node): EffectSummary.collect(tuple(_located_effects(owner, summaries, graph)))
-            for owner in owners
-        }
-        if updated == summaries:
-            return updated
-        summaries = updated
+    iteration = _SummaryIteration({id(owner.callable.node): EffectSummary.collect(tuple(owner.direct)) for owner in owners})
+    while not iteration.converged:
+        iteration = iteration.advance(owners, graph)
+    return iteration.summaries
 
 
 def _located_effects(owner: CallableEffects, summaries: dict[int, EffectSummary], graph: CallGraph) -> dict[Effect, ast.AST]:

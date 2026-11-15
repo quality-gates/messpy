@@ -1,0 +1,65 @@
+933a1bc: test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots: exit 1; expected 1
+F
+======================================================================
+FAIL: test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots (test_state_analyzer.AnalyzerTransitionTests.test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<temporary>/messpy-resource-control-dnt9f_6s/tests/test_state_analyzer.py", line 68, in test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots
+    self.assertLessEqual(peak_live_results, 2)
+    ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 8 not less than or equal to 2
+
+----------------------------------------------------------------------
+Ran 1 test in 0.098s
+
+FAILED (failures=1)
+
+933a1bc: test_repeated_bindings_and_exits_construct_only_emitted_findings: exit 1; expected 1
+FFF
+======================================================================
+FAIL: test_repeated_bindings_and_exits_construct_only_emitted_findings (test_state_analyzer.AnalyzerTransitionTests.test_repeated_bindings_and_exits_construct_only_emitted_findings) (rule='UnusedLocalVariable', source='def compute():\n    unused = 1\n    unused')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<temporary>/messpy-resource-control-dnt9f_6s/tests/test_state_analyzer.py", line 226, in test_repeated_bindings_and_exits_construct_only_emitted_findings
+    self.assertEqual(1, construct.call_count)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 1000
+
+======================================================================
+FAIL: test_repeated_bindings_and_exits_construct_only_emitted_findings (test_state_analyzer.AnalyzerTransitionTests.test_repeated_bindings_and_exits_construct_only_emitted_findings) (rule='ExitExpression', source='def compute():\n    exit()\n    exit()\n   ')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<temporary>/messpy-resource-control-dnt9f_6s/tests/test_state_analyzer.py", line 226, in test_repeated_bindings_and_exits_construct_only_emitted_findings
+    self.assertEqual(1, construct.call_count)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 1000
+
+======================================================================
+FAIL: test_repeated_bindings_and_exits_construct_only_emitted_findings (test_state_analyzer.AnalyzerTransitionTests.test_repeated_bindings_and_exits_construct_only_emitted_findings) (rule='UnusedLocalVariable', source='[0 for unused in values for unused in va')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "<temporary>/messpy-resource-control-dnt9f_6s/tests/test_state_analyzer.py", line 226, in test_repeated_bindings_and_exits_construct_only_emitted_findings
+    self.assertEqual(1, construct.call_count)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 1 != 2
+
+----------------------------------------------------------------------
+Ran 1 test in 0.498s
+
+FAILED (failures=3)
+
+a5b7ca4: test_discovery_releases_prior_root_results_as_it_scans_duplicate_roots: exit 0; expected 0
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.132s
+
+OK
+
+a5b7ca4: test_repeated_bindings_and_exits_construct_only_emitted_findings: exit 0; expected 0
+.
+----------------------------------------------------------------------
+Ran 1 test in 0.472s
+
+OK
+
+Both resource controls reject the buffered source and pass the final production source.
