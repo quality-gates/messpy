@@ -1,0 +1,35 @@
+naming accumulation before its fix: 9e9572a09dc1f817305d25fd73472d6754aa8458: exit 1, expected 1
+src/messpy/analyzer.py:4357: _naming_function copies accumulated callables; prepend a _Cons cell and collect once in _naming_roles.
+src/messpy/analyzer.py:4480: _with_naming_target copies accumulated targets; prepend a _Cons cell and deduplicate once in _naming_roles.
+src/messpy/analyzer.py:4480: _with_naming_target copies accumulated target_names; prepend a _Cons cell and deduplicate once in _naming_roles.
+ownership allocation before its fix: 76d32b58389e4a65aa7cdbdd5081f3a6cbe75a20: exit 1, expected 1
+src/messpy/analyzer.py:4357: _naming_function copies accumulated callables; prepend a _Cons cell and collect once in _naming_roles.
+src/messpy/analyzer.py:4480: _with_naming_target copies accumulated targets; prepend a _Cons cell and deduplicate once in _naming_roles.
+src/messpy/analyzer.py:4480: _with_naming_target copies accumulated target_names; prepend a _Cons cell and deduplicate once in _naming_roles.
+src/messpy/ownership.py:830: _allocated copies accumulated heap; use _with_entry to retain _LayeredMap sharing.
+src/messpy/ownership.py:832: _allocated copies accumulated evaluated; use _with_entry to retain _LayeredMap sharing.
+src/messpy/ownership.py:897: _memo_execution copies accumulated heap; use _with_entries to retain _LayeredMap sharing.
+src/messpy/ownership.py:951: _cached copies accumulated evaluated; use _with_entry to retain _LayeredMap sharing.
+dataflow transitions before their fix: 3a03151ce4effb1c12c4a4b9da4fcccb79dcd690: exit 1, expected 1
+src/messpy/captures.py:81: _CaptureWalk.descend copies accumulated frames; link _CaptureFrame.previous instead of copying the frame stack.
+src/messpy/captures.py:86: _CaptureWalk.advance copies accumulated frames; link _CaptureFrame.previous instead of copying the frame stack.
+src/messpy/effects.py:136: _EffectReports.claim copies accumulated identities; collect identities with the owned mutable set in _EffectReports.collect.
+src/messpy/ownership.py:651: _ObservationReplay.descend copies accumulated pending; link _TraceFrame.previous instead of copying the pending stack.
+src/messpy/ownership.py:656: _ObservationReplay.advance copies accumulated pending; link _TraceFrame.previous instead of copying the pending stack.
+src/messpy/ownership.py:1235: _ComprehensionFrame.advance copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+src/messpy/ownership.py:1241: _ComprehensionFrame.result copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+src/messpy/ownership.py:1248: _ComprehensionFrame.leave copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+lexical lookup before its fix: 1bb6fadda4797afff8e70d28248e2a477ea2f38b: exit 1, expected 1
+src/messpy/callgraph.py:288: _CallableLookup.advance copies accumulated scopes; advance position while retaining the shared scopes tuple.
+src/messpy/captures.py:81: _CaptureWalk.descend copies accumulated frames; link _CaptureFrame.previous instead of copying the frame stack.
+src/messpy/captures.py:86: _CaptureWalk.advance copies accumulated frames; link _CaptureFrame.previous instead of copying the frame stack.
+src/messpy/effects.py:136: _EffectReports.claim copies accumulated identities; collect identities with the owned mutable set in _EffectReports.collect.
+src/messpy/names.py:139: _NameLookup.advance copies accumulated scopes; advance position while retaining the shared scopes tuple.
+src/messpy/ownership.py:651: _ObservationReplay.descend copies accumulated pending; link _TraceFrame.previous instead of copying the pending stack.
+src/messpy/ownership.py:656: _ObservationReplay.advance copies accumulated pending; link _TraceFrame.previous instead of copying the pending stack.
+src/messpy/ownership.py:1235: _ComprehensionFrame.advance copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+src/messpy/ownership.py:1241: _ComprehensionFrame.result copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+src/messpy/ownership.py:1248: _ComprehensionFrame.leave copies accumulated traces; compose traces with _then instead of flattening accumulated traces.
+current fixed production source: 212c7918ae1cb2e144ed1f6e4cf507a211727e69: exit 0, expected 0
+No known accumulator-copy regressions found.
+All four historical broken versions rejected; current production accepted.

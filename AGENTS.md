@@ -32,6 +32,14 @@ This repository uses the single-context domain-doc layout. See `docs/agents/doma
 - GOTCHA: `UnusedLocalVariable` detection differs on Python 3.11, so the dev venv must stay on Python 3.12+ to match the self-analysis result verified in CI.
 - Distribution build (from the CI `distribution` job): `python -m build` then `twine check dist/*`; not needed for normal dev.
 
+### Repeated mistakes and enforcement
+
+| Rule | Enforcement |
+| --- | --- |
+| Keep the existing shared accumulators when advancing analysis state. Whole-collection copies in repeated transitions caused separate naming and ownership regressions and recurred in the state-machine refactor. | `python scripts/check_accumulator_copies.py`, also run by CI. Its `RULES` table names the protected owners and the existing replacement for each rejected copy. |
+
+The check covers known copy syntax in those owners. `former_owners` retains historical names so the same check can replay past failures. It does not prove complexity or cover aliases, helper calls, or unrecorded owner renames. When you change an owner, review its collection costs and update the policy with a failing example.
+
 ### Optional: source-analysis fuzzing (`docs/fuzzing.md`)
 
 - Requires Python 3.11 + Atheris. The Atheris wheel builds from source and needs the system packages `libclang-rt-18-dev` and `g++` (already present in the snapshot), plus `CLANG_BIN=/usr/bin/clang-18` and `CFLAGS`/`CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13` so Clang can find the GCC libstdc++ toolchain.
