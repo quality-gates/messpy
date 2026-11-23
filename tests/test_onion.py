@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, str(ROOT / "src"))
 
 from messpy.analyzer import SourceFile
-from messpy.callgraph import build_call_graph
+from messpy.callgraph import CallGraph, build_call_graph
 from messpy.cli import run
 from messpy.onion import onion_findings
 from messpy.rulesets import LoadedRule
@@ -412,6 +412,44 @@ class OnionAcceptanceTests(unittest.TestCase):
             ],
             report,
         )
+
+    def test_reconverging_pure_calls_do_not_expand_witness_search(self) -> None:
+        depth = 10
+        source = "def a0(flag): return 1\ndef b0(flag): return 2\n"
+        for layer in range(1, depth + 1):
+            for name in "ab":
+                source += (f"def {name}{layer}(flag):\n"
+                           f"    if flag: return a{layer - 1}(flag)\n"
+                           f"    return b{layer - 1}(flag)\n")
+        source += (f"def action():\n    print('hello')\n"
+                   f"def top(flag):\n    a{depth}(flag)\n    return action()\n"
+                   "def start(flag):\n    return top(flag)\n")
+        original = CallGraph.callees
+        calls = []
+
+        def counted(graph, caller):
+            calls.append(caller)
+            return original(graph, caller)
+
+        with mock.patch.object(CallGraph, "callees", counted):
+            status, report, errors = _analyze_source(source, _ruleset())
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertEqual(3, len(report))
+        self.assertIn("calls top(), which calls action(), which writes the implicit output print", report[-1])
+        self.assertLessEqual(len(calls), 20 * (depth + 1))
+
+    def test_cycle_prefers_first_reachable_action_in_call_order(self) -> None:
+        status, report, errors = _analyze_source(
+            "def first():\n    print('first')\n"
+            "def second():\n    print('second')\n"
+            "def left():\n    right()\n    first()\n"
+            "def right():\n    left()\n    second()\n"
+            "def start():\n    left()\n", _ruleset()
+        )
+        self.assertEqual((2, ""), (status, errors))
+        self.assertIn("calls left(), which calls right(), which calls second(), "
+                      "which writes the implicit output print", report[-1])
 
     def test_a_helper_called_several_times_is_reported_once_at_the_first_call(self) -> None:
         status, report, errors = _analyze_source(
