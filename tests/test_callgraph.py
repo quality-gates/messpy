@@ -4,10 +4,13 @@ import ast
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
+
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
+import messpy.callgraph as callgraph
 from messpy.callgraph import CallSite, build_call_graph
 from messpy.names import Names
 
@@ -37,6 +40,71 @@ def _calls(tree: ast.Module) -> list[ast.Call]:
 
 
 class CallGraphTests(unittest.TestCase):
+    def test_flat_graph_checks_future_annotations_once(self) -> None:
+        scans = []
+
+        def profile(frame, event, result):
+            if event == "call" and frame.f_code.co_name == "annotations_are_deferred":
+                scans.append(frame.f_code.co_name)
+
+        tree = ast.parse("".join(f"def f{i}():\n    pass\n" for i in range(100)))
+        previous = sys.getprofile()
+        try:
+            sys.setprofile(profile)
+            graph = build_call_graph(tree)
+        finally:
+            sys.setprofile(previous)
+        self.assertEqual(100, len(graph.callables))
+        self.assertEqual(1, len(scans))
+
+    def test_flat_function_index_keeps_growing_maps_shared(self) -> None:
+        original = callgraph._define_function
+        snapshots = []
+
+        def record(state, node):
+            snapshots.append((state.nodes, state.labels, state.enclosing, state.bindings,
+                              state.shadows, state.class_bindings, state.declarations.globals,
+                              state.bindings.get(id(state.scopes[-1]))))
+            return original(state, node)
+
+        tree = ast.parse("".join(f"def f{i}(arg):\n    global marker\n    return {i}\n" for i in range(100)))
+        with patch.object(callgraph, "_define_function", record):
+            graph = build_call_graph(tree)
+        self.assertEqual(100, len(graph.callables))
+        for column in zip(*snapshots[1:]):
+            self.assertTrue(all(value is column[0] for value in column))
+
+    def test_rebindings_across_classes_lambdas_and_nested_scopes(self) -> None:
+        tree, graph = _graph(
+            "class target:\n"
+            "    @staticmethod\n"
+            "    def run(): pass\n"
+            "def target(): pass\n"
+            "def outer():\n"
+            "    target = lambda: None\n"
+            "    def inner(): return target()\n"
+            "    return inner()\n"
+            "def use(): return target()\n"
+            "def masked(target): return target()\n"
+        )
+        outer = _definition(tree, "outer")
+        inner = _definition(tree, "inner")
+        use = _definition(tree, "use")
+        masked = _definition(tree, "masked")
+        target = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "target")
+        self.assertIs(graph.callees(outer)[0].callee, inner)
+        self.assertIs(graph.callees(inner)[0].callee, _lambda(tree))
+        self.assertIs(graph.callees(use)[0].callee, target)
+        self.assertEqual((), graph.callees(masked))
+
+    def test_reused_ast_node_uses_its_last_enclosing_scope(self) -> None:
+        tree = ast.parse("def first():\n    def shared(): pass\ndef second(): pass\n")
+        first, second = tree.body
+        shared = first.body[0]
+        second.body.append(shared)
+        index = callgraph._index_callables(tree)
+        self.assertEqual((id(second), id(tree)), index.enclosing[id(shared)])
+
     def test_bare_call_resolves_to_module_function(self) -> None:
         tree, graph = _graph("def load():\n    return save()\n\ndef save():\n    return 1\n")
         load, save = _definition(tree, "load"), _definition(tree, "save")

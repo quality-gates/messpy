@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .callables import CallableNode, method_receiver, module_callables
 from .names import Names
+from .regions import annotations_are_deferred, evaluated_nodes
 from .syntax import comprehension_masks, dotted_name, module_nodes, stored_names
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
@@ -129,9 +130,10 @@ def _resolved_calls(
 ) -> list[tuple[int, ast.Call, int]]:
     resolved: list[tuple[int, ast.Call, int]] = []
     owners = (CallableNode(tree, "<module>", "module", None, ()), *module_callables(tree))
+    deferred = annotations_are_deferred(tree)
     for owner in owners:
         caller_id = id(owner.node)
-        for child in owner.evaluated_nodes():
+        for child in evaluated_nodes(owner.node, deferred):
             if not isinstance(child, ast.Call):
                 continue
             callee_id = _resolved_callee(index, caller_id, child, masks)
@@ -358,6 +360,8 @@ def _class_for_receiver(index: _CallableIndex, caller_id: int, receiver_name: st
     return None
 
 
+# Each index build owns these dictionaries; replacement states share them only
+# during that one traversal, so updating them does not mutate an earlier result.
 @dataclass(frozen=True)
 class _BindState:
     nodes: dict[int, ast.AST] = field(default_factory=dict)
@@ -429,13 +433,21 @@ def _visit_class(state: _BindState, node: ast.ClassDef) -> _BindState:
     return replace(state, classes=state.classes[:-1])
 
 
+def _record_enclosing(state: _BindState, node: ast.AST) -> _BindState:
+    enclosing = tuple(id(scope) for scope in reversed(state.scopes))
+    if id(node) in state.enclosing:
+        # Hand-built ASTs can reuse one node under different parents.
+        entries = dict(state.enclosing)
+        entries[id(node)] = enclosing
+        return replace(state, enclosing=entries)
+    state.enclosing.setdefault(id(node), enclosing)
+    return state
+
+
 def _define_function(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _BindState:
     state = _bind_callable(state, node.name, node)
     state = _record_method(state, node)
-    state = replace(
-        state,
-        enclosing={**state.enclosing, id(node): tuple(id(scope) for scope in reversed(state.scopes))},
-    )
+    state = _record_enclosing(state, node)
     state = _visit_enclosing_expressions(state, node.decorator_list, node.args)
     state = _push_scope(state, node)
     state = _shadow_arguments(state, node)
@@ -486,22 +498,17 @@ def _bind_callable(state: _BindState, name: str, node: ast.AST) -> _BindState:
 
 def _register_callable(state: _BindState, node: ast.AST) -> _BindState:
     label = "<lambda>" if isinstance(node, ast.Lambda) else node.name
-    return replace(state, nodes={**state.nodes, id(node): node}, labels={**state.labels, id(node): label})
+    state.nodes.setdefault(id(node), node)
+    state.labels.setdefault(id(node), label)
+    return state
 
 
 def _bind_name(state: _BindState, name: str, node: ast.AST) -> _BindState:
     scope_id = id(state.scopes[-1])
-    scope_bindings = dict(state.bindings.get(scope_id, {}))
-    scope_bindings[name] = id(node)
-    classes = {key: value for key, value in state.class_bindings.get(scope_id, {}).items() if key != name}
-    scope_shadows = set(state.shadows.get(scope_id, ()))
-    scope_shadows.discard(name)
-    return replace(
-        state,
-        bindings={**state.bindings, scope_id: scope_bindings},
-        class_bindings={**state.class_bindings, scope_id: classes},
-        shadows={**state.shadows, scope_id: scope_shadows},
-    )
+    state.bindings.setdefault(scope_id, {})[name] = id(node)
+    state.class_bindings.get(scope_id, {}).pop(name, None)
+    state.shadows.get(scope_id, set()).discard(name)
+    return state
 
 
 def _record_method(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionDef) -> _BindState:
@@ -522,10 +529,7 @@ def _record_method(state: _BindState, node: ast.FunctionDef | ast.AsyncFunctionD
 
 
 def _enter_lambda(state: _BindState, node: ast.Lambda) -> _BindState:
-    state = replace(
-        state,
-        enclosing={**state.enclosing, id(node): tuple(id(scope) for scope in reversed(state.scopes))},
-    )
+    state = _record_enclosing(state, node)
     state = _visit_enclosing_expressions(state, (), node.args)
     state = _push_scope(state, node)
     state = _shadow_arguments(state, node)
@@ -547,18 +551,10 @@ def _shadow_arguments(
 
 def _shadow(state: _BindState, name: str) -> _BindState:
     scope_id = id(state.scopes[-1])
-    scope_shadows = set(state.shadows.get(scope_id, ()))
-    scope_shadows.add(name)
-    scope_bindings = dict(state.bindings.get(scope_id, {}))
-    scope_bindings.pop(name, None)
-    classes = dict(state.class_bindings.get(scope_id, {}))
-    classes.pop(name, None)
-    return replace(
-        state,
-        shadows={**state.shadows, scope_id: scope_shadows},
-        bindings={**state.bindings, scope_id: scope_bindings},
-        class_bindings={**state.class_bindings, scope_id: classes},
-    )
+    state.shadows.setdefault(scope_id, set()).add(name)
+    state.bindings.get(scope_id, {}).pop(name, None)
+    state.class_bindings.get(scope_id, {}).pop(name, None)
+    return state
 
 
 def _shadow_target(state: _BindState, node: ast.AST) -> _BindState:
@@ -607,9 +603,9 @@ def _record_runtime_binding(state: _BindState, node: ast.AST) -> _BindState:
 
 def _declare_names(state: _BindState, field_name: str, names: list[str]) -> _BindState:
     scope_id = id(state.scopes[-1])
-    declared = dict(getattr(state.declarations, field_name))
-    declared[scope_id] = set(declared.get(scope_id, ())) | set(names)
-    return replace(state, declarations=replace(state.declarations, **{field_name: declared}))
+    declared = getattr(state.declarations, field_name)
+    declared.setdefault(scope_id, set()).update(names)
+    return state
 
 
 def _visit_enclosing_expressions(

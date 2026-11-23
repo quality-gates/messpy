@@ -44,6 +44,10 @@ class AccumulatorCopyCheckTests(unittest.TestCase):
             ("effects.py", "class _EffectReports:\n    def claim(self, identity):\n        return Reports(self.identities | {identity})\n", "_EffectReports.collect"),
             ("names.py", "class _NameLookup:\n    def advance(self, names):\n        return Lookup(self.name, self.scopes[1:])\n", "advance position"),
             ("names.py", "class _NameLookup:\n    def advance(self, names):\n        self.scopes += (names,)\n", "advance position"),
+            ("callgraph.py", "def _register_callable(state):\n    return {**state.nodes}\n", "owned dictionaries"),
+            ("callgraph.py", "def _define_function(state):\n    return {**state.enclosing}\n", "owned dictionaries"),
+            ("callgraph.py", "def _bind_name(state):\n    return {**state.bindings}\n", "owned dictionaries"),
+            ("callgraph.py", "def _shadow(state):\n    return {**state.shadows}\n", "owned dictionaries"),
             ("callgraph.py", "class _CallableLookup:\n    def advance(self, index):\n        return Lookup(self.name, self.scopes[1:])\n", "advance position"),
         )
         for module, source, fix in cases:
