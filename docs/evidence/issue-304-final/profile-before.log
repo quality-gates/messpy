@@ -1,0 +1,28 @@
+deps 400
+         670204 function calls (665004 primitive calls) in 0.073 seconds
+
+   Ordered by: cumulative time
+   List reduced from 55 to 18 due to restriction <18>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    0.073    0.073 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:33(measure_class_dependencies)
+ 1600/400    0.001    0.000    0.073    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:62(_dependency_state)
+      400    0.001    0.000    0.073    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:124(_dependency_function)
+      400    0.000    0.000    0.060    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:112(_dependency_children)
+      800    0.000    0.000    0.059    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:96(_dependency_reference)
+      400    0.000    0.000    0.059    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:178(_with_dependency)
+      400    0.001    0.000    0.058    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:191(_dependency_name)
+      400    0.000    0.000    0.055    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:64(imported)
+      400    0.000    0.000    0.055    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:93(_imported)
+      400    0.000    0.000    0.053    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:150(_scopes_for)
+      400    0.001    0.000    0.053    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:156(_scopes_for_node)
+     1600    0.000    0.000    0.052    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:167(_with_parent_scope)
+      800    0.000    0.000    0.051    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:196(_in_body)
+     1200    0.003    0.000    0.051    0.000 {built-in method builtins.any}
+    81400    0.009    0.000    0.047    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:200(<genexpr>)
+    80200    0.025    0.000    0.039    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:203(_contains)
+   405000    0.014    0.000    0.014    0.000 {built-in method builtins.id}
+      400    0.000    0.000    0.007    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/callgraph.py:685(_direct_bindings)
+
+
+

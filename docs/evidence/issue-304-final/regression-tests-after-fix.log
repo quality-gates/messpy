@@ -1,0 +1,7 @@
+test_flat_class_scales_without_repeated_body_scans_or_name_copies (tests.test_dependencies.DependencyScalingTests.test_flat_class_scales_without_repeated_body_scans_or_name_copies) ... ok
+test_class_body_headers_and_nested_functions_keep_their_scopes (tests.test_syntax.SyntaxResolutionTests.test_class_body_headers_and_nested_functions_keep_their_scopes) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.004s
+
+OK
