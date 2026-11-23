@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .callgraph import CallGraph
 from .syntax import dotted_name, module_nodes
@@ -21,7 +21,10 @@ class Protocols:
         classes = [node for node in module_nodes(tree) if isinstance(node, ast.ClassDef)]
         methods = _class_methods(classes)
         properties = frozenset(node.name for _, node in methods if _property(node))
-        overrides = frozenset((ancestor, node.name) for owner, node in methods for ancestor in _AncestorPath().ancestors(owner, classes))
+        by_name = _classes_by_name(classes)
+        bases = _bases_by_class(classes)
+        ancestors = {id(owner): _AncestorSearch.collect(bases[id(owner)], by_name, bases) for owner in classes}
+        overrides = frozenset((ancestor, node.name) for owner, node in methods for ancestor in ancestors[id(owner)])
         return cls(frozenset(node.name for _, node in methods), properties, overrides)
 
 
@@ -33,15 +36,37 @@ def _property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(dotted_name(decorator).split(".")[-1] == "property" for decorator in node.decorator_list)
 
 
-@dataclass(frozen=True)
-class _AncestorPath:
-    visited: frozenset[str] = frozenset()
+def _classes_by_name(classes: Sequence[ast.ClassDef]) -> dict[str, tuple[ast.ClassDef, ...]]:
+    indexed: dict[str, list[ast.ClassDef]] = {}
+    for node in classes:
+        indexed.setdefault(node.name, []).append(node)
+    return {name: tuple(nodes) for name, nodes in indexed.items()}
 
-    def ancestors(self, owner: ast.ClassDef, classes: Sequence[ast.ClassDef]) -> frozenset[str]:
-        direct = frozenset(dotted_name(base) for base in owner.bases) - self.visited
-        parents = [node for node in classes if node.name in direct]
-        following = _AncestorPath(self.visited | direct)
-        return direct | frozenset(ancestor for parent in parents for ancestor in following.ancestors(parent, classes))
+
+def _bases_by_class(classes: Sequence[ast.ClassDef]) -> dict[int, frozenset[str]]:
+    return {id(node): frozenset(dotted_name(base) for base in node.bases) for node in classes}
+
+
+@dataclass
+class _AncestorSearch:
+    ancestors: set[str]
+    pending: list[str]
+    expanded: set[str] = field(default_factory=set)
+
+    @classmethod
+    def collect(cls, direct: frozenset[str], by_name: dict[str, tuple[ast.ClassDef, ...]], bases: dict[int, frozenset[str]]) -> frozenset[str]:
+        search = cls(set(direct), list(direct))
+        while search.pending:
+            name = search.pending.pop()
+            if name in search.expanded:
+                continue
+            search.expanded.add(name)
+            for parent in by_name.get(name, ()):
+                for base in bases[id(parent)]:
+                    if base not in search.ancestors:
+                        search.ancestors.add(base)
+                        search.pending.append(base)
+        return frozenset(search.ancestors)
 
 
 def uncertainties(nodes: Sequence[ast.AST], ownership: Ownership, qualified, graph: CallGraph, protocols: Protocols) -> tuple[tuple[str, ast.AST], ...]:
