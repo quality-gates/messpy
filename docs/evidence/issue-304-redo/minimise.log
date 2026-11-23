@@ -1,0 +1,4 @@
+minimal flat class M=40: 820 expected 820
+cut class -> functions: n/a to counter (no class body), loop1 requires class; top-level lookup timing check skipped
+M=5: 15 expected 15
+M=1: 1 expected 1
