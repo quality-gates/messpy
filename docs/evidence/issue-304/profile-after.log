@@ -1,0 +1,28 @@
+deps 400
+         108004 function calls (102804 primitive calls) in 0.020 seconds
+
+   Ordered by: cumulative time
+   List reduced from 53 to 18 due to restriction <18>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    0.020    0.020 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:39(measure_class_dependencies)
+ 1600/400    0.001    0.000    0.020    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:72(_dependency_state)
+      400    0.001    0.000    0.020    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:121(_dependency_function)
+      400    0.000    0.000    0.009    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:109(_dependency_children)
+      400    0.000    0.000    0.008    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:175(_with_dependency)
+      400    0.001    0.000    0.007    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:188(_dependency_name)
+      400    0.000    0.000    0.006    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/callgraph.py:685(_direct_bindings)
+ 2000/400    0.001    0.000    0.006    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/callgraph.py:694(_scope_binding_names)
+      400    0.000    0.000    0.004    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:67(imported)
+      400    0.000    0.000    0.004    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:96(_imported)
+      400    0.000    0.000    0.003    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:144(_function_import_names)
+ 2000/400    0.001    0.000    0.003    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/dependencies.py:151(_import_names_under)
+     8000    0.002    0.000    0.003    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/ast.py:269(iter_child_nodes)
+     2000    0.001    0.000    0.002    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/callgraph.py:704(_scope_binding_children)
+    40800    0.002    0.000    0.002    0.000 {built-in method builtins.isinstance}
+      400    0.000    0.000    0.002    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:153(_scopes_for)
+      400    0.002    0.000    0.002    0.000 {built-in method builtins.dir}
+      400    0.001    0.000    0.002    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-304/src/messpy/names.py:159(_scopes_for_node)
+
+
+

@@ -217,3 +217,44 @@ class ClassDependencyTests(unittest.TestCase):
         non_visitor_info = _class_info(class_node, is_ast_visitor=False)
         non_visitor_deps = measure_class_dependencies(non_visitor_info, names)
         self.assertEqual(frozenset({"ast.NodeVisitor", "ast.Name", "ExternalHandler.process"}), non_visitor_deps)
+
+class DependencyScalingTests(unittest.TestCase):
+    def test_flat_class_scales_without_repeated_body_scans_or_name_copies(self) -> None:
+        class CountedBody(list):
+            visits = 0
+
+            def __iter__(self):
+                for statement in super().__iter__():
+                    self.visits += 1
+                    yield statement
+
+        count = 40
+        source = 'import external\nclass C:\n' + ''.join(
+            f'    def method{i}(self): return external.Item{i}\n' for i in range(count)
+        )
+        tree = ast.parse(source)
+        node = _first_class(tree)
+        node.body = CountedBody(node.body)
+        info = _class_info(node)
+        names = Names.build(tree, module=None, path=Path('scaling.py'))
+        node.body.visits = 0
+        observed: dict[int, set[str]] = {}
+
+        def trace(frame, event, arg):
+            if (event == 'call' and frame.f_code.co_name == '_dependency_state'
+                    and frame.f_globals.get('__name__') == 'messpy.dependencies'):
+                local_names = frame.f_locals['local_names']
+                layers = (local_names,) if isinstance(local_names, set) else local_names
+                for layer in layers:
+                    observed[id(layer)] = layer
+            return trace
+
+        previous = sys.gettrace()
+        try:
+            sys.settrace(trace)
+            result = measure_class_dependencies(info, names)
+        finally:
+            sys.settrace(previous)
+        self.assertEqual(frozenset(f'external.Item{i}' for i in range(count)), result)
+        self.assertLessEqual(sum(len(layer) for layer in observed.values()), 4 * count)
+        self.assertLessEqual(node.body.visits, 4 * count)
