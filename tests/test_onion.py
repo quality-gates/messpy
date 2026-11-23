@@ -413,6 +413,48 @@ class OnionAcceptanceTests(unittest.TestCase):
             report,
         )
 
+    def test_action_witness_does_not_expand_pure_diamonds(self) -> None:
+        depth = 10
+        source = "def a0(flag): return 1\ndef b0(flag): return 2\n"
+        for layer in range(1, depth + 1):
+            for name in "ab":
+                source += (f"def {name}{layer}(flag):\n if flag:\n  return a{layer - 1}(flag)\n"
+                           f" return b{layer - 1}(flag)\n")
+        source += (f"def action():\n print('hello')\ndef top(flag):\n a{depth}(flag)\n"
+                   " return action()\ndef start(flag):\n return top(flag)\n")
+        calls = 0
+
+        def count_callees(frame, event, arg):
+            nonlocal calls
+            if event == "call" and frame.f_code is type(graph).callees.__code__:
+                calls += 1
+
+        graph = build_call_graph(ast.parse(source))
+        previous = sys.getprofile()
+        try:
+            sys.setprofile(count_callees)
+            status, report, errors = _analyze_source(source, _ruleset())
+        finally:
+            sys.setprofile(previous)
+
+        self.assertEqual((2, "", 3), (status, errors, len(report)))
+        self.assertIn("calls top(), which calls action(), which writes", report[-1])
+        self.assertLessEqual(calls, 20 * depth + 100)
+
+    def test_action_witness_uses_first_viable_path_through_cycle(self) -> None:
+        status, report, errors = _analyze_source(
+            "def first():\n print('first')\n"
+            "def second():\n print('second')\n"
+            "def left():\n right()\n first()\n"
+            "def right():\n left()\n second()\n"
+            "def start():\n left()\n",
+            _ruleset(),
+        )
+
+        self.assertEqual((2, ""), (status, errors))
+        self.assertIn("calls left(), which calls right(), which calls second(), which writes", report[-1])
+        self.assertIn("writes the implicit output print", report[0])
+
     def test_a_helper_called_several_times_is_reported_once_at_the_first_call(self) -> None:
         status, report, errors = _analyze_source(
             "def save_report():\n"

@@ -222,7 +222,7 @@ def _spread_findings(
     for site in sites:
         if id(site.callee) not in actions:
             continue
-        phrase = _ActionPath().phrase(site.callee, phrases, graph)
+        phrase = _ActionPath().phrase(site.callee, phrases, graph, actions)
         if not phrase:
             continue
         findings.append(_spread_finding(path, rule, graph, site, phrase))
@@ -256,21 +256,33 @@ class _ActionPropagation:
         return propagation
 
 
-@dataclass(frozen=True)
 class _ActionPath:
-    active: frozenset[int] = frozenset()
-
-    def phrase(self, callee: ast.AST, phrases: dict[int, str], graph: CallGraph) -> str:
+    def phrase(self, callee: ast.AST, phrases: dict[int, str], graph: CallGraph, actions: set[int]) -> str:
         direct = phrases.get(id(callee), "")
         if direct:
             return direct
-        if id(callee) in self.active:
-            return ""
-        following = _ActionPath(self.active | {id(callee)})
-        for site in graph.callees(callee):
-            phrase = following.phrase(site.callee, phrases, graph)
-            if phrase:
-                return f"calls {site.name}(), which {phrase}"
+
+        # DFS in call-site order preserves the first witness, while each node is
+        # expanded at most once per search, even in reconverging cyclic graphs.
+        seen = {id(callee)}
+        stack = [iter(graph.callees(callee))]
+        names: list[str] = []
+        while stack:
+            site = next(stack[-1], None)
+            if site is None:
+                stack.pop()
+                if names:
+                    names.pop()
+                continue
+            target = id(site.callee)
+            direct = phrases.get(target, "")
+            if direct:
+                return "".join(f"calls {name}(), which " for name in names) + f"calls {site.name}(), which {direct}"
+            if target not in actions or target in seen:
+                continue
+            seen.add(target)
+            names.append(site.name)
+            stack.append(iter(graph.callees(site.callee)))
         return ""
 
 

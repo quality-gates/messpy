@@ -32,6 +32,7 @@ class AccumulatorCopyCheckTests(unittest.TestCase):
 
     def test_historical_copy_shapes_name_the_existing_replacement(self) -> None:
         cases = (
+            ("onion.py", "class _ActionPath:\n    def phrase(self):\n        seen = seen | {1}\n", "update the search collections"),
             ("analyzer.py", "def _with_naming_target(state, target):\n    return replace(state, targets=(*state.targets, target))\n", "_Cons"),
             ("analyzer.py", "def _with_naming_target(state, target):\n    return replace(state, target_names=state.target_names | {target})\n", "_Cons"),
             ("analyzer.py", "def _naming_function(node, state):\n    return replace(state, callables=state.callables + (node,))\n", "_Cons"),
