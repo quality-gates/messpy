@@ -1,0 +1,13 @@
+F
+======================================================================
+FAIL: test_reconverging_pure_calls_do_not_expand_witness_search (test_onion.OnionAcceptanceTests.test_reconverging_pure_calls_do_not_expand_witness_search)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/jonathanbaldie/.fleet/worktrees/messpy-303/tests/test_onion.py", line 440, in test_reconverging_pure_calls_do_not_expand_witness_search
+    self.assertLessEqual(len(calls), 20 * (depth + 1))
+AssertionError: 2073 not less than or equal to 220
+
+----------------------------------------------------------------------
+Ran 1 test in 0.026s
+
+FAILED (failures=1)
