@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .callables import CallableNode, method_receiver, module_callables
 from .names import Names
+from .regions import annotations_are_deferred, evaluated_nodes
 from .syntax import comprehension_masks, dotted_name, module_nodes, stored_names
 
 __all__ = ["CallGraph", "CallSite", "build_call_graph"]
@@ -129,9 +130,10 @@ def _resolved_calls(
 ) -> list[tuple[int, ast.Call, int]]:
     resolved: list[tuple[int, ast.Call, int]] = []
     owners = (CallableNode(tree, "<module>", "module", None, ()), *module_callables(tree))
+    deferred = annotations_are_deferred(tree)
     for owner in owners:
         caller_id = id(owner.node)
-        for child in owner.evaluated_nodes():
+        for child in evaluated_nodes(owner.node, deferred):
             if not isinstance(child, ast.Call):
                 continue
             callee_id = _resolved_callee(index, caller_id, child, masks)

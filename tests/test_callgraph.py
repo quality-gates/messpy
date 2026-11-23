@@ -40,6 +40,23 @@ def _calls(tree: ast.Module) -> list[ast.Call]:
 
 
 class CallGraphTests(unittest.TestCase):
+    def test_flat_graph_checks_future_annotations_once(self) -> None:
+        scans = []
+
+        def profile(frame, event, result):
+            if event == "call" and frame.f_code.co_name == "annotations_are_deferred":
+                scans.append(frame.f_code.co_name)
+
+        tree = ast.parse("".join(f"def f{i}():\n    pass\n" for i in range(100)))
+        previous = sys.getprofile()
+        try:
+            sys.setprofile(profile)
+            graph = build_call_graph(tree)
+        finally:
+            sys.setprofile(previous)
+        self.assertEqual(100, len(graph.callables))
+        self.assertEqual(1, len(scans))
+
     def test_flat_function_index_keeps_growing_maps_shared(self) -> None:
         original = callgraph._define_function
         snapshots = []
