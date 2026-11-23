@@ -1,0 +1,15 @@
+test_flat_class_scales_without_repeated_body_scans_or_name_copies (tests.test_dependencies.DependencyScalingTests.test_flat_class_scales_without_repeated_body_scans_or_name_copies) ... FAIL
+test_class_body_headers_and_nested_functions_keep_their_scopes (tests.test_syntax.SyntaxResolutionTests.test_class_body_headers_and_nested_functions_keep_their_scopes) ... ok
+
+======================================================================
+FAIL: test_flat_class_scales_without_repeated_body_scans_or_name_copies (tests.test_dependencies.DependencyScalingTests.test_flat_class_scales_without_repeated_body_scans_or_name_copies)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/jonathanbaldie/.fleet/worktrees/messpy-304/tests/test_dependencies.py", line 259, in test_flat_class_scales_without_repeated_body_scans_or_name_copies
+    self.assertLessEqual(sum(len(layer) for layer in observed.values()), 4 * count)
+AssertionError: 1721 not less than or equal to 160
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.006s
+
+FAILED (failures=1)

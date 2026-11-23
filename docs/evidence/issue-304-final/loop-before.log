@@ -1,0 +1,4 @@
+M=100 body_visits=5050 quadratic_expected=5050 lookup_s=0.002 RED-quadratic
+M=200 body_visits=20100 quadratic_expected=20100 lookup_s=0.005 RED-quadratic
+M=400 body_visits=80200 quadratic_expected=80200 lookup_s=0.015 RED-quadratic
+LOOP_ASSERT FAIL-RED threshold=1600 got=80200

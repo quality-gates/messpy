@@ -1,0 +1,3 @@
+M=1 visits=1 expected=1
+M=5 visits=15 expected=15
+M=40 visits=820 expected=820

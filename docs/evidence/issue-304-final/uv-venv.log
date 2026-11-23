@@ -1,0 +1,4 @@
+Using CPython 3.12.12
+Creating virtual environment with seed packages at: .venv
+warning: A virtual environment already exists at `.venv`. In the future, uv will require `--clear` to replace it
+Activate with: source .venv/bin/activate
