@@ -1,0 +1,2 @@
+M=40 body_visits=40 distinct_local_set_entries=81 threshold=160 deps=40 GREEN
+M=80 body_visits=80 distinct_local_set_entries=161 threshold=320 deps=80 GREEN
