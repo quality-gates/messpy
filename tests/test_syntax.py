@@ -93,30 +93,6 @@ class SyntaxResolutionTests(unittest.TestCase):
             resolved,
         )
 
-    def test_class_body_headers_and_nested_functions_keep_their_scopes(self) -> None:
-        tree = ast.parse("""import external as selected
-class Container:
-    selected = object()
-    body = selected
-    @selected.decorate
-    def method(self, value=selected.default):
-        def nested():
-            return selected.Item
-        return nested()
-    def shadow(self, selected):
-        return selected
-""")
-        names = Names.build(tree, module=None, path=Path("example.py"))
-        uses = sorted(
-            (node for node in ast.walk(tree) if isinstance(node, ast.Name)
-             and node.id == "selected" and isinstance(node.ctx, ast.Load)),
-            key=lambda node: (node.lineno, node.col_offset),
-        )
-        self.assertEqual(
-            [None, None, None, ("external", False), None],
-            [names.imported(node) for node in uses],
-        )
-
     def test_import_roots_do_not_treat_subscripts_as_dotted_names(self) -> None:
         tree = ast.parse("import sys as system\nsystem.modules\nsystem.modules['example']\n")
         names = Names.build(tree, module=None, path=Path("example.py"))

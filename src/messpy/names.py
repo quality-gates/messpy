@@ -47,16 +47,13 @@ class Names:
     _parents: dict[int, ast.AST]
     _records: dict[int, _ScopeRecord]
     _masks: dict[int, frozenset[str]]
-    _body_nodes: frozenset[int]
 
     @classmethod
     def build(cls, tree: ast.Module, *, module: tuple[str, ...] | None, path: Path) -> Names:
         package = _package(module, path)
         parents = parent_map(tree)
-        scopes = _scopes(tree)
-        records = {id(scope): _record(package, scope) for scope in scopes}
-        body_nodes = frozenset(id(node) for scope in scopes[1:] for node in _statements(scope))
-        return cls(tree, package, parents, records, comprehension_masks(tree), body_nodes)
+        records = {id(scope): _record(package, scope) for scope in _scopes(tree)}
+        return cls(tree, package, parents, records, comprehension_masks(tree))
 
     def qualified(self, node: ast.expr, *, scope: ast.AST | None = None) -> str:
         return _qualified(self, node, scope)
@@ -161,19 +158,18 @@ def _scopes_for_node(names: Names, node: ast.AST) -> list[ast.AST]:
     current = node
     while id(current) in names._parents:
         parent = names._parents[id(current)]
-        scopes = _with_parent_scope(scopes, current, parent, names._parents, names._body_nodes)
+        scopes = _with_parent_scope(scopes, current, parent, names._parents)
         current = parent
     scopes.append(names._tree)
     return scopes
 
 
 def _with_parent_scope(
-    scopes: list[ast.AST], node: ast.AST, parent: ast.AST, parents: dict[int, ast.AST],
-    body_nodes: frozenset[int],
+    scopes: list[ast.AST], node: ast.AST, parent: ast.AST, parents: dict[int, ast.AST]
 ) -> list[ast.AST]:
-    if isinstance(parent, _FUNCTION) and id(node) in body_nodes:
+    if isinstance(parent, _FUNCTION) and _in_body(node, parent, parents):
         return [*scopes, parent]
-    if not isinstance(parent, ast.ClassDef) or id(node) not in body_nodes:
+    if not isinstance(parent, ast.ClassDef) or not _in_body(node, parent, parents):
         return scopes
     if _function_covers(scopes, parent, parents):
         return scopes
@@ -195,6 +191,13 @@ def _chain_from(names: Names, scope: ast.AST) -> list[ast.AST]:
 
 def _function_covers(scopes: list[ast.AST], class_node: ast.ClassDef, parents: dict[int, ast.AST]) -> bool:
     return any(isinstance(scope, _FUNCTION) and _contains(scope, class_node, parents) for scope in scopes)
+
+
+def _in_body(node: ast.AST, scope: ast.AST, parents: dict[int, ast.AST]) -> bool:
+    body = scope.body
+    if isinstance(scope, ast.Lambda):
+        return node is body or _contains(node, body, parents)
+    return any(node is statement or _contains(node, statement, parents) for statement in body)
 
 
 def _contains(node: ast.AST, root: ast.AST, parents: dict[int, ast.AST]) -> bool:
