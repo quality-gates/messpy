@@ -30,12 +30,6 @@ class ClassInfo:
     has_unresolved_base: bool = False
 
 
-@dataclass(frozen=True)
-class _Dependency:
-    name: str
-    previous: _Dependency | None
-
-
 def measure_class_dependencies(
     class_info: ClassInfo,
     names: Names,
@@ -48,24 +42,20 @@ def measure_class_dependencies(
         *class_info.fields,
         *(method.name for method in class_info.methods),
     }
-    local_scopes = (local_names,)
-    dependencies: _Dependency | None = None
+    dependencies: set[str] = set()
     header = [
         *class_info.node.bases,
         *(keyword.value for keyword in class_info.node.keywords),
         *class_info.node.decorator_list,
     ]
     for expression in header:
-        dependencies = _dependency_state(expression, names, class_info.node, local_scopes, dependencies)
+        dependencies = _dependency_state(expression, names, class_info.node, local_names, dependencies)
     for statement in class_info.node.body:
         if not isinstance(statement, ast.ClassDef):
-            dependencies = _dependency_state(statement, names, class_info.node, local_scopes, dependencies)
-    result: set[str] = set()
-    while dependencies is not None:
-        if not class_info.is_ast_visitor or not dependencies.name.startswith("ast."):
-            result.add(dependencies.name)
-        dependencies = dependencies.previous
-    return frozenset(result)
+            dependencies = _dependency_state(statement, names, class_info.node, local_names, dependencies)
+    if class_info.is_ast_visitor:
+        dependencies = {dependency for dependency in dependencies if not dependency.startswith("ast.")}
+    return frozenset(dependencies)
 
 
 
@@ -73,21 +63,18 @@ def _dependency_state(
     node: ast.AST,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return _dependency_function(node, names, scope, local_names, dependencies)
     if isinstance(node, ast.ClassDef):
         return dependencies
     if isinstance(node, (ast.AnnAssign, ast.arg)):
         return _dependency_annotation_state(node, names, scope, local_names, dependencies)
-    if isinstance(node, ast.Name):
-        if isinstance(node.ctx, ast.Load):
-            return _with_dependency(node, names, scope, local_names, dependencies)
-        return dependencies
-    if isinstance(node, ast.Attribute) and dotted_name(node):
-        return _with_dependency(node, names, scope, local_names, dependencies)
+    referenced = _dependency_reference(node, names, scope, local_names, dependencies)
+    if referenced is not None:
+        return referenced
     return _dependency_children(node, names, scope, local_names, dependencies)
 
 
@@ -95,9 +82,9 @@ def _dependency_annotation_state(
     node: ast.AnnAssign | ast.arg,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     if isinstance(node, ast.arg):
         return _dependency_annotation(node.annotation, names, scope, local_names, dependencies)
     dependencies = _dependency_annotation(node.annotation, names, scope, local_names, dependencies)
@@ -106,13 +93,29 @@ def _dependency_annotation_state(
     return _dependency_state(node.value, names, scope, local_names, dependencies)
 
 
+def _dependency_reference(
+    node: ast.AST,
+    names: Names,
+    scope: ast.AST,
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str] | None:
+    if isinstance(node, ast.Name):
+        if isinstance(node.ctx, ast.Load):
+            return _with_dependency(node, names, scope, local_names, dependencies)
+        return dependencies
+    if isinstance(node, ast.Attribute) and dotted_name(node):
+        return _with_dependency(node, names, scope, local_names, dependencies)
+    return None
+
+
 def _dependency_children(
     node: ast.AST,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     for child in ast.iter_child_nodes(node):
         dependencies = _dependency_state(child, names, scope, local_names, dependencies)
     return dependencies
@@ -122,12 +125,12 @@ def _dependency_function(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     scope_names = {*(argument.arg for argument in _arguments(node.args)), *_direct_bindings(node)}
     scope_names -= _function_import_names(node)
-    inner_names = (*local_names, scope_names)
+    inner_names = local_names | scope_names
     for decorator in node.decorator_list:
         dependencies = _dependency_state(decorator, names, scope, inner_names, dependencies)
     for argument in _arguments(node.args):
@@ -163,9 +166,9 @@ def _dependency_annotation(
     annotation: ast.expr | None,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     expression = _annotation_expression(annotation)
     if expression is None:
         return dependencies
@@ -176,20 +179,20 @@ def _with_dependency(
     node: ast.expr,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
-    dependencies: _Dependency | None,
-) -> _Dependency | None:
+    local_names: set[str],
+    dependencies: set[str],
+) -> set[str]:
     dependency = _dependency_name(node, names, scope, local_names)
     if not dependency or dependency.startswith(("typing.", "collections.abc.", "builtins.")):
         return dependencies
-    return _Dependency(dependency, dependencies)
+    return {*dependencies, dependency}
 
 
 def _dependency_name(
     node: ast.expr,
     names: Names,
     scope: ast.AST,
-    local_names: tuple[set[str], ...],
+    local_names: set[str],
 ) -> str:
     dotted = dotted_name(node)
     if not dotted:
@@ -200,7 +203,7 @@ def _dependency_name(
     imported = names.imported(node, scope=scope)
     if imported is not None:
         return _imported_dependency(imported, tail)
-    if any(root in scope_names for scope_names in local_names):
+    if root in local_names:
         return ""
     return _spelling_dependency(root, tail)
 
