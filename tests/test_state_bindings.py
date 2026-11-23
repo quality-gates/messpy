@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 import sys
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -13,6 +14,7 @@ from messpy.constants import scope_constants
 from messpy.names import Names
 from messpy.protocols import Protocols
 from messpy.rulesets import LoadedRule
+from messpy.syntax import dotted_name
 
 
 class BindingStateBehaviorTests(unittest.TestCase):
@@ -73,6 +75,49 @@ class Leaf(First, external.Base):
         self.assertEqual(
             frozenset({("First", "first"), ("Second", "first"), ("First", "second"), ("Second", "second"),
                        ("First", "leaf"), ("Second", "leaf"), ("external.Base", "leaf")}),
+            Protocols.collect(tree).overrides,
+        )
+
+    def test_layered_diamond_ancestry_work_is_polynomial(self) -> None:
+        depth = 12
+        source = 'class Root: pass\n'
+        previous = ['Root']
+        for level in range(depth):
+            current = [f'C{level}a', f'C{level}b']
+            source += ''.join(
+                f'class {name}({", ".join(previous)}):\n'
+                + ''.join(f' def method{index}(self): pass\n' for index in range(5))
+                for name in current
+            )
+            previous = current
+        # Each base expansion resolves its bases with dotted_name, so its
+        # call count is the deterministic ancestry work for this traversal.
+        with mock.patch('messpy.protocols.dotted_name', wraps=dotted_name) as resolve:
+            protocols = Protocols.collect(ast.parse(source))
+        # Ceiling, not target: the path-local traversal re-expanded convergent
+        # ancestors and made >100k resolutions at this depth. A shared
+        # traversal resolves each inheritance edge a bounded number of times.
+        self.assertLessEqual(resolve.call_count, 50 * (2 * depth + 1))
+        expected = frozenset(
+            (ancestor, f'method{index}')
+            for level in range(depth)
+            for ancestor in ['Root'] + [f'C{earlier}{side}' for earlier in range(level) for side in 'ab']
+            for index in range(5)
+        )
+        self.assertEqual(expected, protocols.overrides)
+
+    def test_duplicate_class_names_expand_every_matching_class(self) -> None:
+        tree = ast.parse('''
+class Base(First):
+    def first(self): pass
+class Base(Second):
+    def second(self): pass
+class Leaf(Base):
+    def leaf(self): pass
+''')
+        self.assertEqual(
+            frozenset({('First', 'first'), ('Second', 'second'),
+                       ('Base', 'leaf'), ('First', 'leaf'), ('Second', 'leaf')}),
             Protocols.collect(tree).overrides,
         )
 
