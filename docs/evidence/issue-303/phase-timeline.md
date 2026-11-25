@@ -70,3 +70,13 @@ loop counts 26/30/42. No `[DEBUG-...]` logs (perf counts
 replace logs). Inspection confirmed hypotheses 1+3
 (`actions` unused for DFS expansion, `active | {…}` copy),
 and 4 (independent searches). Logged before any fix claim.
+
+## Phase 5: fix + regression test (logged fifth)
+
+Evidence (`regression-red.log`/`regression-after.log`):
+production reverted to origin/main → FAIL `2073 not <= 220`;
+fix restored → 2 tests OK (work-count + cycle-order).
+Fix: iterative ordered DFS, skip non-`actions`, visit once,
+first-DFS witness, O(F·(V+E)+L). Only `mock.patch` seam kept;
+#321 policy/docs adopted. Logged with the red proof, before
+Phase 6 verification.
