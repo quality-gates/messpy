@@ -14,9 +14,12 @@ class CopyRule:
     fields: frozenset[str]
     fix: str
     former_owners: tuple[str, ...] = ()
+    local_names: bool = False
 
 
 RULES = (
+    CopyRule("onion.py", "_ActionPath.phrase", frozenset({"seen", "stack", "names"}),
+             "update the search collections in place", local_names=True),
     CopyRule("analyzer.py", "_with_naming_target", frozenset({"targets", "target_names"}),
              "prepend a _Cons cell and deduplicate once in _naming_roles"),
     CopyRule("analyzer.py", "_naming_function", frozenset({"callables"}),
@@ -67,7 +70,7 @@ def bounded_slice(node: ast.Slice) -> bool:
     )
 
 
-def copied_attributes(node: ast.AST) -> list[ast.Attribute]:
+def copied_values(node: ast.AST) -> list[ast.Attribute | ast.Name]:
     values: list[ast.AST] = []
     if isinstance(node, ast.Starred):
         values.append(node.value)
@@ -79,7 +82,7 @@ def copied_attributes(node: ast.AST) -> list[ast.Attribute]:
         values.append(node.target)
     elif isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Slice) and not bounded_slice(node.slice):
         values.append(node.value)
-    return [value for value in values if isinstance(value, ast.Attribute)]
+    return [value for value in values if isinstance(value, (ast.Attribute, ast.Name))]
 
 
 class CopyCheck(ast.NodeVisitor):
@@ -94,12 +97,13 @@ class CopyCheck(ast.NodeVisitor):
         if scoped:
             self.scope.append(node.name)
         owner = ".".join(self.scope)
-        for attribute in copied_attributes(node):
+        for value in copied_values(node):
             for rule in self.rules:
                 owners = (rule.owner, *rule.former_owners)
-                if attribute.attr in rule.fields and any(owner == name or owner.startswith(name + ".") for name in owners):
+                field = value.attr if isinstance(value, ast.Attribute) else value.id if rule.local_names else ""
+                if field in rule.fields and any(owner == name or owner.startswith(name + ".") for name in owners):
                     self.errors.append(
-                        f"{self.path}:{node.lineno}: {owner} copies accumulated {attribute.attr}; {rule.fix}."
+                        f"{self.path}:{node.lineno}: {owner} copies accumulated {field}; {rule.fix}."
                     )
         super().visit(node)
         if scoped:
