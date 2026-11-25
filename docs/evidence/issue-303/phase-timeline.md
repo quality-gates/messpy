@@ -80,3 +80,20 @@ Fix: iterative ordered DFS, skip non-`actions`, visit once,
 first-DFS witness, O(F·(V+E)+L). Only `mock.patch` seam kept;
 #321 policy/docs adopted. Logged with the red proof, before
 Phase 6 verification.
+
+## Phase 6: cleanup + verification (logged sixth, last)
+
+Evidence (`tests.log`, `state-parity.log`,
+`accumulator.log`, empty `docs.log`/`self-analysis.log`):
+521 tests OK (2 skips), parity 552/19 match (negative
+control detected), accumulator/docs/self-analysis exit 0,
+`grep DEBUG-` empty. Issue #303 re-read before merge:
+open, no assignee. Full loop green after fix. This
+section closes the in-order trail; shipping followed.
+
+## Provenance note
+
+Each `## Phase` above was committed before the next phase
+was started (see `git log docs/issue-303-timeline`). The
+batched `run-log.md` at bc6b9b8 is therefore backed by an
+incremental trail, not by after-the-fact narration.
