@@ -1,0 +1,24 @@
+         431256 function calls (416789 primitive calls) in 0.136 seconds
+
+   Ordered by: internal time
+   List reduced from 818 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   8194/2    0.010    0.000    0.020    0.010 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/onion.py:263(phrase)
+   118684    0.009    0.000    0.009    0.000 {built-in method builtins.isinstance}
+        7    0.006    0.001    0.006    0.001 {built-in method posix.mkdir}
+     63/2    0.005    0.000    0.011    0.006 {built-in method builtins.exec}
+    12872    0.004    0.000    0.008    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/ast.py:269(iter_child_nodes)
+      903    0.003    0.000    0.011    0.000 <frozen importlib._bootstrap_external>:1597(find_spec)
+     3561    0.003    0.000    0.007    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/reachability.py:77(_ordinary_children)
+    49889    0.003    0.000    0.003    0.000 {built-in method builtins.id}
+     1525    0.003    0.000    0.007    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/dataclasses.py:1540(replace)
+      929    0.003    0.000    0.003    0.000 {built-in method posix.stat}
+    23922    0.003    0.000    0.004    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/ast.py:257(iter_fields)
+    26547    0.002    0.000    0.002    0.000 {built-in method builtins.getattr}
+     4518    0.002    0.000    0.004    0.000 <frozen importlib._bootstrap_external>:126(_path_join)
+     3561    0.002    0.000    0.011    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/reachability.py:61(evaluated_children)
+     8221    0.002    0.000    0.006    0.000 /Users/jonathanbaldie/.fleet/events/scratch/4f7439b1825b8a71e1d0283fead72a7268f8efa4c6c038940d3095bbab3251cb/issue303_loop.py:32(counted)
+
+
+

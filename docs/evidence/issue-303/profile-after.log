@@ -1,0 +1,24 @@
+         348732 function calls (342457 primitive calls) in 0.102 seconds
+
+   Ordered by: internal time
+   List reduced from 819 to 15 due to restriction <15>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   118684    0.010    0.000    0.010    0.000 {built-in method builtins.isinstance}
+    12872    0.004    0.000    0.008    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/ast.py:269(iter_child_nodes)
+     3561    0.004    0.000    0.008    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/reachability.py:77(_ordinary_children)
+    23922    0.003    0.000    0.005    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/ast.py:257(iter_fields)
+     1525    0.003    0.000    0.007    0.000 /Users/jonathanbaldie/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/dataclasses.py:1540(replace)
+      903    0.003    0.000    0.010    0.000 <frozen importlib._bootstrap_external>:1597(find_spec)
+     63/2    0.003    0.000    0.006    0.003 {built-in method builtins.exec}
+     3561    0.002    0.000    0.012    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/reachability.py:61(evaluated_children)
+    26547    0.002    0.000    0.002    0.000 {built-in method builtins.getattr}
+     4518    0.002    0.000    0.004    0.000 <frozen importlib._bootstrap_external>:126(_path_join)
+      929    0.002    0.000    0.002    0.000 {built-in method posix.stat}
+    17125    0.001    0.000    0.001    0.000 {built-in method builtins.id}
+      563    0.001    0.000    0.003    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/names.py:159(_scopes_for_node)
+      770    0.001    0.000    0.002    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/analyzer.py:1909(_node_class_scope)
+     1712    0.001    0.000    0.002    0.000 /Users/jonathanbaldie/.fleet/worktrees/messpy-303/src/messpy/constants.py:66(_written_names)
+
+
+

@@ -1,0 +1,6 @@
+depth=6 status=2 findings=3 callees_calls=145 bound=140 verdict=FAIL-RED
+depth=7 status=2 findings=3 callees_calls=275 bound=160 verdict=FAIL-RED
+depth=10 status=2 findings=3 callees_calls=2073 bound=220 verdict=FAIL-RED
+depth=12 status=2 findings=3 callees_calls=8221 bound=260 verdict=FAIL-RED
+depth=18 status=2 findings=3 callees_calls=524329 bound=380 verdict=FAIL-RED
+AssertionError: exponential witness traversal exceeds linear bound

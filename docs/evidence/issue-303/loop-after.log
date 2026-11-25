@@ -1,0 +1,4 @@
+depth=10 status=2 findings=3 callees_calls=26 bound=220 verdict=PASS
+depth=12 status=2 findings=3 callees_calls=30 bound=260 verdict=PASS
+depth=18 status=2 findings=3 callees_calls=42 bound=380 verdict=PASS
+OK: linear witness search

@@ -222,7 +222,7 @@ def _spread_findings(
     for site in sites:
         if id(site.callee) not in actions:
             continue
-        phrase = _ActionPath().phrase(site.callee, phrases, graph)
+        phrase = _ActionPath().phrase(site.callee, phrases, graph, actions)
         if not phrase:
             continue
         findings.append(_spread_finding(path, rule, graph, site, phrase))
@@ -256,21 +256,38 @@ class _ActionPropagation:
         return propagation
 
 
-@dataclass(frozen=True)
 class _ActionPath:
-    active: frozenset[int] = frozenset()
-
-    def phrase(self, callee: ast.AST, phrases: dict[int, str], graph: CallGraph) -> str:
+    def phrase(
+        self, callee: ast.AST, phrases: dict[int, str], graph: CallGraph, actions: set[int]
+    ) -> str:
         direct = phrases.get(id(callee), "")
         if direct:
             return direct
-        if id(callee) in self.active:
-            return ""
-        following = _ActionPath(self.active | {id(callee)})
-        for site in graph.callees(callee):
-            phrase = following.phrase(site.callee, phrases, graph)
-            if phrase:
-                return f"calls {site.name}(), which {phrase}"
+
+        # Ordered DFS preserves the first witness. Each search visits a callable at
+        # most once, and ignores branches that cannot reach any direct action.
+        # Across findings the bound is O(F * (V + E) + L), where L is the
+        # total rendered witness length; searches are intentionally independent
+        # because the first witness in a cycle depends on the starting callable.
+        seen = {id(callee)}
+        stack = [iter(graph.callees(callee))]
+        names: list[str] = []
+        while stack:
+            site = next(stack[-1], None)
+            if site is None:
+                stack.pop()
+                if names:
+                    names.pop()
+                continue
+            target = id(site.callee)
+            if target not in actions or target in seen:
+                continue
+            names.append(site.name)
+            direct = phrases.get(target, "")
+            if direct:
+                return "".join(f"calls {name}(), which " for name in names) + direct
+            seen.add(target)
+            stack.append(iter(graph.callees(site.callee)))
         return ""
 
 
