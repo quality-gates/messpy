@@ -27,3 +27,20 @@ the issue's layered diamond via the real CLI seam, asserted
 3 findings and `callees <= 20*(D+1)`. Red at 2073, green at
 26–42. Deterministic, ~0.27 s. This is the tight red-capable
 signal every later phase depends on.
+
+## Phase 2: reproduce + minimise (logged second)
+
+Evidence (`loop-minimise.log`, `loop-before-repeat.log`):
+
+```text
+depth=6 callees_calls=145 bound=140 FAIL-RED
+depth=7 callees_calls=275 bound=160 FAIL-RED
+depth=10 callees_calls=2073 bound=220 FAIL-RED
+depth=12 callees_calls=8221 bound=260 FAIL-RED
+depth=18 callees_calls=524329 bound=380 FAIL-RED
+```
+
+Repeat depth-10 reproduced 2073 identically. Two branches
+per layer, reconvergence, later action, and a caller of the
+mixed function are each load-bearing. Logged here before any
+Phase 3 hypothesis was tested.
