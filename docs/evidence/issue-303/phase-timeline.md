@@ -44,3 +44,19 @@ Repeat depth-10 reproduced 2073 identically. Two branches
 per layer, reconvergence, later action, and a caller of the
 mixed function are each load-bearing. Logged here before any
 Phase 3 hypothesis was tested.
+
+## Phase 3: hypotheses (logged third, before probes)
+
+Ranked hypotheses (falsifiable predictions):
+
+1. Search enters callees outside `actions` → pruning them
+   removes pure-diamond visits.
+2. Action-reachable reconvergence revisited per search →
+   per-search visited set bounds at O(V+E) preserving first DFS.
+3. Copying `active | {…}` amplifies → removing copies alone
+   does not fix exponential.
+4. Independent search per site → total remains O(F·(V+E)+L).
+
+Skipped sub-step justification: bisection (no behavioural
+range; Phase 4 baseline replaces it) and AFK checkpoint.
+Logged before any Phase 4 probe.
