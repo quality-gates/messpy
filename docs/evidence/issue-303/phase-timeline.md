@@ -60,3 +60,13 @@ Ranked hypotheses (falsifiable predictions):
 Skipped sub-step justification: bisection (no behavioural
 range; Phase 4 baseline replaces it) and AFK checkpoint.
 Logged before any Phase 4 probe.
+
+## Phase 4: instrument (logged fourth)
+
+Evidence (`profile-before.log`/`profile-after.log`):
+pre-fix 8194 `phrase` calls / 8221 `callees` calls at depth
+12 (~2^(D+1)); post-fix `phrase` no longer dominates,
+loop counts 26/30/42. No `[DEBUG-...]` logs (perf counts
+replace logs). Inspection confirmed hypotheses 1+3
+(`actions` unused for DFS expansion, `active | {…}` copy),
+and 4 (independent searches). Logged before any fix claim.
